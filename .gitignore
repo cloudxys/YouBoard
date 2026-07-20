@@ -1,0 +1,22 @@
+# ---- 构建产物 ----
+build/
+dist/
+*.spec
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- YouBoard 运行时数据（包含个人剪贴板历史，切勿提交到公开仓库！）----
+.youboard.json
+.youboard_snapshots.json
+youboard_config.json
+images/
+
+# ---- 可执行文件（通过 GitHub Releases 分发，不进仓库）----
+*.exe
+
+# ---- IDE / 工具 ----
+.qoder/
+.claude.json
