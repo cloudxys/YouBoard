@@ -10,6 +10,7 @@ import ctypes
 import hashlib
 import json
 import os
+import re
 import struct
 import sys
 import threading
@@ -44,6 +45,7 @@ IMAGES_DIR = os.path.join(_BASE_DIR, "images")
 MAX_ENTRIES = None          # 无上限：不限制历史记录条数
 POLL_INTERVAL = 0.5
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+URL_PATTERN = re.compile(r'https?://\S+|www\.\S+')
 
 # 旧版数据文件名（品牌更名前的历史遗留），首次启动自动迁移
 _LEGACY_FILES = {
@@ -295,15 +297,25 @@ class ClipboardStore:
         self.categories = {}
         self._snapshots = []
         self._lock = threading.Lock()
+        self._self_copy_time = 0.0      # 应用内复制时间戳（防重复收录）
         self._init_empty()
         self._load()
         self._load_snapshots()
+
+    def mark_self_copy(self):
+        """标记应用内复制，监控线程在短时间窗口内跳过剪贴板变化。"""
+        self._self_copy_time = time.time()
+
+    def is_self_copy(self, window=2.0):
+        """判断当前剪贴板变化是否由应用内复制触发。"""
+        return (time.time() - self._self_copy_time) < window
 
     def _init_empty(self):
         self.categories = {
             "text":  {"pinned": [], "entries": []},
             "image": {"pinned": [], "entries": []},
             "file":  {"pinned": [], "entries": []},
+            "url":   {"pinned": [], "entries": []},
         }
 
     # ---- persistence ----
@@ -326,6 +338,7 @@ class ClipboardStore:
                 },
                 "image": {"pinned": [], "entries": []},
                 "file":  {"pinned": [], "entries": []},
+                "url":   {"pinned": [], "entries": []},
             }
             self._save()
             return
@@ -335,6 +348,7 @@ class ClipboardStore:
             "text":  cats.get("text",  {"pinned": [], "entries": []}),
             "image": cats.get("image", {"pinned": [], "entries": []}),
             "file":  cats.get("file",  {"pinned": [], "entries": []}),
+            "url":   cats.get("url",   {"pinned": [], "entries": []}),
         }
 
     def _save(self):
@@ -482,6 +496,24 @@ class ClipboardStore:
             self._save()
         return True
 
+    def add_url(self, url):
+        """收录一条网址到 url 分类。"""
+        url = url.strip()
+        if not url:
+            return False
+        h = self._text_hash(url)
+        with self._lock:
+            cat = self.categories["url"]
+            cat["entries"] = [e for e in cat["entries"] if e["hash"] != h]
+            cat["entries"].insert(0, {
+                "hash": h, "type": "url", "content": url,
+                "timestamp": datetime.now().isoformat(), "length": len(url),
+            })
+            if self.max_entries and len(cat["entries"]) > self.max_entries:
+                cat["entries"] = cat["entries"][:self.max_entries]
+            self._save()
+        return True
+
     # ---- pin / unpin ----
 
     def pin(self, entry_hash):
@@ -563,7 +595,7 @@ class ClipboardStore:
     def get_all(self):
         result = []
         with self._lock:
-            for key in ("text", "image", "file"):
+            for key in ("text", "image", "file", "url"):
                 cat = self.categories[key]
                 result.extend(cat["pinned"])
                 result.extend(cat["entries"])
@@ -652,11 +684,11 @@ class ClipboardStore:
         with self._lock:
             cats = [entry_type] if entry_type else self.categories.keys()
             for key in cats:
-                cat = self.categories[key]
+                cat = self.categories.get(key, {"pinned": [], "entries": []})
                 for lst_name in ("pinned", "entries"):
                     for e in cat[lst_name]:
-                        if key == "text":
-                            if kw in e["content"].lower():
+                        if key in ("text", "url"):
+                            if kw in e.get("content", "").lower():
                                 result.append(e)
                         elif key == "image":
                             fn = e.get("filename", "").lower()
@@ -749,6 +781,10 @@ class ClipboardMonitor(threading.Thread):
 
     def _process_clipboard(self):
         """读取一次剪贴板并收录新内容。返回 False 表示读取失败（供重试）。"""
+        # 应用内复制（Enter/按钮）触发的剪贴板变化不重复收录
+        if self.store.is_self_copy():
+            return True
+
         try:
             ctype, data = get_clipboard_content()
         except Exception:
@@ -758,8 +794,26 @@ class ClipboardMonitor(threading.Thread):
 
         if ctype == "text":
             if data != self._last_text:
-                if self.store.add_text(data):
+                # URL 智能识别：纯网址→仅存 url 分类；混合→text + url 双存
+                urls = URL_PATTERN.findall(data)
+                stripped = URL_PATTERN.sub('', data).strip()
+                is_pure_url = bool(urls) and not stripped
+
+                if is_pure_url:
+                    # 纯网址内容：每个网址单独收录到 url 分类
+                    for u in urls:
+                        self.store.add_url(u)
                     self._notify()
+                else:
+                    # 正常收录到文字分类
+                    if self.store.add_text(data):
+                        self._notify()
+                    # 混合内容中的网址也提取到 url 分类（文字中保留不删）
+                    if urls:
+                        for u in urls:
+                            self.store.add_url(u)
+                        self._notify()
+
                 self._last_text = data
                 self._last_image_hash = ""
                 self._last_file_hash = ""
@@ -923,3 +977,88 @@ class ClipboardMonitor(threading.Thread):
         while self._running:
             self._process_clipboard()
             time.sleep(POLL_INTERVAL)
+
+
+# ===========================================================================
+# 图标路径 & 系统托盘（pystray）
+# ===========================================================================
+
+def get_icon_path():
+    """跨路径兼容：返回 You.ico 的绝对路径。
+    - PyInstaller 打包后：读取 _MEIPASS 临时解压目录
+    - 本地脚本调试：读取脚本同目录下的 You.ico
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        p = os.path.join(base, "You.ico")
+        if os.path.exists(p):
+            return p
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, "You.ico"),
+                 os.path.join(os.path.dirname(here), "logo", "You.ico")):
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
+def get_app_icon():
+    """返回 PIL.Image 图标对象，供 pystray 托盘 / tkinter 窗口统一使用。
+    区分本地脚本调试 / PyInstaller 打包 exe 两种环境。
+    """
+    if not HAS_PIL:
+        return None
+    ico_path = get_icon_path()
+    if ico_path:
+        try:
+            return Image.open(ico_path)
+        except Exception:
+            pass
+    # 回退：纯色占位图（不应触发，仅保底）
+    return Image.new("RGBA", (64, 64), (79, 157, 248, 255))
+
+
+class TrayIcon:
+    """系统托盘图标（pystray），右键菜单：显示主窗口 / 退出。"""
+
+    def __init__(self, on_show=None, on_quit=None, title="YouBoard"):
+        self._on_show = on_show
+        self._on_quit = on_quit
+        self._title = title
+        self._icon = None
+        self._thread = None
+
+    def _create_menu(self):
+        import pystray
+        return pystray.Menu(
+            pystray.MenuItem("显示主窗口", self._show_window, default=True),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("退出 YouBoard", self._quit_app),
+        )
+
+    def _show_window(self, icon=None, item=None):
+        if self._on_show:
+            self._on_show()
+
+    def _quit_app(self, icon=None, item=None):
+        if self._icon:
+            self._icon.stop()
+        if self._on_quit:
+            self._on_quit()
+
+    def start(self):
+        """在后台线程启动托盘图标，强制传入 You.ico 图片对象。"""
+        import pystray
+        app_icon = get_app_icon()
+        if app_icon is None:
+            return
+        self._icon = pystray.Icon(
+            "youboard", app_icon, "YouBoard 剪贴板管理器", self._create_menu())
+        self._thread = threading.Thread(target=self._icon.run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._icon:
+            try:
+                self._icon.stop()
+            except Exception:
+                pass

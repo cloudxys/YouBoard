@@ -13,11 +13,13 @@ import math
 import os
 import queue
 import random
+import re
 import subprocess
 import sys
 import threading
 import time
 import tkinter as tk
+import webbrowser
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
 
@@ -29,6 +31,13 @@ except Exception:
         ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         pass
+
+# 任务栏图标：必须在创建任何窗口之前设置 AppUserModelID
+APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.2"
+try:
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+except Exception:
+    pass
 
 # 中文友好的字符串排序
 try:
@@ -46,6 +55,7 @@ from youboard_core import (
     ClipboardStore, ClipboardMonitor, HISTORY_FILE, TIME_FORMAT,
     set_clipboard_text, set_clipboard_image, set_clipboard_files,
     load_config, save_config, get_autostart, set_autostart,
+    get_icon_path, get_app_icon, TrayIcon,
 )
 
 # ===========================================================================
@@ -74,25 +84,15 @@ DANGER     = "#f16a5c"
 SUCCESS    = "#45d18c"
 FLASH_BG   = "#1e3a2c"   # 复制成功闪烁
 
-TAB_ICONS = {"text": "\U0001f4dd", "image": "\U0001f5bc", "file": "\U0001f4c1"}
+TAB_ICONS = {"text": "\U0001f4dd", "image": "\U0001f5bc", "file": "\U0001f4c1", "url": "\U0001f310"}
 
 APP_NAME    = "YouBoard"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 
 def _find_logo():
-    """查找 Logo 图标：打包模式读内嵌资源，开发模式查脚本目录或相邻 logo 目录。"""
-    base = getattr(sys, "_MEIPASS", None)
-    if base:
-        p = os.path.join(base, "You.ico")
-        if os.path.exists(p):
-            return p
-    here = os.path.dirname(os.path.abspath(__file__))
-    for cand in (os.path.join(here, "You.ico"),
-                 os.path.join(os.path.dirname(here), "logo", "You.ico")):
-        if os.path.exists(cand):
-            return cand
-    return None
+    """查找 Logo 图标：复用 core 的跨路径兼容函数。"""
+    return get_icon_path()
 
 
 LOGO_ICO = _find_logo()
@@ -130,9 +130,11 @@ STRINGS = {
         "type_text": "文字",
         "type_image": "图片",
         "type_file": "文件",
+        "type_url": "网址",
         # 面板
         "panel_preview": " 预览 ",
         "panel_snapshots": " 历史快照 ",
+        "panel_urls": " 网址 ",
         "preview_placeholder": "\n选择一条记录\n即可预览\n",
         "btn_restore": "恢复选中状态",
         "btn_clear_history": "清空历史",
@@ -161,6 +163,7 @@ STRINGS = {
         "col_size": "大小",
         "col_count": "数量",
         "col_files": "文件列表",
+        "col_url": "网址",
         # 列表状态
         "empty_state": "\n还没有记录\n复制任意内容即可自动捕获\n",
         "selected_n": "已选 {n} 项",
@@ -172,6 +175,7 @@ STRINGS = {
         "hint_text": "Enter/双击 复制  ·  Space 置顶  ·  Del 删除  ·  Ctrl+A 全选  ·  F5 刷新",
         "hint_image": "双击 用默认看图打开  ·  Enter 复制图片  ·  Ctrl+O 打开  ·  Ctrl+E 导出",
         "hint_file": "双击 打开文件  ·  Enter 复制文件  ·  Ctrl+O 打开  ·  右键查看更多",
+        "hint_url": "双击/Enter 在浏览器打开  ·  Space 置顶  ·  Del 删除  ·  Ctrl+A 全选",
         # 状态消息
         "st_refreshed": "已刷新",
         "st_captured": "捕获到新的剪贴板内容",
@@ -182,6 +186,7 @@ STRINGS = {
         "st_files_copied": "已复制 {n} 个文件",
         "st_paths_missing": "记录的文件路径已不存在",
         "st_opened_viewer": "已用默认看图软件打开",
+        "st_opened_url": "已在浏览器中打开网址",
         "st_path_missing": "文件路径已不存在",
         "st_opened_file": "已打开文件",
         "st_revealed": "已在资源管理器中定位（共 {n} 个文件）",
@@ -228,6 +233,7 @@ STRINGS = {
         "chip_lines": " {n} 行 ",
         "preview_unavailable": "（预览不可用）",
         "preview_dblclick_viewer": "双击用看图软件打开",
+        "preview_dblclick_url": "双击在浏览器中打开",
         "chip_files": " {n} 个文件 ",
         "preview_dblclick_open": "双击打开文件",
         # 对话框
@@ -265,6 +271,7 @@ STRINGS = {
         "m_copy_selection": "复制选中文字",
         "m_copy_all": "复制全部内容",
         "m_select_all": "全选",
+        "m_open_url": "在浏览器中打开网址",
         "m_refresh": "刷新列表  (F5)",
         "m_clear_type": "清空「{t}」分类…",
         "m_clear_type_unpinned": "清除「{t}」非置顶…",
@@ -314,9 +321,11 @@ STRINGS = {
         "type_text": "Text",
         "type_image": "Images",
         "type_file": "Files",
+        "type_url": "URLs",
         # Panels
         "panel_preview": " Preview ",
         "panel_snapshots": " Snapshots ",
+        "panel_urls": " URLs ",
         "preview_placeholder": "\nSelect a record\nto preview\n",
         "btn_restore": "Restore selected",
         "btn_clear_history": "Clear history",
@@ -333,7 +342,7 @@ STRINGS = {
         "btn_copy": "Copy  Enter",
         "btn_pin": "Pin",
         "btn_unpin": "Unpin",
-        "btn_delete": "Delete  Del",
+        "btn_delete": "Delete",
         "btn_export": "Export",
         "btn_open": "Open  Dbl-click",
         # Column headings
@@ -345,6 +354,7 @@ STRINGS = {
         "col_size": "Size",
         "col_count": "Count",
         "col_files": "Files",
+        "col_url": "URL",
         # List states
         "empty_state": "\nNo records yet\nCopy anything and it will be captured\n",
         "selected_n": "{n} selected",
@@ -356,6 +366,7 @@ STRINGS = {
         "hint_text": "Enter/double-click copy · Space pin · Del delete · Ctrl+A select all · F5 refresh",
         "hint_image": "Double-click open in viewer · Enter copy image · Ctrl+O open · Ctrl+E export",
         "hint_file": "Double-click open file · Enter copy files · Ctrl+O open · Right-click for more",
+        "hint_url": "Double-click/Enter open in browser · Space pin · Del delete · Ctrl+A select all",
         # Status messages
         "st_refreshed": "Refreshed",
         "st_captured": "New clipboard content captured",
@@ -366,6 +377,7 @@ STRINGS = {
         "st_files_copied": "Copied {n} file(s)",
         "st_paths_missing": "Recorded file paths no longer exist",
         "st_opened_viewer": "Opened in default viewer",
+        "st_opened_url": "Opened URL in browser",
         "st_path_missing": "File path no longer exists",
         "st_opened_file": "File opened",
         "st_revealed": "Revealed in Explorer ({n} files)",
@@ -412,6 +424,7 @@ STRINGS = {
         "chip_lines": " {n} lines ",
         "preview_unavailable": "(Preview unavailable)",
         "preview_dblclick_viewer": "Double-click to open in viewer",
+        "preview_dblclick_url": "Double-click to open in browser",
         "chip_files": " {n} files ",
         "preview_dblclick_open": "Double-click to open file",
         # Dialogs
@@ -449,6 +462,7 @@ STRINGS = {
         "m_copy_selection": "Copy selection",
         "m_copy_all": "Copy all",
         "m_select_all": "Select all",
+        "m_open_url": "Open URL in browser",
         "m_refresh": "Refresh list  (F5)",
         "m_clear_type": "Clear '{t}'…",
         "m_clear_type_unpinned": "Remove unpinned '{t}'…",
@@ -708,21 +722,21 @@ class YouBoardApp:
         self._tree_to_type = {}
         self._tab_ids = {}
         self._tab_counts = {}
-        self._iid_to_hash = {"text": {}, "image": {}, "file": {}}
+        self._iid_to_hash = {"text": {}, "image": {}, "file": {}, "url": {}}
         self._search_vars = {}
         self._search_entries = {}
         self._search_after = {}
         self._count_labels = {}
         self._empty_labels = {}
-        self._sort_orders = {"text": "default", "image": "default", "file": "default"}
+        self._sort_orders = {"text": "default", "image": "default", "file": "default", "url": "default"}
         self._sort_ids = {}
         self._sort_combos = {}
 
         # 性能相关
         self._entry_index = {}          # hash -> entry，O(1) 查找
         self._pinned_hashes = set()
-        self._sel_set = {"text": set(), "image": set(), "file": set()}
-        self._hover_iid = {"text": None, "image": None, "file": None}
+        self._sel_set = {"text": set(), "image": set(), "file": set(), "url": set()}
+        self._hover_iid = {"text": None, "image": None, "file": None, "url": None}
         self._last_hover_t = 0.0        # 悬停节流
         self._hover_pending = None
         self._hover_after = None
@@ -747,6 +761,7 @@ class YouBoardApp:
         self._status_timer = None
         self._dot_phase = 0
         self._last_self_copy = 0.0
+        self._tray = None              # 系统托盘（run 时启动）
         self.restart_flag = False       # True = 关闭后以新语言重建界面
 
         self.root = tk.Tk()
@@ -883,7 +898,7 @@ class YouBoardApp:
         self._build_preview_panel()
         self._build_history_panel()
 
-        for etype in ("text", "image", "file"):
+        for etype in ("text", "image", "file", "url"):
             tab_frame = ttk.Frame(self.notebook)
             self.notebook.add(tab_frame, text=self._tab_text(etype, 0))
             self._tab_ids[etype] = tab_frame
@@ -902,7 +917,7 @@ class YouBoardApp:
 
         if self._logo_photo:
             tk.Label(left, image=self._logo_photo, bg=BG).pack(
-                side=tk.LEFT, padx=(0, 12), pady=(0, 2))
+                side=tk.LEFT, padx=(0, 12), pady=(0, 6))
 
         brand_box = tk.Frame(left, bg=BG)
         brand_box.pack(side=tk.LEFT)
@@ -962,8 +977,27 @@ class YouBoardApp:
                         font=F_UI_B, foreground=ACCENT)
         self.preview_container.bind("<Configure>", self._on_preview_resize)
 
-        self.preview_inner = ttk.Frame(self.preview_container, style="Card.TFrame")
-        self.preview_inner.pack(fill=tk.BOTH, expand=True)
+        # 可滚动预览区域：Canvas + 滚动条 + 鼠标滚轮
+        self._preview_canvas = tk.Canvas(
+            self.preview_container, bg=SURFACE2, highlightthickness=0, bd=0)
+        self._preview_scrollbar = ttk.Scrollbar(
+            self.preview_container, orient=tk.VERTICAL,
+            command=self._preview_canvas.yview)
+        self._preview_canvas.configure(yscrollcommand=self._preview_scrollbar.set)
+        self._preview_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._preview_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.preview_inner = ttk.Frame(self._preview_canvas, style="Card.TFrame")
+        self._preview_window_id = self._preview_canvas.create_window(
+            (0, 0), window=self.preview_inner, anchor="nw")
+
+        # 内部内容尺寸变化时更新滚动区域
+        self.preview_inner.bind("<Configure>", self._on_preview_inner_configure)
+        self._preview_canvas.bind("<Configure>", self._on_preview_canvas_resize)
+        # 鼠标滚轮绑定
+        self._preview_canvas.bind("<Enter>", self._bind_preview_mousewheel)
+        self._preview_canvas.bind("<Leave>", self._unbind_preview_mousewheel)
+
         self._show_preview_placeholder()
         self.sidebar_pane.add(self.preview_container, weight=1)
 
@@ -1084,7 +1118,7 @@ class YouBoardApp:
     @staticmethod
     def _type_label(etype):
         return {"text": tr("type_text"), "image": tr("type_image"),
-                "file": tr("type_file")}[etype]
+                "file": tr("type_file"), "url": tr("type_url")}[etype]
 
     def _tab_text(self, etype, count):
         return f"  {TAB_ICONS[etype]}  {self._type_label(etype)}  {count}  "
@@ -1109,7 +1143,7 @@ class YouBoardApp:
         entry.bind("<Escape>", lambda e: (sv.set(""), self._focus_search()))
         self._search_entries[etype] = entry
 
-        sort_ids = (["default", "oldest"] if etype == "text" else
+        sort_ids = (["default", "oldest"] if etype in ("text", "url") else
                     ["default", "oldest", "name_az", "name_za",
                      "fmt_az", "fmt_za", "size_desc", "size_asc"])
         sort_labels = [tr("sort_" + sid) for sid in sort_ids]
@@ -1139,7 +1173,7 @@ class YouBoardApp:
                    style="Ghost.TButton").pack(side=tk.LEFT, padx=2)
         ttk.Button(act, text=tr("btn_export"), command=self._export_selected,
                    style="Ghost.TButton").pack(side=tk.RIGHT)
-        if etype in ("image", "file"):
+        if etype in ("image", "file", "url"):
             ttk.Button(act, text=tr("btn_open"), command=self._open_selected,
                        style="Ghost.TButton").pack(side=tk.RIGHT, padx=4)
 
@@ -1154,6 +1188,13 @@ class YouBoardApp:
             tv.heading("status", text="");    tv.column("status", width=34, anchor=tk.CENTER, stretch=False)
             tv.heading("time", text=tr("col_time"));  tv.column("time", width=150, anchor=tk.CENTER, stretch=False)
             tv.heading("preview", text=tr("col_preview")); tv.column("preview", width=420, stretch=True)
+        elif etype == "url":
+            cols = ("#", "status", "time", "url")
+            tv = ttk.Treeview(tv_frame, columns=cols, show="headings", selectmode="extended")
+            tv.heading("#", text="#");        tv.column("#", width=44, anchor=tk.CENTER, stretch=False)
+            tv.heading("status", text="");    tv.column("status", width=34, anchor=tk.CENTER, stretch=False)
+            tv.heading("time", text=tr("col_time"));  tv.column("time", width=150, anchor=tk.CENTER, stretch=False)
+            tv.heading("url", text=tr("col_url")); tv.column("url", width=420, stretch=True)
         elif etype == "image":
             cols = ("#", "status", "time", "filename", "fmt", "dims", "size")
             tv = ttk.Treeview(tv_frame, columns=cols, show="headings", selectmode="extended")
@@ -1186,7 +1227,7 @@ class YouBoardApp:
         tv.tag_configure("pinned", background=PIN_BG)
         tv.tag_configure("sel", background=ACCENT_DIM, foreground="#ffffff")
         tv.tag_configure("hover", background=SURFACE3)
-        tv.tag_configure("flash", background=FLASH_BG)
+        tv.tag_configure("flash", background=FLASH_BG, foreground="#ffffff")
 
         tv.bind("<Double-1>", self._on_tree_double_click)
         tv.bind("<Return>", lambda e: self._copy_selected())
@@ -1316,6 +1357,7 @@ class YouBoardApp:
             "text": tr("hint_text"),
             "image": tr("hint_image"),
             "file": tr("hint_file"),
+            "url": tr("hint_url"),
         }
         self.hint_var.set(hints.get(self._active_type, ""))
 
@@ -1326,7 +1368,7 @@ class YouBoardApp:
     def _rebuild_index(self):
         idx = {}
         pinned = set()
-        for etype in ("text", "image", "file"):
+        for etype in ("text", "image", "file", "url"):
             cat = self.store.categories[etype]
             for e in cat["pinned"]:
                 idx[e["hash"]] = e
@@ -1337,7 +1379,7 @@ class YouBoardApp:
         self._pinned_hashes = pinned
 
     def _initial_refresh(self):
-        for etype in ("text", "image", "file"):
+        for etype in ("text", "image", "file", "url"):
             self._refresh_tab(etype)
         self._refresh_history_list()
         self._update_hint()
@@ -1351,7 +1393,7 @@ class YouBoardApp:
             pass
 
     def _refresh_all(self):
-        for etype in ("text", "image", "file"):
+        for etype in ("text", "image", "file", "url"):
             self._refresh_tab(etype)
         self._refresh_history_list()
         self._update_preview()
@@ -1401,6 +1443,9 @@ class YouBoardApp:
                 if len(content) > 120:
                     preview += "…"
                 values = (i + 1, status, time_str, preview)
+            elif etype == "url":
+                content = entry.get("content", "")
+                values = (i + 1, status, time_str, content)
             elif etype == "image":
                 src = entry.get("source_name", "")
                 fn = src if src else os.path.basename(entry.get("filename", ""))
@@ -1592,7 +1637,7 @@ class YouBoardApp:
 
     def _on_tab_changed(self, event=None):
         idx = self.notebook.index("current")
-        types = ("text", "image", "file")
+        types = ("text", "image", "file", "url")
         if idx < len(types):
             self._active_type = types[idx]
             self._refresh_tab(self._active_type)
@@ -1654,6 +1699,8 @@ class YouBoardApp:
             self._preview_text(entry)
         elif etype == "image":
             self._preview_image(entry)
+        elif etype == "url":
+            self._preview_url(entry)
         else:
             self._preview_files(entry)
 
@@ -1665,21 +1712,44 @@ class YouBoardApp:
             w.destroy()
 
         content = entry.get("content", "")
-        body = ttk.Frame(self.preview_inner, style="Card.TFrame")
-        body.pack(fill=tk.BOTH, expand=True)
-        txt = tk.Text(body, wrap=tk.WORD, font=F_MONO, bg=SURFACE2, fg=TEXT,
-                      relief=tk.FLAT, borderwidth=0, padx=10, pady=8,
-                      insertbackground=ACCENT, state=tk.NORMAL, highlightthickness=0)
-        txt.tag_configure("sel", background=ACCENT_DIM, foreground="#ffffff")
-        sb = ttk.Scrollbar(body, command=txt.yview)
-        txt.configure(yscrollcommand=sb.set)
-        shown = content[:20000]
-        txt.insert("1.0", shown + (tr("preview_truncated") if len(content) > 20000 else ""))
-        txt.configure(state=tk.DISABLED)
-        txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        # 右键菜单：复制选中 / 复制全部 / 全选
-        txt.bind("<Button-3>", lambda e, w=txt: self._on_right_click_text_preview(e, w))
+
+        # URL 智能识别
+        url_pattern = re.compile(r'https?://\S+|www\.\S+')
+        urls = url_pattern.findall(content)
+        # 判断是否为纯网址内容（去掉所有网址和空白后无剩余文字）
+        stripped = url_pattern.sub('', content).strip()
+        is_pure_url = bool(urls) and not stripped
+
+        # 网址区（纯网址或混合内容均显示）
+        if urls:
+            url_frame = tk.LabelFrame(self.preview_inner, text=tr("panel_urls"),
+                                      bg=SURFACE2, fg=ACCENT, font=F_SMALL)
+            url_frame.pack(fill=tk.X, pady=(0, 4))
+            for u in urls:
+                lbl = tk.Label(url_frame, text=u, bg=SURFACE2, fg=ACCENT,
+                               font=F_MONO, cursor="hand2", anchor="w",
+                               padx=6, pady=2)
+                lbl.pack(fill=tk.X)
+                lbl.bind("<Double-1>", lambda e, url=u: self._open_url(url))
+                lbl.bind("<Button-3>", lambda e, url=u: self._on_url_right_click(e, url))
+
+        # 纯网址内容不再显示文字区
+        if not is_pure_url:
+            body = ttk.Frame(self.preview_inner, style="Card.TFrame")
+            body.pack(fill=tk.BOTH, expand=True)
+            txt = tk.Text(body, wrap=tk.WORD, font=F_MONO, bg=SURFACE2, fg=TEXT,
+                          relief=tk.FLAT, borderwidth=0, padx=10, pady=8,
+                          insertbackground=ACCENT, state=tk.NORMAL, highlightthickness=0)
+            txt.tag_configure("sel", background=ACCENT_DIM, foreground="#ffffff")
+            sb = ttk.Scrollbar(body, command=txt.yview)
+            txt.configure(yscrollcommand=sb.set)
+            shown = content[:20000]
+            txt.insert("1.0", shown + (tr("preview_truncated") if len(content) > 20000 else ""))
+            txt.configure(state=tk.DISABLED)
+            txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            sb.pack(side=tk.RIGHT, fill=tk.Y)
+            # 右键菜单：复制选中 / 复制全部 / 全选
+            txt.bind("<Button-3>", lambda e, w=txt: self._on_right_click_text_preview(e, w))
 
         info = tk.Frame(self.preview_inner, bg=SURFACE2)
         info.pack(fill=tk.X, pady=(6, 0))
@@ -1688,6 +1758,59 @@ class YouBoardApp:
                  fg=ACCENT, font=F_SMALL, padx=6, pady=2).pack(side=tk.LEFT, padx=(0, 4))
         tk.Label(info, text=tr("chip_lines", n=f"{n_lines:,}"), bg=SURFACE3,
                  fg=TEXT_SEC, font=F_SMALL, padx=6, pady=2).pack(side=tk.LEFT)
+
+    def _open_url(self, url):
+        """用默认浏览器打开网址。"""
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        webbrowser.open(url)
+
+    def _on_url_right_click(self, event, url):
+        """网址右键菜单：复制 / 打开。"""
+        menu = self._make_menu()
+        menu.add_command(label=tr("m_copy_content"),
+                         command=lambda: (self._set_clip(url),
+                                          self._set_status(tr("st_copied_preview",
+                                                              n=f"{len(url):,}"), "ok")))
+        menu.add_command(label=tr("m_open_url"),
+                         command=lambda: self._open_url(url))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _set_clip(self, text):
+        """设置剪贴板文字（内部辅助）。"""
+        self._last_self_copy = time.time()
+        self.store.mark_self_copy()
+        set_clipboard_text(text)
+
+    def _preview_url(self, entry):
+        """网址分类的预览面板：显示可点击的大号网址。"""
+        self._preview_gen += 1
+        self._cur_image_path = None
+        self._cur_text_entry = entry
+        for w in self.preview_inner.winfo_children():
+            w.destroy()
+
+        url = entry.get("content", "")
+        body = tk.Frame(self.preview_inner, bg=SURFACE2)
+        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=12)
+
+        tk.Label(body, text="\U0001f310", bg=SURFACE2, fg=ACCENT,
+                 font=("Segoe UI Emoji", 28)).pack(pady=(8, 4))
+        lbl = tk.Label(body, text=url, bg=SURFACE2, fg=ACCENT,
+                       font=F_MONO, cursor="hand2", wraplength=380,
+                       justify=tk.CENTER)
+        lbl.pack(pady=4)
+        lbl.bind("<Double-1>", lambda e: self._open_url(url))
+        lbl.bind("<Button-3>", lambda e: self._on_url_right_click(e, url))
+
+        tk.Label(body, text=tr("preview_dblclick_url"), bg=SURFACE2,
+                 fg=TEXT_MUTED, font=F_SMALL).pack(pady=(12, 0))
+
+        # 信息条
+        info = tk.Frame(self.preview_inner, bg=SURFACE2)
+        info.pack(fill=tk.X, pady=(6, 0))
+        tk.Label(info, text=tr("chip_chars", n=f"{len(url):,}"), bg=ACCENT_DIM,
+                 fg=ACCENT, font=F_SMALL, padx=6, pady=2).pack(side=tk.LEFT, padx=(0, 4))
 
     def _image_full_path(self, entry):
         base = os.path.dirname(self.store.path)
@@ -1802,6 +1925,29 @@ class YouBoardApp:
             self.root.after_cancel(self._resize_after)
         self._resize_after = self.root.after(80, self._render_preview_image)
 
+    # ---- 预览区滚动支持 ----
+
+    def _on_preview_inner_configure(self, event=None):
+        """内部内容尺寸变化时，更新 Canvas 的 scrollregion。"""
+        self._preview_canvas.configure(scrollregion=self._preview_canvas.bbox("all"))
+
+    def _on_preview_canvas_resize(self, event=None):
+        """Canvas 尺寸变化时，让内部 Frame 宽度跟随 Canvas 宽度。"""
+        self._preview_canvas.itemconfig(self._preview_window_id, width=event.width)
+
+    def _bind_preview_mousewheel(self, event=None):
+        self._preview_canvas.bind_all("<MouseWheel>", self._on_preview_mousewheel)
+
+    def _unbind_preview_mousewheel(self, event=None):
+        self._preview_canvas.unbind_all("<MouseWheel>")
+
+    def _on_preview_mousewheel(self, event):
+        # 如果鼠标在内部 Text 控件上，让 Text 自己处理滚动
+        w = event.widget
+        if isinstance(w, tk.Text):
+            return
+        self._preview_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
     def _preview_files(self, entry):
         self._preview_gen += 1
         self._cur_image_path = None
@@ -1877,8 +2023,12 @@ class YouBoardApp:
             return
         etype = entry.get("type", "text")
         self._last_self_copy = time.time()
+        self.store.mark_self_copy()
         try:
             if etype == "text":
+                set_clipboard_text(entry["content"])
+                self._set_status(tr("st_copied_chars", n=f"{len(entry['content']):,}"), "ok")
+            elif etype == "url":
                 set_clipboard_text(entry["content"])
                 self._set_status(tr("st_copied_chars", n=f"{len(entry['content']):,}"), "ok")
             elif etype == "image":
@@ -1910,12 +2060,12 @@ class YouBoardApp:
         etype = self._active_type
         iids = list(tree.selection())
         for iid in iids:
-            tree.item(iid, tags=("flash",))
+            tree.item(iid, tags=("flash", "sel"))
         self.root.after(550, lambda: [self._retag(etype, iid) for iid in iids
                                       if iid in self._iid_to_hash[etype]])
 
     def _open_selected(self):
-        """打开选中项：图片→系统默认看图软件；文件→打开/定位；文字→复制。"""
+        """打开选中项：图片→系统默认看图软件；文件→打开/定位；网址→浏览器；文字→复制。"""
         entry = self._get_selected_entry()
         if not entry:
             return
@@ -1939,6 +2089,9 @@ class YouBoardApp:
                 else:
                     self._reveal_in_explorer(paths[0])
                     self._set_status(tr("st_revealed", n=len(paths)), "ok")
+            elif etype == "url":
+                self._open_url(entry.get("content", ""))
+                self._set_status(tr("st_opened_url"), "ok")
             else:
                 self._copy_selected()
         except Exception as ex:
@@ -2140,6 +2293,9 @@ class YouBoardApp:
         if etype == "text":
             menu.add_command(label=tr("m_copy_content"), command=self._copy_selected)
             menu.add_command(label=tr("m_export_txt"), command=self._export_selected)
+        elif etype == "url":
+            menu.add_command(label=tr("m_copy_content"), command=self._copy_selected)
+            menu.add_command(label=tr("m_open_url"), command=self._open_selected)
         elif etype == "image":
             menu.add_command(label=tr("m_copy_image"), command=self._copy_selected)
             menu.add_command(label=tr("m_open_viewer"), command=self._open_selected)
@@ -2201,6 +2357,7 @@ class YouBoardApp:
         if not content:
             return
         self._last_self_copy = time.time()
+        self.store.mark_self_copy()
         set_clipboard_text(content)
         self._set_status(tr("st_copied_preview", n=f"{len(content):,}"), "ok")
 
@@ -2244,7 +2401,7 @@ class YouBoardApp:
 
     def _on_clip_changed(self):
         self._refresh_tab(self._active_type)
-        for etype in ("text", "image", "file"):
+        for etype in ("text", "image", "file", "url"):
             if etype != self._active_type:
                 self._update_tab_badge(etype)
         self._update_header_stats()
@@ -2295,6 +2452,8 @@ class YouBoardApp:
             cfg["language"] = lang
             save_config(cfg)
             self.restart_flag = True
+            if self._tray:
+                self._tray.stop()
             self.root.destroy()     # main() 主循环将以新语言重建界面
 
     # ------------------------------------------------------------------
@@ -2302,11 +2461,37 @@ class YouBoardApp:
     # ------------------------------------------------------------------
 
     def _on_close(self):
+        """点击 X 按钮：最小化到系统托盘，而非退出。"""
+        self.root.withdraw()
+
+    def _tray_show(self):
+        """从托盘恢复主窗口。"""
+        self.root.after(0, self._restore_window)
+
+    def _restore_window(self):
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def _tray_quit(self):
+        """从托盘菜单彻底退出程序。"""
+        self.root.after(0, self._real_quit)
+
+    def _real_quit(self):
         if self.monitor:
             self.monitor.stop()
+        if self._tray:
+            self._tray.stop()
         self.root.destroy()
 
     def run(self):
+        # 启动系统托盘图标
+        self._tray = TrayIcon(
+            on_show=self._tray_show,
+            on_quit=self._tray_quit,
+            title="YouBoard",
+        )
+        self._tray.start()
         self.root.mainloop()
 
 
@@ -2384,8 +2569,8 @@ class SettingsDialog:
         self.win = tk.Toplevel(root)
         self.win.title(tr("settings_title"))
         self.win.configure(bg=BG)
-        self.win.geometry("470x540")
-        self.win.minsize(470, 540)
+        self.win.geometry("470x640")
+        self.win.minsize(470, 640)
         self.win.transient(root)
         self.win.grab_set()
         try:
