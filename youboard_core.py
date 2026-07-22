@@ -1010,7 +1010,12 @@ def get_app_icon():
     ico_path = get_icon_path()
     if ico_path:
         try:
-            return Image.open(ico_path)
+            img = Image.open(ico_path)
+            # 强制转为 RGBA 64x64，确保 pystray 兼容
+            img = img.convert("RGBA")
+            if img.size != (64, 64):
+                img = img.resize((64, 64), Image.LANCZOS)
+            return img
         except Exception:
             pass
     # 回退：纯色占位图（不应触发，仅保底）

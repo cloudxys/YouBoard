@@ -33,7 +33,7 @@ except Exception:
         pass
 
 # 任务栏图标：必须在创建任何窗口之前设置 AppUserModelID
-APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.2"
+APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.3"
 try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
 except Exception:
@@ -59,35 +59,45 @@ from youboard_core import (
 )
 
 # ===========================================================================
-# 主题配色（暗色、多层次）
+# 主题配色（暗色 / 亮色）
 # ===========================================================================
 
-BG         = "#131418"   # 窗口基底
-SURFACE    = "#1a1c22"   # 主内容面板
-SURFACE2   = "#20232b"   # 卡片 / 输入框 / 侧栏
-SURFACE3   = "#272b34"   # 悬停
-ROW_ALT    = "#1d2027"   # 斑马纹
-BORDER     = "#2c303a"
-BORDER_LT  = "#383d4a"
+THEME_DARK = {
+    "BG": "#131418", "SURFACE": "#1a1c22", "SURFACE2": "#20232b",
+    "SURFACE3": "#272b34", "ROW_ALT": "#1d2027", "BORDER": "#2c303a",
+    "BORDER_LT": "#383d4a", "TEXT": "#e8eaf0", "TEXT_SEC": "#a3a9b8",
+    "TEXT_MUTED": "#6d7486", "ACCENT": "#4f9df8", "ACCENT_HV": "#6cb0ff",
+    "ACCENT_DIM": "#28374e", "TEAL": "#3fd0b6", "AMBER": "#f2b54d",
+    "PIN_BG": "#2a2517", "DANGER": "#f16a5c", "SUCCESS": "#45d18c",
+    "FLASH_BG": "#1e3a2c",
+}
 
-TEXT       = "#e8eaf0"
-TEXT_SEC   = "#a3a9b8"
-TEXT_MUTED = "#6d7486"
+THEME_LIGHT = {
+    "BG": "#f5f6fa", "SURFACE": "#ffffff", "SURFACE2": "#eef0f5",
+    "SURFACE3": "#e2e5ec", "ROW_ALT": "#f0f2f7", "BORDER": "#d4d8e0",
+    "BORDER_LT": "#c0c5d0", "TEXT": "#1a1d26", "TEXT_SEC": "#4a5062",
+    "TEXT_MUTED": "#8b92a5", "ACCENT": "#2b7de9", "ACCENT_HV": "#1a6ad4",
+    "ACCENT_DIM": "#dbeafe", "TEAL": "#0d9488", "AMBER": "#d97706",
+    "PIN_BG": "#fef3c7", "DANGER": "#dc2626", "SUCCESS": "#16a34a",
+    "FLASH_BG": "#d1fae5",
+}
 
-ACCENT     = "#4f9df8"   # 主蓝
-ACCENT_HV  = "#6cb0ff"
-ACCENT_DIM = "#28374e"   # 选中行
-TEAL       = "#3fd0b6"
-AMBER      = "#f2b54d"
-PIN_BG     = "#2a2517"   # 置顶行底色
-DANGER     = "#f16a5c"
-SUCCESS    = "#45d18c"
-FLASH_BG   = "#1e3a2c"   # 复制成功闪烁
+
+def _apply_theme(theme_name="dark"):
+    """根据主题名设置全局颜色变量。"""
+    t = THEME_LIGHT if theme_name == "light" else THEME_DARK
+    g = globals()
+    for k, v in t.items():
+        g[k] = v
+
+
+# 启动时根据配置应用主题
+_apply_theme(load_config().get("theme", "dark"))
 
 TAB_ICONS = {"text": "\U0001f4dd", "image": "\U0001f5bc", "file": "\U0001f4c1", "url": "\U0001f310"}
 
 APP_NAME    = "YouBoard"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 
 def _find_logo():
@@ -286,6 +296,10 @@ STRINGS = {
         "set_general": "通用 / GENERAL",
         "set_autostart": "开机自启动",
         "set_autostart_desc": "登录 Windows 后自动启动 YouBoard 并监听剪贴板",
+        "set_theme": "主题 / THEME",
+        "set_theme_dark": "暗色",
+        "set_theme_light": "亮色",
+        "set_theme_note": "切换主题后应用将立即重启",
         "set_about": "关于 / ABOUT",
         "set_data_location": "数据位置",
         "btn_save": "保存",
@@ -477,6 +491,10 @@ STRINGS = {
         "set_general": "General / 通用",
         "set_autostart": "Start with Windows",
         "set_autostart_desc": "Automatically start YouBoard and monitor the clipboard when you sign in",
+        "set_theme": "Theme / 主题",
+        "set_theme_dark": "Dark",
+        "set_theme_light": "Light",
+        "set_theme_note": "The app restarts immediately after switching theme",
         "set_about": "About / 关于",
         "set_data_location": "Data location",
         "btn_save": "Save",
@@ -563,15 +581,17 @@ class AmbientLightBar(tk.Canvas):
     - pulse(hue, x)：从 x 处扩散的彩色波纹（按键/捕获）
     - surge(hue)：整条灯带短暂亮起指定颜色（复制=绿 / 删除=红 / 置顶=琥珀）
     颜色按 16 级量化缓存，未变化的段跳过重绘，空窗时自动暂停。
+    支持暗色/亮色主题自适应。
     """
 
     SEG_W = 9          # 每段像素宽
     HEIGHT = 4
     FPS_MS = 33        # ~30fps
 
-    def __init__(self, parent):
+    def __init__(self, parent, theme="dark"):
         super().__init__(parent, height=self.HEIGHT, bg=BG,
                          highlightthickness=0, bd=0)
+        self._theme = theme
         self._segs = []          # canvas item ids
         self._seg_hex = []       # 上次颜色（量化后）
         self._n = 0
@@ -665,9 +685,16 @@ class AmbientLightBar(tk.Canvas):
                 self.after(self.FPS_MS, self._tick)
                 return
 
-            # 呼吸：亮度在 0.13~0.24 间缓慢起伏
+            # 呼吸：亮度根据主题自适应
             breath = 0.5 + 0.5 * math.sin(t * 2.0 * math.pi / 4.2)
-            base_l = 0.13 + 0.11 * breath
+            if self._theme == "light":
+                # 亮色主题：高饱和度、中等亮度，确保在白色背景上可见
+                base_l = 0.52 + 0.13 * breath
+                base_s = 0.82
+            else:
+                # 暗色主题：低亮度微妙呼吸
+                base_l = 0.13 + 0.11 * breath
+                base_s = 0.62
             drift = t * 9.0                      # 色相漂移速度
             surge_rgb = None
             if self._surge > 0.0:
@@ -676,7 +703,7 @@ class AmbientLightBar(tk.Canvas):
             for i in range(n):
                 x = i / (n - 1) if n > 1 else 0.5
                 hue = (drift + x * 46.0) % 360.0
-                r, g, b = colorsys.hls_to_rgb(hue / 360.0, base_l, 0.62)
+                r, g, b = colorsys.hls_to_rgb(hue / 360.0, base_l, base_s)
                 # 波纹叠加
                 for px, phue, pt0, pstr in self._pulses:
                     age = t - pt0
@@ -963,7 +990,7 @@ class YouBoardApp:
                  font=F_SMALL).pack(side=tk.RIGHT, padx=(0, 14))
 
         # 全宽环境灯带（呼吸流转 + 按键波纹 + 操作浪涌）
-        self.lightbar = AmbientLightBar(self.root)
+        self.lightbar = AmbientLightBar(self.root, theme=load_config().get("theme", "dark"))
         self.lightbar.pack(fill=tk.X, padx=0, pady=(10, 0))
 
     def _build_preview_panel(self):
@@ -2439,8 +2466,8 @@ class YouBoardApp:
     def _open_settings(self):
         SettingsDialog(self)
 
-    def apply_settings(self, lang, autostart):
-        """保存设置：自启动写注册表；语言变化则重启界面。"""
+    def apply_settings(self, lang, autostart, theme="dark"):
+        """保存设置：自启动写注册表；语言/主题变化则重启界面。"""
         if autostart != get_autostart():
             if set_autostart(autostart):
                 self._set_status(tr("st_autostart_on") if autostart
@@ -2448,21 +2475,27 @@ class YouBoardApp:
             else:
                 self._set_status(tr("st_autostart_failed"), "err")
         cfg = load_config()
+        need_restart = False
         if cfg.get("language", "zh") != lang:
             cfg["language"] = lang
+            need_restart = True
+        if cfg.get("theme", "dark") != theme:
+            cfg["theme"] = theme
+            need_restart = True
+        if need_restart:
             save_config(cfg)
             self.restart_flag = True
             if self._tray:
                 self._tray.stop()
-            self.root.destroy()     # main() 主循环将以新语言重建界面
+            self.root.destroy()
 
     # ------------------------------------------------------------------
     # 收尾
     # ------------------------------------------------------------------
 
     def _on_close(self):
-        """点击 X 按钮：最小化到系统托盘，而非退出。"""
-        self.root.withdraw()
+        """点击 X 按钮：直接退出程序。"""
+        self._real_quit()
 
     def _tray_show(self):
         """从托盘恢复主窗口。"""
@@ -2492,7 +2525,18 @@ class YouBoardApp:
             title="YouBoard",
         )
         self._tray.start()
+        # 窗口淡入动画
+        self._fade_in()
         self.root.mainloop()
+
+    def _fade_in(self, alpha=0.0):
+        """窗口透明度从 0 渐变到 1，产生淡入效果。"""
+        try:
+            self.root.attributes("-alpha", alpha)
+            if alpha < 1.0:
+                self.root.after(16, lambda: self._fade_in(min(1.0, alpha + 0.08)))
+        except tk.TclError:
+            pass
 
 
 # ===========================================================================
@@ -2569,8 +2613,8 @@ class SettingsDialog:
         self.win = tk.Toplevel(root)
         self.win.title(tr("settings_title"))
         self.win.configure(bg=BG)
-        self.win.geometry("470x640")
-        self.win.minsize(470, 640)
+        self.win.geometry("470x740")
+        self.win.minsize(470, 740)
         self.win.transient(root)
         self.win.grab_set()
         try:
@@ -2583,7 +2627,7 @@ class SettingsDialog:
         self._lang_hover_code = None
 
         # 顶部迷你环境灯带（与主界面一致的呼吸效果）
-        self.light = AmbientLightBar(self.win)
+        self.light = AmbientLightBar(self.win, theme=load_config().get("theme", "dark"))
         self.light.pack(fill=tk.X)
         self.light.surge(215.0, 0.5)
 
@@ -2618,6 +2662,25 @@ class SettingsDialog:
         self.toggle = ToggleSwitch(row, initial=get_autostart(),
                                    on_change=self._on_toggle)
         self.toggle.pack(side=tk.RIGHT, pady=2)
+
+        # ---- 主题卡片：暗色/亮色切换 ----
+        card = self._card(tr("set_theme"))
+        seg = tk.Frame(card, bg=SURFACE3, padx=3, pady=3)
+        seg.pack(fill=tk.X, padx=14)
+        self._theme_sel = load_config().get("theme", "dark")
+        self._theme_hover = None
+        self._theme_btns = {}
+        for tname, icon in (("dark", "\U0001f319"), ("light", "\u2600\ufe0f")):
+            lbl = tk.Label(seg, text=f"{icon}  {tr('set_theme_' + tname)}",
+                           font=F_UI_B, cursor="hand2", pady=7)
+            lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            lbl.bind("<Button-1>", lambda e, t=tname: self._pick_theme(t))
+            lbl.bind("<Enter>", lambda e, t=tname: self._theme_hover_fn(t, True))
+            lbl.bind("<Leave>", lambda e, t=tname: self._theme_hover_fn(t, False))
+            self._theme_btns[tname] = lbl
+        self._paint_theme()
+        tk.Label(card, text=tr("set_theme_note"), bg=SURFACE2, fg=TEXT_MUTED,
+                 font=F_SMALL).pack(anchor=tk.W, padx=16, pady=(8, 10))
 
         # ---- 关于卡片 ----
         card = self._card(tr("set_about"))
@@ -2670,11 +2733,30 @@ class SettingsDialog:
     def _on_toggle(self, value):
         self.light.surge(140.0 if value else 4.0, 0.6)
 
+    def _pick_theme(self, tname):
+        self._theme_sel = tname
+        self._paint_theme()
+        self.light.surge(215.0, 0.3 if tname == "dark" else 0.7, strength=0.8)
+
+    def _theme_hover_fn(self, tname, entering):
+        self._theme_hover = tname if entering else None
+        self._paint_theme()
+
+    def _paint_theme(self):
+        for tname, lbl in self._theme_btns.items():
+            if tname == self._theme_sel:
+                lbl.configure(bg=ACCENT, fg="#0c1420")
+            elif tname == self._theme_hover:
+                lbl.configure(bg=SURFACE3, fg=TEXT)
+            else:
+                lbl.configure(bg=SURFACE3, fg=TEXT_SEC)
+
     def _save(self):
         lang = self._lang_sel
         autostart = self.toggle.on
+        theme = self._theme_sel
         self.win.destroy()
-        self.app.apply_settings(lang, autostart)
+        self.app.apply_settings(lang, autostart, theme)
 
 
 # ===========================================================================
@@ -2739,7 +2821,23 @@ def cli_search(store, keyword, entry_type=None):
 # Main
 # ===========================================================================
 
+def _single_instance():
+    """防止多开：如果已有实例在运行，将已有窗口置前并退出当前进程。"""
+    mutex_name = "YouBoard_SingleInstance_Mutex"
+    handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        # 已有实例运行，尝试找到并激活窗口
+        hwnd = ctypes.windll.user32.FindWindowW(None, "YouBoard")
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 9)   # SW_RESTORE
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+        sys.exit(0)
+    return handle  # 保持引用防止被回收
+
+
 def main():
+    _mutex_handle = _single_instance()
+
     store = ClipboardStore()
     apply_language(load_config().get("language", "zh"))
 
@@ -2795,13 +2893,15 @@ def main():
             print(tr("cli_stopped"))
         return
 
-    # 默认：GUI + 监控（切换语言时销毁窗口并以新语言重建）
+    # 默认：GUI + 监控（切换语言/主题时销毁窗口并重建）
     monitor = ClipboardMonitor(store)
     monitor.start()
     try:
         restart = True
         while restart:
-            apply_language(load_config().get("language", "zh"))
+            cfg = load_config()
+            _apply_theme(cfg.get("theme", "dark"))
+            apply_language(cfg.get("language", "zh"))
             gui = YouBoardApp(store, monitor)
             try:
                 gui.run()
