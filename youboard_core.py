@@ -984,18 +984,19 @@ class ClipboardMonitor(threading.Thread):
 # ===========================================================================
 
 def get_icon_path():
-    """跨路径兼容：返回 You.ico 的绝对路径。
+    """跨路径兼容：返回 YouBoard.ico 的绝对路径。
     - PyInstaller 打包后：读取 _MEIPASS 临时解压目录
-    - 本地脚本调试：读取脚本同目录下的 You.ico
+    - 本地脚本调试：读取脚本同目录下的 YouBoard.ico
     """
     base = getattr(sys, "_MEIPASS", None)
     if base:
-        p = os.path.join(base, "You.ico")
+        p = os.path.join(base, "YouBoard.ico")
         if os.path.exists(p):
             return p
     here = os.path.dirname(os.path.abspath(__file__))
-    for cand in (os.path.join(here, "You.ico"),
-                 os.path.join(os.path.dirname(here), "logo", "You.ico")):
+    for cand in (os.path.join(here, "YouBoard.ico"),
+                 os.path.join(here, "You.ico"),
+                 os.path.join(os.path.dirname(here), "logo", "YouBoard.ico")):
         if os.path.exists(cand):
             return cand
     return None
@@ -1051,7 +1052,7 @@ class TrayIcon:
             self._on_quit()
 
     def start(self):
-        """在后台线程启动托盘图标，强制传入 You.ico 图片对象。"""
+        """在后台线程启动托盘图标，强制传入 YouBoard.ico 图片对象。"""
         import pystray
         app_icon = get_app_icon()
         if app_icon is None:

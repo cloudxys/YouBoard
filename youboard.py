@@ -33,7 +33,7 @@ except Exception:
         pass
 
 # 任务栏图标：必须在创建任何窗口之前设置 AppUserModelID
-APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.3"
+APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.4"
 try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
 except Exception:
@@ -97,7 +97,7 @@ _apply_theme(load_config().get("theme", "dark"))
 TAB_ICONS = {"text": "\U0001f4dd", "image": "\U0001f5bc", "file": "\U0001f4c1", "url": "\U0001f310"}
 
 APP_NAME    = "YouBoard"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.4.0"
 
 
 def _find_logo():
@@ -300,6 +300,11 @@ STRINGS = {
         "set_theme_dark": "暗色",
         "set_theme_light": "亮色",
         "set_theme_note": "切换主题后应用将立即重启",
+        "set_bg": "背景 / BACKGROUND",
+        "set_bg_select": "选择背景图片",
+        "set_bg_clear": "恢复默认",
+        "set_bg_hint": "推荐 1920×1080 或更大，支持 PNG / JPG / BMP / GIF（动态）",
+        "set_bg_current": "当前背景：默认",
         "set_about": "关于 / ABOUT",
         "set_data_location": "数据位置",
         "btn_save": "保存",
@@ -495,6 +500,11 @@ STRINGS = {
         "set_theme_dark": "Dark",
         "set_theme_light": "Light",
         "set_theme_note": "The app restarts immediately after switching theme",
+        "set_bg": "Background / 背景",
+        "set_bg_select": "Choose background image",
+        "set_bg_clear": "Reset to default",
+        "set_bg_hint": "Recommended 1920×1080 or larger, PNG / JPG / BMP / GIF (animated)",
+        "set_bg_current": "Current: Default",
         "set_about": "About / 关于",
         "set_data_location": "Data location",
         "btn_save": "Save",
@@ -797,10 +807,17 @@ class YouBoardApp:
         self.root.minsize(920, 540)
         self.root.configure(bg=BG)
 
-        # 窗口 / 任务栏图标
+        # 窗口 / 任务栏图标（必须在窗口显示前设置，彻底解决羽毛图标问题）
+        self._icon_photo = None
         try:
             if LOGO_ICO and os.path.exists(LOGO_ICO):
                 self.root.iconbitmap(LOGO_ICO)
+                # 同时用 iconphoto 设置默认图标（更可靠，覆盖所有子窗口）
+                if HAS_PIL:
+                    _ico_img = Image.open(LOGO_ICO)
+                    _ico_img = _ico_img.convert("RGBA")
+                    self._icon_photo = ImageTk.PhotoImage(_ico_img)
+                    self.root.iconphoto(True, self._icon_photo)
         except Exception:
             pass
 
@@ -933,6 +950,7 @@ class YouBoardApp:
 
         self._build_statusbar()
         self._bind_global_keys()
+        self._apply_background()
 
     def _build_header(self):
         header = tk.Frame(self.root, bg=BG)
@@ -992,6 +1010,87 @@ class YouBoardApp:
         # 全宽环境灯带（呼吸流转 + 按键波纹 + 操作浪涌）
         self.lightbar = AmbientLightBar(self.root, theme=load_config().get("theme", "dark"))
         self.lightbar.pack(fill=tk.X, padx=0, pady=(10, 0))
+
+    def _apply_background(self):
+        """应用用户自定义背景图片（带暗色過罩保证可读性）。支持 GIF 动态背景。"""
+        cfg = load_config()
+        bg_path = cfg.get("bg_image", "")
+        if not bg_path or not os.path.exists(bg_path) or not HAS_PIL:
+            return
+        try:
+            self._bg_orig = Image.open(bg_path).convert("RGBA")
+            # 检测是否为动态 GIF
+            self._bg_frames = []
+            self._bg_is_gif = bg_path.lower().endswith(".gif")
+            if self._bg_is_gif:
+                gif = Image.open(bg_path)
+                try:
+                    while True:
+                        self._bg_frames.append(gif.copy().convert("RGBA"))
+                        gif.seek(gif.tell() + 1)
+                except EOFError:
+                    pass
+                if len(self._bg_frames) < 2:
+                    self._bg_is_gif = False
+            self._bg_frame_idx = 0
+        except Exception:
+            return
+        self._bg_canvas = tk.Canvas(self.root, highlightthickness=0, bd=0)
+        self._bg_canvas.place(x=0, y=0, relwidth=1, relheight=1)
+        self._bg_canvas.tk.call("lower", self._bg_canvas._w)
+        self._draw_bg()
+        self.root.bind("<Configure>", self._on_bg_resize, add="+")
+        # GIF 动画循环
+        if self._bg_is_gif:
+            self._animate_bg()
+
+    def _draw_bg(self):
+        """绘制背景：图片缩放 + 暗色/亮色過罩。"""
+        try:
+            w = self.root.winfo_width()
+            h = self.root.winfo_height()
+            if w < 50 or h < 50:
+                return
+            # 选择当前帧
+            if self._bg_is_gif and self._bg_frames:
+                img = self._bg_frames[self._bg_frame_idx % len(self._bg_frames)].copy()
+            else:
+                img = self._bg_orig.copy()
+            # 等比缩放裁切填满窗口
+            iw, ih = img.size
+            scale = max(w / iw, h / ih)
+            img = img.resize((int(iw * scale), int(ih * scale)), Image.LANCZOS)
+            nw, nh = img.size
+            left = (nw - w) // 2
+            top = (nh - h) // 2
+            img = img.crop((left, top, left + w, top + h))
+            # 過罩
+            theme = load_config().get("theme", "dark")
+            if theme == "light":
+                overlay = Image.new("RGBA", (w, h), (255, 255, 255, 160))
+            else:
+                overlay = Image.new("RGBA", (w, h), (10, 10, 18, 170))
+            img = Image.alpha_composite(img, overlay)
+            self._bg_photo = ImageTk.PhotoImage(img)
+            self._bg_canvas.delete("all")
+            self._bg_canvas.create_image(0, 0, anchor="nw", image=self._bg_photo)
+        except Exception:
+            pass
+
+    def _animate_bg(self):
+        """动态 GIF 背景帧循环。"""
+        try:
+            if not self.root.winfo_exists():
+                return
+            self._bg_frame_idx += 1
+            self._draw_bg()
+            self.root.after(100, self._animate_bg)  # ~10fps
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _on_bg_resize(self, event=None):
+        if hasattr(self, "_bg_orig"):
+            self._draw_bg()
 
     def _build_preview_panel(self):
         self.preview_container = ttk.LabelFrame(
@@ -2466,8 +2565,8 @@ class YouBoardApp:
     def _open_settings(self):
         SettingsDialog(self)
 
-    def apply_settings(self, lang, autostart, theme="dark"):
-        """保存设置：自启动写注册表；语言/主题变化则重启界面。"""
+    def apply_settings(self, lang, autostart, theme="dark", bg_changed=False):
+        """保存设置：自启动写注册表；语言/主题/背景变化则重启界面。"""
         if autostart != get_autostart():
             if set_autostart(autostart):
                 self._set_status(tr("st_autostart_on") if autostart
@@ -2475,7 +2574,7 @@ class YouBoardApp:
             else:
                 self._set_status(tr("st_autostart_failed"), "err")
         cfg = load_config()
-        need_restart = False
+        need_restart = bg_changed
         if cfg.get("language", "zh") != lang:
             cfg["language"] = lang
             need_restart = True
@@ -2613,8 +2712,8 @@ class SettingsDialog:
         self.win = tk.Toplevel(root)
         self.win.title(tr("settings_title"))
         self.win.configure(bg=BG)
-        self.win.geometry("470x740")
-        self.win.minsize(470, 740)
+        self.win.geometry("470x620")
+        self.win.minsize(470, 480)
         self.win.transient(root)
         self.win.grab_set()
         try:
@@ -2626,10 +2725,33 @@ class SettingsDialog:
         self._lang_sel = LANG if LANG in STRINGS else "zh"
         self._lang_hover_code = None
 
-        # 顶部迷你环境灯带（与主界面一致的呼吸效果）
+        # 顶部迷你环境灯带
         self.light = AmbientLightBar(self.win, theme=load_config().get("theme", "dark"))
         self.light.pack(fill=tk.X)
         self.light.surge(215.0, 0.5)
+
+        # 可滚动内容区域
+        # 底部按钮先 pack（固定不滚动）
+        footer = tk.Frame(self.win, bg=BG)
+        footer.pack(fill=tk.X, padx=16, pady=10, side=tk.BOTTOM)
+        ttk.Button(footer, text=tr("btn_save"), style="Accent.TButton",
+                   command=self._save).pack(side=tk.RIGHT)
+        ttk.Button(footer, text=tr("btn_cancel"), style="Ghost.TButton",
+                   command=self._close_settings).pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._scroll_canvas = tk.Canvas(self.win, bg=BG, highlightthickness=0, bd=0)
+        self._scroll_bar = ttk.Scrollbar(self.win, orient=tk.VERTICAL,
+                                         command=self._scroll_canvas.yview)
+        self._scroll_canvas.configure(yscrollcommand=self._scroll_bar.set)
+        self._scroll_bar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._scroll_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._scroll_frame = tk.Frame(self._scroll_canvas, bg=BG)
+        self._scroll_canvas.create_window((0, 0), window=self._scroll_frame,
+                                          anchor="nw", width=450)
+        self._scroll_frame.bind("<Configure>", self._on_scroll_configure)
+        self._scroll_canvas.bind("<Configure>", self._on_canvas_resize)
+        # 鼠标滚轮
+        self._scroll_canvas.bind_all("<MouseWheel>", self._on_settings_wheel)
 
         # ---- 语言卡片 ----
         card = self._card(tr("set_language"))
@@ -2682,6 +2804,22 @@ class SettingsDialog:
         tk.Label(card, text=tr("set_theme_note"), bg=SURFACE2, fg=TEXT_MUTED,
                  font=F_SMALL).pack(anchor=tk.W, padx=16, pady=(8, 10))
 
+        # ---- 背景卡片：自定义背景图片 ----
+        card = self._card(tr("set_bg"))
+        bg_row = tk.Frame(card, bg=SURFACE2)
+        bg_row.pack(fill=tk.X, padx=14, pady=(0, 6))
+        self._bg_path = load_config().get("bg_image", "")
+        self._bg_label = tk.Label(bg_row, text=self._bg_display_name(),
+                                  bg=SURFACE2, fg=TEXT_SEC, font=F_SMALL)
+        self._bg_label.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(bg_row, text=tr("set_bg_select"), style="Ghost.TButton",
+                   command=self._select_bg).pack(side=tk.RIGHT, padx=(8, 0))
+        if self._bg_path:
+            ttk.Button(bg_row, text=tr("set_bg_clear"), style="Ghost.TButton",
+                       command=self._clear_bg).pack(side=tk.RIGHT)
+        tk.Label(card, text=tr("set_bg_hint"), bg=SURFACE2, fg=TEXT_MUTED,
+                 font=("Segoe UI", 8)).pack(anchor=tk.W, padx=16, pady=(2, 10))
+
         # ---- 关于卡片 ----
         card = self._card(tr("set_about"))
         tk.Label(card, text=f"{APP_NAME}  v{APP_VERSION}", bg=SURFACE2,
@@ -2692,20 +2830,27 @@ class SettingsDialog:
                  fg=TEXT_SEC, font=("Consolas", 8), wraplength=410,
                  justify=tk.LEFT).pack(anchor=tk.W, padx=14, pady=(2, 12))
 
-        # ---- 底部按钮 ----
-        footer = tk.Frame(self.win, bg=BG)
-        footer.pack(fill=tk.X, padx=16, pady=14)
-        ttk.Button(footer, text=tr("btn_save"), style="Accent.TButton",
-                   command=self._save).pack(side=tk.RIGHT)
-        ttk.Button(footer, text=tr("btn_cancel"), style="Ghost.TButton",
-                   command=self.win.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+        # ---- 底部按钮已在可滚动区域前 pack ----
 
-        self.win.protocol("WM_DELETE_WINDOW", self.win.destroy)
+        self.win.protocol("WM_DELETE_WINDOW", self._close_settings)
 
     # ---- 内部 ----
 
+    def _on_scroll_configure(self, event=None):
+        self._scroll_canvas.configure(scrollregion=self._scroll_canvas.bbox("all"))
+
+    def _on_canvas_resize(self, event=None):
+        self._scroll_canvas.itemconfig("all", width=event.width)
+
+    def _on_settings_wheel(self, event):
+        self._scroll_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _close_settings(self):
+        self._scroll_canvas.unbind_all("<MouseWheel>")
+        self.win.destroy()
+
     def _card(self, title):
-        card = tk.Frame(self.win, bg=SURFACE2, highlightthickness=1,
+        card = tk.Frame(self._scroll_frame, bg=SURFACE2, highlightthickness=1,
                         highlightbackground=BORDER)
         card.pack(fill=tk.X, padx=16, pady=(14, 0))
         tk.Label(card, text=title, bg=SURFACE2, fg=TEXT_MUTED,
@@ -2751,12 +2896,38 @@ class SettingsDialog:
             else:
                 lbl.configure(bg=SURFACE3, fg=TEXT_SEC)
 
+    def _bg_display_name(self):
+        if self._bg_path and os.path.exists(self._bg_path):
+            return os.path.basename(self._bg_path)
+        return tr("set_bg_current")
+
+    def _select_bg(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(
+            parent=self.win,
+            title=tr("set_bg_select"),
+            filetypes=[("Images", "*.png *.jpg *.jpeg *.bmp *.gif"), ("All", "*.*")])
+        if path:
+            self._bg_path = path
+            self._bg_label.configure(text=os.path.basename(path))
+
+    def _clear_bg(self):
+        self._bg_path = ""
+        self._bg_label.configure(text=tr("set_bg_current"))
+
     def _save(self):
         lang = self._lang_sel
         autostart = self.toggle.on
         theme = self._theme_sel
+        # 检测背景是否变化
+        cfg = load_config()
+        old_bg = cfg.get("bg_image", "")
+        bg_changed = (old_bg != self._bg_path)
+        cfg["bg_image"] = self._bg_path
+        save_config(cfg)
+        self._scroll_canvas.unbind_all("<MouseWheel>")
         self.win.destroy()
-        self.app.apply_settings(lang, autostart, theme)
+        self.app.apply_settings(lang, autostart, theme, bg_changed)
 
 
 # ===========================================================================
