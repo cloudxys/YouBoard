@@ -1,8 +1,8 @@
-; YouBoard v1.2.0 Inno Setup 安装脚本
+; YouBoard v1.5.0 Inno Setup 安装脚本
 ; 功能：多盘检测选最大空闲盘根目录安装，注册添加或删除程序，生成卸载程序，创建开始菜单快捷方式
 
 #define MyAppName "YouBoard"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.5.0"
 #define MyAppPublisher "YouBoard"
 #define MyAppExeName "YouBoard.exe"
 #define MyAppURL "https://github.com"
@@ -17,7 +17,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\logo
 OutputBaseFilename=YouBoard_Setup_v{#MyAppVersion}
-SetupIconFile=.\You.ico
+SetupIconFile=.\YouBoard.ico
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
