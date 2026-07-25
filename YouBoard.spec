@@ -2,11 +2,11 @@
 
 
 a = Analysis(
-    ['youboard.py'],
+    ['youboard_qt.py'],
     pathex=[],
     binaries=[],
-    datas=[('You.ico', '.')],
-    hiddenimports=['pystray'],
+    datas=[('YouBoard.ico', '.')],
+    hiddenimports=['PyQt6', 'PyQt6.QtWidgets', 'PyQt6.QtCore', 'PyQt6.QtGui', 'keyboard'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -36,5 +36,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     version='version_info.txt',
-    icon=['You.ico'],
+    icon=['YouBoard.ico'],
 )

@@ -1,11 +1,11 @@
-; YouBoard v1.5.0 Inno Setup 安装脚本
-; 功能：多盘检测选最大空闲盘根目录安装，注册添加或删除程序，生成卸载程序，创建开始菜单快捷方式
+; YouBoard v1.6.0 Inno Setup 安装脚本
+; 功能：多盘检测选最大空闲盘根目录安装，数据保留更新，uninstall.exe，自定义图标
 
 #define MyAppName "YouBoard"
-#define MyAppVersion "1.5.0"
+#define MyAppVersion "1.6.0"
 #define MyAppPublisher "YouBoard"
 #define MyAppExeName "YouBoard.exe"
-#define MyAppURL "https://github.com"
+#define MyAppURL "https://github.com/cloudxys/YouBoard"
 
 [Setup]
 AppId={{A3F7B2C1-9D4E-4A68-B5C2-1E8F0D3A7B9C}
@@ -18,14 +18,14 @@ DisableProgramGroupPage=yes
 OutputDir=..\logo
 OutputBaseFilename=YouBoard_Setup_v{#MyAppVersion}
 SetupIconFile=.\YouBoard.ico
+UninstallDisplayIcon={app}\YouBoard.ico
+UninstallDisplayName={#MyAppName} {#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-UninstallDisplayIcon={app}\{#MyAppExeName}
-UninstallDisplayName={#MyAppName} {#MyAppVersion}
 
 [Languages]
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
@@ -36,14 +36,20 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: ".\dist\YouBoard.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: ".\YouBoard.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{group}\卸载 {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{group}\卸载 {#MyAppName}"; Filename: "{app}\uninstall.exe"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; 卸载时不清除用户数据（保留配置和剪贴板历史），除非用户手动删除目录
+; Type: files; Name: "{app}\.youboard.json"
+; Type: files; Name: "{app}\.youboard_snapshots.json"
 
 [Code]
 const
@@ -67,19 +73,15 @@ end;
 
 function GetInstallDir(Param: string): string;
 var
-  Drives: array of string;
   I: Integer;
   DriveLetter: string;
   BestDrive: string;
   BestFree: Int64;
   Free: Int64;
-  DriveCount: Integer;
   HasNonC: Boolean;
 begin
-  { 检测所有可用磁盘，选择最大空闲空间的盘 }
   BestDrive := '';
   BestFree := 0;
-  DriveCount := 0;
   HasNonC := False;
 
   for I := Ord('A') to Ord('Z') do
@@ -87,7 +89,6 @@ begin
     DriveLetter := Chr(I) + ':';
     if GetDriveType(DriveLetter + '\') = DRIVE_FIXED then
     begin
-      DriveCount := DriveCount + 1;
       Free := GetFreeSpace(DriveLetter);
       if Free > BestFree then
       begin
@@ -99,14 +100,24 @@ begin
     end;
   end;
 
-  { 仅 C 盘则安装到 C:\Program Files\YouBoard }
   if not HasNonC then
   begin
     Result := ExpandConstant('{autopf}\{#MyAppName}');
   end
   else
   begin
-    { 选最大空闲盘根目录，如 D:\YouBoard }
     Result := BestDrive + '\{#MyAppName}';
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  AppDir: string;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    AppDir := ExpandConstant('{app}');
+    { 创建 uninstall.exe 副本（与 unins000.exe 相同） }
+    CopyFile(AppDir + '\unins000.exe', AppDir + '\uninstall.exe', False);
   end;
 end;

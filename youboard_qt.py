@@ -7,6 +7,7 @@ PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系�
 
 import colorsys
 import ctypes
+import ctypes.wintypes
 import locale
 import math
 import os
@@ -31,7 +32,7 @@ except Exception:
     except Exception:
         pass
 
-APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.5"
+APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.6"
 try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
 except Exception:
@@ -57,7 +58,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
-    QThread, QObject, QSize, QRect, QPoint, QEvent,
+    QThread, QObject, QSize, QRect, QPoint, QEvent, QAbstractNativeEventFilter,
 )
 from PyQt6.QtGui import (
     QIcon, QPixmap, QImage, QPainter, QColor, QFont,
@@ -71,6 +72,12 @@ try:
 except ImportError:
     HAS_PIL = False
 
+try:
+    import keyboard as _keyboard_lib
+    HAS_KEYBOARD = True
+except ImportError:
+    HAS_KEYBOARD = False
+
 from youboard_core import (
     ClipboardStore, ClipboardMonitor, HISTORY_FILE, TIME_FORMAT,
     set_clipboard_text, set_clipboard_image, set_clipboard_files,
@@ -82,7 +89,7 @@ from youboard_core import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -315,6 +322,16 @@ STRINGS = {
         "cli_history_file": "历史文件：{path}",
         "cli_ctrl_c": "按 Ctrl+C 停止",
         "cli_stopped": "已停止",
+        "tray_show": "显示 YouBoard",
+        "tray_quit": "退出",
+        "set_hotkey_title": "全局快捷键",
+        "set_hotkey_desc": "按下快捷键显示/隐藏 YouBoard（如 alt+q、ctrl+shift+v）",
+        "set_check_update": "检查更新",
+        "upd_title": "检查更新",
+        "upd_latest": "已是最新版本 v{v}",
+        "upd_new_title": "发现新版本",
+        "upd_new_msg": "当前版本: v{cur}\n最新版本: v{new} ({name})\n\n是否立即更新？（将下载并替换当前程序）",
+        "upd_failed": "检查失败: {e}",
     },
     "en": {
         "win_title": "YouBoard · Clipboard History", "brand_sub": "Clipboard History",
@@ -430,6 +447,16 @@ STRINGS = {
         "cli_history_file": "History file: {path}",
         "cli_ctrl_c": "Press Ctrl+C to stop",
         "cli_stopped": "Stopped",
+        "tray_show": "Show YouBoard",
+        "tray_quit": "Quit",
+        "set_hotkey_title": "HOTKEY",
+        "set_hotkey_desc": "Press shortcut to show/hide YouBoard (e.g. alt+q, ctrl+shift+v)",
+        "set_check_update": "Check Update",
+        "upd_title": "检查更新 · Check Update",
+        "upd_latest": "已是最新版本 v{v}\nAlready on the latest version v{v}",
+        "upd_new_title": "发现新版本 · New Version",
+        "upd_new_msg": "当前版本: v{cur}\n最新版本: v{new} ({name})\n是否立即更新？（将下载并替换当前程序）\n\nCurrent: v{cur} → Latest: v{new} ({name})\nUpdate now? (Will download and replace the program)",
+        "upd_failed": "检查失败: {e}\nCheck failed: {e}",
     },
 }
 
@@ -668,6 +695,43 @@ class ImageLoader(QThread):
 
 
 # ===========================================================================
+# Global Hotkey (Python thread with own Win32 message loop)
+# ===========================================================================
+HOTKEY_ID = 0xB0AD
+
+
+class _HotkeyWorker(threading.Thread):
+    """Runs its own Win32 message loop, sets flag on WM_HOTKEY."""
+
+    def __init__(self, mods, vk):
+        super().__init__(daemon=True)
+        self._mods = mods
+        self._vk = vk
+        self.pressed = False
+        self._running = True
+
+    def run(self):
+        user32 = ctypes.windll.user32
+        user32.RegisterHotKey(None, HOTKEY_ID, self._mods, self._vk)
+        msg = ctypes.wintypes.MSG()
+        while self._running:
+            ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret <= 0:
+                break
+            if msg.message == 0x0312 and msg.wParam == HOTKEY_ID:
+                self.pressed = True
+        user32.UnregisterHotKey(None, HOTKEY_ID)
+
+    def stop(self):
+        self._running = False
+        try:
+            if self.ident:
+                ctypes.windll.user32.PostThreadMessageW(self.ident, 0x0012, 0, 0)
+        except Exception:
+            pass
+
+
+# ===========================================================================
 # YouBoardApp — Main Window
 # ===========================================================================
 class YouBoardApp(QMainWindow):
@@ -778,6 +842,9 @@ class YouBoardApp(QMainWindow):
                 border: none;
                 border-radius: 0;
             }}
+            QLabel {{
+                background: transparent;
+            }}
         """)
         hl = QHBoxLayout(header)
         hl.setContentsMargins(18, 12, 18, 10)
@@ -796,10 +863,10 @@ class YouBoardApp(QMainWindow):
         brand_row = QHBoxLayout()
         name_lbl = QLabel(APP_NAME)
         name_lbl.setFont(QFont("Bahnschrift", 17, QFont.Weight.Bold))
-        name_lbl.setStyleSheet(f"color: {C['TEXT']};")
+        name_lbl.setStyleSheet(f"color: {C['TEXT']}; background: transparent;")
         brand_row.addWidget(name_lbl)
         sub_lbl = QLabel(tr("brand_sub"))
-        sub_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px;")
+        sub_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px; background: transparent;")
         brand_row.addWidget(sub_lbl)
         brand_row.addStretch()
         brand_box.addLayout(brand_row)
@@ -808,8 +875,10 @@ class YouBoardApp(QMainWindow):
         self._dot_lbl.setFixedSize(8, 8)
         self._dot_lbl.setStyleSheet(f"background: {C['SUCCESS']}; border-radius: 4px;")
         sub_row.addWidget(self._dot_lbl)
-        tag_lbl = QLabel("  CLIPBOARD HISTORY")
-        tag_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px; letter-spacing: 2px;")
+        tag_lbl = QLabel("CLIPBOARD HISTORY")
+        tag_lbl.setStyleSheet(
+            f"color: {C['TEXT_MUTED']}; font-size: 9px; letter-spacing: 2px; "
+            f"background: rgba(128,128,128,20); border-radius: 3px; padding: 1px 6px;")
         sub_row.addWidget(tag_lbl)
         sub_row.addStretch()
         brand_box.addLayout(sub_row)
@@ -817,10 +886,10 @@ class YouBoardApp(QMainWindow):
         hl.addStretch()
 
         self._monitor_lbl = QLabel(tr("monitor_live") if self.monitor else tr("monitor_off"))
-        self._monitor_lbl.setStyleSheet(f"color: {C['SUCCESS']}; font-size: 11px;")
+        self._monitor_lbl.setStyleSheet(f"color: {C['SUCCESS']}; font-size: 11px; background: transparent;")
         hl.addWidget(self._monitor_lbl)
         self._header_count = QLabel(tr("total_records", n=0))
-        self._header_count.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px;")
+        self._header_count.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px; background: transparent;")
         hl.addWidget(self._header_count)
 
         settings_btn = QPushButton(tr("settings_btn"))
@@ -876,6 +945,10 @@ class YouBoardApp(QMainWindow):
                 self._bg_resize_timer.setSingleShot(True)
                 self._bg_resize_timer.timeout.connect(self._scale_bg)
                 self._bg_resize_timer.start(200)
+        # Re-render preview image on resize (label's own resizeEvent also handles this)
+        if hasattr(self, '_cached_qpixmap') and self._cached_qpixmap and not self._cached_qpixmap.isNull():
+            self._last_render_key = None
+            self._render_preview_image()
 
     # ------------------------------------------------------------------
     # Tab construction
@@ -1046,18 +1119,18 @@ class YouBoardApp(QMainWindow):
     def _build_statusbar(self, root):
         bar = QFrame()
         bar.setFixedHeight(34)
-        bar.setStyleSheet(f"background: {C['PANEL_ALPHA']}; border-top: 1px solid {C['BORDER']};")
+        bar.setStyleSheet("background: transparent; border: none;")
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(12, 0, 12, 0)
         self._hint_lbl = QLabel()
-        self._hint_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
+        self._hint_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px; background: transparent;")
         bl.addWidget(self._hint_lbl)
         bl.addStretch()
         self._sel_lbl = QLabel()
-        self._sel_lbl.setStyleSheet(f"color: {C['ACCENT']}; font-size: 12px; font-weight: bold;")
+        self._sel_lbl.setStyleSheet(f"color: {C['ACCENT']}; font-size: 12px; font-weight: bold; background: transparent;")
         bl.addWidget(self._sel_lbl)
         self._status_lbl = QLabel()
-        self._status_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px; font-weight: bold;")
+        self._status_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px; font-weight: bold; background: transparent;")
         bl.addWidget(self._status_lbl)
         root.addWidget(bar)
 
@@ -1342,7 +1415,7 @@ class YouBoardApp(QMainWindow):
         if self._status_timer:
             self._status_timer.stop()
         color = {"ok": C['SUCCESS'], "err": C['DANGER'], "warn": C['AMBER']}.get(kind, C['TEXT_SEC'])
-        self._status_lbl.setStyleSheet(f"color: {color}; font-size: 12px; font-weight: bold;")
+        self._status_lbl.setStyleSheet(f"color: {color}; font-size: 12px; font-weight: bold; background: transparent;")
         self._status_lbl.setText(msg)
         self._status_timer = QTimer()
         self._status_timer.setSingleShot(True)
@@ -1478,8 +1551,18 @@ class YouBoardApp(QMainWindow):
         thumb_path = os.path.join(os.path.dirname(img_path), "thumb_" + os.path.basename(img_path))
         self._preview_img_lbl = QLabel()
         self._preview_img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_img_lbl.setScaledContents(False)
+        self._preview_img_lbl.setMinimumSize(100, 80)
+        self._preview_img_lbl.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._preview_img_lbl.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._preview_img_lbl.mouseDoubleClickEvent = lambda e: self._open_selected()
+        # Real-time rescale when label itself resizes (splitter drag / window resize)
+        _orig_lbl_resize = self._preview_img_lbl.resizeEvent
+        def _lbl_resized(ev, _orig=_orig_lbl_resize):
+            _orig(ev)
+            self._last_render_key = None
+            self._render_preview_image()
+        self._preview_img_lbl.resizeEvent = _lbl_resized
         self._preview_layout.addWidget(self._preview_img_lbl, 1)
         if not os.path.exists(img_path):
             self._cur_image_path = None
@@ -1521,31 +1604,36 @@ class YouBoardApp(QMainWindow):
         self._cached_pil = img
         self._cached_path = path
         self._last_render_key = None
+        # Convert to full-res QPixmap once; subsequent resizes use fast QPixmap.scaled()
+        try:
+            rgba = img.convert("RGBA")
+            data = rgba.tobytes("raw", "RGBA")
+            qimg = QImage(data, rgba.width, rgba.height,
+                          rgba.width * 4, QImage.Format.Format_RGBA8888).copy()
+            self._cached_qpixmap = QPixmap.fromImage(qimg)
+        except Exception:
+            self._cached_qpixmap = None
         self._render_preview_image()
 
     def _render_preview_image(self):
-        if not self._cached_pil or not self._cur_image_path:
-            return
         if not hasattr(self, '_preview_img_lbl'):
             return
-        max_w = max(40, self._preview_inner.width() - 24)
-        max_h = max(40, self._preview_inner.height() - 70)
-        key = (self._cur_image_path, max_w, max_h)
+        pm = getattr(self, '_cached_qpixmap', None)
+        if pm is None or pm.isNull():
+            return
+        lbl_w = self._preview_img_lbl.width()
+        lbl_h = self._preview_img_lbl.height()
+        if lbl_w < 10 or lbl_h < 10:
+            lbl_w = max(40, self._preview_inner.width() - 24)
+            lbl_h = max(40, self._preview_inner.height() - 70)
+        key = (self._cur_image_path, lbl_w, lbl_h)
         if key == self._last_render_key:
             return
         self._last_render_key = key
-        try:
-            src = self._cached_pil
-            ratio = min(max_w / src.width, max_h / src.height, 1.0)
-            nw, nh = max(1, int(src.width * ratio)), max(1, int(src.height * ratio))
-            resized = src if ratio >= 1.0 else src.resize((nw, nh), PILImage.LANCZOS)
-            mode = "RGBA" if resized.mode == "RGBA" else "RGB"
-            data = resized.tobytes("raw", mode)
-            qimg = QImage(data, resized.width, resized.height,
-                          QImage.Format.Format_RGBA8888 if mode == "RGBA" else QImage.Format.Format_RGB888)
-            self._preview_img_lbl.setPixmap(QPixmap.fromImage(qimg))
-        except Exception:
-            pass
+        scaled = pm.scaled(lbl_w, lbl_h,
+                           Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+        self._preview_img_lbl.setPixmap(scaled)
 
     def _preview_files(self, entry):
         self._preview_gen += 1
@@ -1911,7 +1999,36 @@ class YouBoardApp(QMainWindow):
     # Monitor integration
     # ------------------------------------------------------------------
     def _poll_monitor(self):
+        changed = False
         if self.monitor and self.monitor.consume_change():
+            changed = True
+        else:
+            # Fallback: direct clipboard text comparison (in case monitor thread died)
+            try:
+                import pyperclip
+                txt = pyperclip.paste()
+                if txt and txt.strip():
+                    if not hasattr(self, '_last_poll_text'):
+                        self._last_poll_text = txt
+                    elif txt != self._last_poll_text:
+                        self._last_poll_text = txt
+                        if not self.store.is_self_copy():
+                            # Directly add to store
+                            from youboard_core import URL_PATTERN
+                            urls = URL_PATTERN.findall(txt)
+                            stripped = URL_PATTERN.sub('', txt).strip()
+                            if urls and not stripped:
+                                for u in urls:
+                                    self.store.add_url(u)
+                            else:
+                                self.store.add_text(txt)
+                                if urls:
+                                    for u in urls:
+                                        self.store.add_url(u)
+                            changed = True
+            except Exception:
+                pass
+        if changed:
             self._on_clip_changed()
 
     def _on_clip_changed(self):
@@ -1936,7 +2053,7 @@ class YouBoardApp(QMainWindow):
             self._dot_phase = (self._dot_phase + 1) % len(frames)
             color = frames[self._dot_phase]
             self._monitor_lbl.setText(tr("monitor_live"))
-            self._monitor_lbl.setStyleSheet(f"color: {C['SUCCESS']}; font-size: 11px;")
+            self._monitor_lbl.setStyleSheet(f"color: {C['SUCCESS']}; font-size: 11px; background: transparent;")
         else:
             color = C['TEXT_MUTED']
             self._monitor_lbl.setText(tr("monitor_off"))
@@ -1964,6 +2081,9 @@ class YouBoardApp(QMainWindow):
         if cfg.get("theme", "dark") != theme:
             cfg["theme"] = theme
             need_restart = True
+        # Re-register hotkey if it changed (takes effect immediately)
+        self._unregister_hotkey()
+        self._register_hotkey()
         if need_restart:
             # Save window state so it persists across restart
             geo = self.geometry()
@@ -1971,29 +2091,38 @@ class YouBoardApp(QMainWindow):
             cfg["win_maximized"] = self.isMaximized()
             save_config(cfg)
             self.restart_flag = True
+            self._restarting = True
             self.close()
 
     # ------------------------------------------------------------------
     # Cleanup / tray / fade-in
     # ------------------------------------------------------------------
     def closeEvent(self, event):
-        self._real_quit()
-        event.accept()
-
-    def _real_quit(self):
+        """X = quit the app."""
+        self._unregister_hotkey()
         if self.monitor:
             self.monitor.stop()
         if hasattr(self, '_tray') and self._tray:
             self._tray.hide()
+        event.accept()
+
+    def _real_quit(self):
+        if hasattr(self, '_unregister_hotkey'):
+            self._unregister_hotkey()
+        if self.monitor:
+            self.monitor.stop()
+        if hasattr(self, '_tray') and self._tray:
+            self._tray.hide()
+        QApplication.quit()
 
     def run(self):
         """Show window with tray icon and fade-in animation."""
         # System tray
         self._tray = QSystemTrayIcon(QIcon(LOGO_ICO) if LOGO_ICO else QIcon(), self)
         tray_menu = QMenu()
-        show_act = QAction("Show YouBoard", self)
+        show_act = QAction(tr("tray_show"), self)
         show_act.triggered.connect(self._tray_show)
-        quit_act = QAction("Quit", self)
+        quit_act = QAction(tr("tray_quit"), self)
         quit_act.triggered.connect(self._tray_quit)
         tray_menu.addAction(show_act)
         tray_menu.addSeparator()
@@ -2002,9 +2131,99 @@ class YouBoardApp(QMainWindow):
         self._tray.setToolTip("YouBoard v" + APP_VERSION)
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.show()
+        # Register global hotkey
+        self._register_hotkey()
         # Fade-in animation
         self._fade_in()
         self.show()
+
+    # ---- Global Hotkey ----
+    HOTKEY_ID = 0xB0AD
+    WM_HOTKEY = 0x0312
+
+    def _register_hotkey(self):
+        """Register global hotkey using keyboard library (reliable) or Win32 fallback."""
+        cfg = load_config()
+        hk = cfg.get("hotkey", "alt+q")
+        if HAS_KEYBOARD:
+            try:
+                # keyboard library uses same format: 'win+f8', 'ctrl+alt+q', etc.
+                self._hk_hotkey_name = _keyboard_lib.add_hotkey(hk, self._on_hotkey_threadsafe, suppress=True)
+                self._hotkey_registered = True
+                return
+            except Exception:
+                pass
+        # Fallback: Win32 thread approach
+        mods, vk = self._parse_hotkey(hk)
+        self._hk_worker = _HotkeyWorker(mods, vk)
+        self._hk_worker.start()
+        self._hotkey_registered = True
+        # Poll the worker's flag
+        self._hk_timer = QTimer(self)
+        self._hk_timer.timeout.connect(self._poll_hk_flag)
+        self._hk_timer.start(50)
+
+    def _on_hotkey_threadsafe(self):
+        """Called from keyboard library's thread; marshal to Qt main thread via QTimer."""
+        QTimer.singleShot(0, self._on_hotkey)
+
+    def _poll_hk_flag(self):
+        if hasattr(self, '_hk_worker') and self._hk_worker.pressed:
+            self._hk_worker.pressed = False
+            self._on_hotkey()
+
+    def _unregister_hotkey(self):
+        if hasattr(self, '_hk_timer'):
+            self._hk_timer.stop()
+        if hasattr(self, '_hk_worker') and self._hk_worker:
+            self._hk_worker.stop()
+            self._hk_worker = None
+        # Clean up keyboard library hook
+        if HAS_KEYBOARD and hasattr(self, '_hk_hotkey_name'):
+            try:
+                _keyboard_lib.remove_hotkey(self._hk_hotkey_name)
+            except Exception:
+                pass
+            del self._hk_hotkey_name
+
+    @staticmethod
+    def _parse_hotkey(hk_str):
+        """Parse hotkey string like 'alt+q' into (modifiers, vk_code)."""
+        MOD_ALT = 0x0001
+        MOD_CTRL = 0x0002
+        MOD_SHIFT = 0x0004
+        MOD_WIN = 0x0008
+        parts = hk_str.lower().replace(" ", "").split("+")
+        mods = 0
+        vk = 0
+        for p in parts:
+            if p == "alt":
+                mods |= MOD_ALT
+            elif p in ("ctrl", "control"):
+                mods |= MOD_CTRL
+            elif p == "shift":
+                mods |= MOD_SHIFT
+            elif p in ("win", "super"):
+                mods |= MOD_WIN
+            elif len(p) == 1 and p.isalpha():
+                vk = ord(p.upper())
+            elif len(p) == 1 and p.isdigit():
+                vk = ord(p)  # '0'=0x30, '1'=0x31, etc.
+            elif p.startswith("f") and p[1:].isdigit():
+                vk = 0x70 + int(p[1:]) - 1  # F1=0x70
+        if vk == 0:
+            vk = ord("Q")  # default
+            mods = MOD_ALT
+        return mods, vk
+
+    def _on_hotkey(self):
+        """Toggle window visibility on hotkey press."""
+        if self.isVisible() and not self.isMinimized():
+            self.hide()
+        else:
+            self.showNormal()
+            self.activateWindow()
+            self.raise_()
 
     def _tray_show(self):
         self.showNormal()
@@ -2033,6 +2252,152 @@ class YouBoardApp(QMainWindow):
 
 
 # ===========================================================================
+# Hotkey Capture Widget
+# ===========================================================================
+class HotkeyCapture(QPushButton):
+    """Click to record, then press a key combo to set the global hotkey."""
+
+    def __init__(self, hotkey_str="alt+q", parent=None):
+        super().__init__(parent)
+        self._hotkey = hotkey_str
+        self._recording = False
+        self.setFixedWidth(120)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._update_display()
+
+    def _update_display(self):
+        if self._recording:
+            self.setText("请按下快捷键...")
+            self.setStyleSheet(f"background: {C['ACCENT_DIM']}; color: {C['ACCENT']}; "
+                               f"border: 2px solid {C['ACCENT']}; border-radius: 6px; padding: 6px;")
+        else:
+            self.setText(self._hotkey.upper().replace("+", " + "))
+            self.setStyleSheet(f"background: {C['SURFACE2']}; color: {C['TEXT']}; "
+                               f"border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 6px;")
+
+    def mousePressEvent(self, event):
+        self._recording = True
+        self._update_display()
+        self.setFocus()
+
+    def keyPressEvent(self, event):
+        if not self._recording:
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        if key in (Qt.Key.Key_Alt, Qt.Key.Key_Control, Qt.Key.Key_Shift,
+                   Qt.Key.Key_Meta, Qt.Key.Key_AltGr):
+            return
+        mods = event.modifiers()
+        parts = []
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            parts.append("ctrl")
+        if mods & Qt.KeyboardModifier.AltModifier:
+            parts.append("alt")
+        if mods & Qt.KeyboardModifier.ShiftModifier:
+            parts.append("shift")
+        if mods & Qt.KeyboardModifier.MetaModifier:
+            parts.append("win")
+        # Get key name
+        if Qt.Key.Key_F1 <= key <= Qt.Key.Key_F12:
+            parts.append(f"f{key - Qt.Key.Key_F1 + 1}")
+        elif key == Qt.Key.Key_Escape:
+            self._recording = False
+            self._update_display()
+            return
+        elif Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+            parts.append(str(key - Qt.Key.Key_0))
+        elif Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+            parts.append(chr(key - Qt.Key.Key_A + ord('a')))
+        else:
+            # Fallback: use QKeySequence to get readable name
+            name = QKeySequence(key).toString().lower()
+            if name and len(name) <= 12:
+                parts.append(name)
+            else:
+                txt = event.text().lower()
+                if txt and txt.isprintable():
+                    parts.append(txt)
+                else:
+                    self._recording = False
+                    self._update_display()
+                    return
+        self._hotkey = "+".join(parts)
+        self._recording = False
+        self._conflict = self._check_conflict(self._hotkey)
+        self._update_display()
+
+    @staticmethod
+    def _check_conflict(hotkey_str):
+        """Detect if the combo is already in use (system-level + RegisterHotKey test)."""
+        # Known Windows system reserved shortcuts that RegisterHotKey can't detect
+        _SYSTEM_RESERVED = {
+            "win+l", "win+e", "win+d", "win+i", "win+r", "win+x", "win+a",
+            "win+n", "win+s", "win+tab", "win+b", "win+g", "win+h", "win+k",
+            "win+m", "win+p", "win+t", "win+u", "win+v", "win+w", "win+.",
+            "win+space", "win+shift+s", "win+shift+m", "win+ctrl+d",
+            "win+ctrl+f4", "win+ctrl+left", "win+ctrl+right",
+            "ctrl+alt+del", "ctrl+shift+esc", "alt+f4", "alt+tab", "alt+esc",
+        }
+        normalized = hotkey_str.lower().replace(" ", "")
+        # Sort parts for consistent comparison
+        parts = sorted(normalized.split("+"))
+        normalized_sorted = "+".join(parts)
+        for reserved in _SYSTEM_RESERVED:
+            r_parts = sorted(reserved.split("+"))
+            if "+".join(r_parts) == normalized_sorted:
+                return True
+        # Also try RegisterHotKey to detect app-level conflicts
+        try:
+            user32 = ctypes.windll.user32
+            parts = hotkey_str.lower().split("+")
+            mods = 0
+            vk = 0
+            for p in parts:
+                if p == "alt": mods |= 0x0001
+                elif p in ("ctrl", "control"): mods |= 0x0002
+                elif p == "shift": mods |= 0x0004
+                elif p in ("win", "super"): mods |= 0x0008
+                elif len(p) == 1 and p.isalpha(): vk = ord(p.upper())
+                elif len(p) == 1 and p.isdigit(): vk = ord(p)
+                elif p.startswith("f") and p[1:].isdigit(): vk = 0x70 + int(p[1:]) - 1
+            if vk == 0:
+                return False
+            TEST_ID = 0xB0AE
+            user32.UnregisterHotKey(None, TEST_ID)
+            ok = user32.RegisterHotKey(None, TEST_ID, mods, vk)
+            if ok:
+                user32.UnregisterHotKey(None, TEST_ID)
+                return False
+            return True
+        except Exception:
+            return False
+
+    def _update_display(self):
+        if self._recording:
+            self.setText("请按下快捷键...")
+            self.setStyleSheet(f"background: {C['ACCENT_DIM']}; color: {C['ACCENT']}; "
+                               f"border: 2px solid {C['ACCENT']}; border-radius: 6px; padding: 6px;")
+        elif getattr(self, '_conflict', False):
+            self.setText(self._hotkey.upper().replace("+", " + ") + "  ⚠已占用")
+            self.setStyleSheet(f"background: {C['SURFACE2']}; color: {C['DANGER']}; "
+                               f"border: 2px solid {C['DANGER']}; border-radius: 6px; padding: 6px;")
+        else:
+            self.setText(self._hotkey.upper().replace("+", " + "))
+            self.setStyleSheet(f"background: {C['SURFACE2']}; color: {C['TEXT']}; "
+                               f"border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 6px;")
+
+    def get_hotkey(self):
+        return self._hotkey
+
+    def focusOutEvent(self, event):
+        if self._recording:
+            self._recording = False
+            self._update_display()
+        super().focusOutEvent(event)
+
+
+# ===========================================================================
 # Settings Dialog
 # ===========================================================================
 class SettingsDialog(QDialog):
@@ -2041,7 +2406,8 @@ class SettingsDialog(QDialog):
         super().__init__(app)
         self.app = app
         self.setWindowTitle(tr("settings_title"))
-        self.setFixedSize(480, 620)
+        self.resize(480, 620)
+        self.setMinimumSize(420, 500)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
@@ -2122,6 +2488,21 @@ class SettingsDialog(QDialog):
         auto_row.addWidget(self._auto_cb)
         self._lay.addLayout(auto_row)
 
+        # Hotkey row
+        hk_row = QHBoxLayout()
+        hk_txt = QVBoxLayout()
+        hk_title = QLabel(tr("set_hotkey_title"))
+        hk_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        hk_desc = QLabel(tr("set_hotkey_desc"))
+        hk_desc.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
+        hk_desc.setWordWrap(True)
+        hk_txt.addWidget(hk_title)
+        hk_txt.addWidget(hk_desc)
+        hk_row.addLayout(hk_txt, 1)
+        self._hotkey_edit = HotkeyCapture(cfg.get("hotkey", "alt+q"))
+        hk_row.addWidget(self._hotkey_edit)
+        self._lay.addLayout(hk_row)
+
         # Theme card
         self._card(tr("set_theme"))
         theme_row = QHBoxLayout()
@@ -2164,6 +2545,10 @@ class SettingsDialog(QDialog):
         data_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px; font-family: Consolas;")
         data_lbl.setWordWrap(True)
         self._lay.addWidget(data_lbl)
+        update_btn = QPushButton(tr("set_check_update"))
+        update_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        update_btn.clicked.connect(self._check_update)
+        self._lay.addWidget(update_btn)
         self._lay.addStretch()
 
         # Footer buttons
@@ -2234,10 +2619,88 @@ class SettingsDialog(QDialog):
         old_bg = cfg.get("bg_image", "")
         bg_changed = (old_bg != self._bg_path)
         cfg["bg_image"] = self._bg_path
+        cfg["hotkey"] = self._hotkey_edit.get_hotkey() or "alt+q"
         save_config(cfg)
         self.accept()
         self.app.apply_settings(self._lang_sel, self._auto_cb.isChecked(),
                                 self._theme_sel, bg_changed)
+
+    def _check_update(self):
+        """Check GitHub Releases and auto-update by downloading + replacing EXE."""
+        import urllib.request
+        import json as _json
+        try:
+            url = "https://api.github.com/repos/cloudxys/YouBoard/releases/latest"
+            req = urllib.request.Request(url, headers={"User-Agent": "YouBoard"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = _json.loads(resp.read().decode())
+            tag = data.get("tag_name", "").lstrip("v")
+            name = data.get("name", tag)
+            # Only update if remote version is actually newer
+            def _ver_tuple(v):
+                try:
+                    return tuple(int(x) for x in v.split(".")[:3])
+                except (ValueError, AttributeError):
+                    return (0,)
+            if not tag or _ver_tuple(tag) <= _ver_tuple(APP_VERSION):
+                QMessageBox.information(self, tr("upd_title"), tr("upd_latest", v=APP_VERSION))
+                return
+            # Find the portable EXE asset
+            assets = data.get("assets", [])
+            dl_url = None
+            for a in assets:
+                if a["name"] == "YouBoard.exe":
+                    dl_url = a["browser_download_url"]
+                    break
+            if not dl_url:
+                html_url = data.get("html_url", "https://github.com/cloudxys/YouBoard/releases")
+                import webbrowser
+                webbrowser.open(html_url)
+                return
+            ret = QMessageBox.question(
+                self, tr("upd_new_title"),
+                tr("upd_new_msg", cur=APP_VERSION, new=tag, name=name),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+            # Download new EXE
+            self._do_update(dl_url)
+        except Exception as e:
+            QMessageBox.warning(self, tr("upd_title"), tr("upd_failed", e=e))
+
+    def _do_update(self, dl_url):
+        """Download new EXE and replace current one via batch script."""
+        import urllib.request
+        import tempfile
+        try:
+            # Determine current EXE path
+            if getattr(sys, "frozen", False):
+                current_exe = os.path.abspath(sys.executable)
+            else:
+                current_exe = os.path.abspath(sys.argv[0])
+            exe_dir = os.path.dirname(current_exe)
+            tmp_exe = os.path.join(exe_dir, "_YouBoard_update.exe")
+            # Download
+            QMessageBox.information(self, "更新", "正在下载新版本，请稍候...")
+            urllib.request.urlretrieve(dl_url, tmp_exe)
+            # Create batch script to replace and restart
+            bat_path = os.path.join(exe_dir, "_update.bat")
+            bat_content = f"""@echo off
+timeout /t 2 /nobreak >nul
+del /f "{current_exe}"
+move /y "{tmp_exe}" "{current_exe}"
+start "" "{current_exe}"
+del "%~f0"
+"""
+            with open(bat_path, "w", encoding="utf-8") as f:
+                f.write(bat_content)
+            # Launch batch and exit
+            import subprocess
+            subprocess.Popen(["cmd.exe", "/c", bat_path],
+                             creationflags=0x00000008)  # DETACHED_PROCESS
+            self.app._real_quit()
+        except Exception as e:
+            QMessageBox.warning(self, "更新失败", f"下载或替换失败: {e}")
 
 
 # ===========================================================================
@@ -2386,6 +2849,9 @@ def main():
     monitor.start()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    # Set app-level icon for correct taskbar display
+    if LOGO_ICO and os.path.exists(LOGO_ICO):
+        app.setWindowIcon(QIcon(LOGO_ICO))
     try:
         restart = True
         while restart:
@@ -2403,4 +2869,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        log_path = os.path.join(os.path.dirname(os.path.abspath(
+            sys.executable if getattr(sys, "frozen", False) else __file__)),
+            "youboard_error.log")
+        with open(log_path, "w", encoding="utf-8") as f:
+            traceback.print_exc(file=f)
+        # Also show a message box if possible
+        try:
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            app = QApplication.instance() or QApplication(sys.argv)
+            QMessageBox.critical(None, "YouBoard Error",
+                                 f"启动失败，详见:\n{log_path}\n\n{traceback.format_exc()[-500:]}")
+        except Exception:
+            pass
