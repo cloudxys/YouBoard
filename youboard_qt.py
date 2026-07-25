@@ -852,8 +852,9 @@ class YouBoardApp(QMainWindow):
 
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             logo_lbl = QLabel()
-            pm = QPixmap(LOGO_ICO).scaled(36, 36, Qt.AspectRatioMode.KeepAspectRatio,
-                                          Qt.TransformationMode.SmoothTransformation)
+            pm = QIcon(LOGO_ICO).pixmap(QSize(48, 48)).scaled(
+                36, 36, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
             logo_lbl.setPixmap(pm)
             logo_lbl.setStyleSheet("background: transparent;")
             hl.addWidget(logo_lbl)
