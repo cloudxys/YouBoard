@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-YouBoard v1.5.0 — 剪贴板历史管理器 / Clipboard History Manager
+YouBoard v1.7.0 — 剪贴板历史管理器 / Clipboard History Manager
 PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系统托盘。
 """
 
@@ -32,7 +32,7 @@ except Exception:
     except Exception:
         pass
 
-APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.6"
+APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.7"
 try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
 except Exception:
@@ -89,12 +89,29 @@ from youboard_core import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.7.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
 PREVIEW_MAX = 1600
 TAB_ICONS = {"text": "\u270e", "image": "\u25a3", "file": "\u25a0", "url": "\u25c9"}
+
+
+def _res_icon(name):
+    """Return absolute path for an icon in the res/ folder."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        p = os.path.join(base, "res", name)
+        if os.path.exists(p):
+            return p
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(here, "res", name)
+
+
+ICO_MIN = _res_icon("zuixiao.ico")
+ICO_MAX = _res_icon("zuida.ico")
+ICO_RESTORE = _res_icon("zuidahuifu.ico")
+ICO_CLOSE = _res_icon("guanbi.ico")
 
 # ===========================================================================
 # Theme colors
@@ -232,7 +249,7 @@ STRINGS = {
         "count_shown": "显示 {shown} / {total} 条 · 置顶 {pinned}",
         "count_match": "匹配 {n} 条", "selected_n": "已选 {n} 项", "no_ext": "无后缀",
         "hint_text": "Enter/双击 复制 · Space 置顶 · Del 删除 · Ctrl+A 全选 · F5 刷新",
-        "hint_image": "双击 用默认看图打开 · Enter 复制图片 · Ctrl+O 打开 · Ctrl+E 导出",
+        "hint_image": "Enter 复制图片 · Ctrl+O 打开 · Ctrl+E 导出",
         "hint_file": "双击 打开文件 · Enter 复制文件 · Ctrl+O 打开 · 右键查看更多",
         "hint_url": "双击/Enter 在浏览器打开 · Space 置顶 · Del 删除 · Ctrl+A 全选",
         "st_refreshed": "已刷新", "st_captured": "捕获到新的剪贴板内容",
@@ -268,7 +285,7 @@ STRINGS = {
         "preview_truncated": "\n\n…（内容过长，已截断显示）",
         "chip_chars": " {n} 字符 ", "chip_lines": " {n} 行 ",
         "preview_unavailable": "（预览不可用）",
-        "preview_dblclick_viewer": "双击用看图软件打开",
+        "preview_dblclick_viewer": "双击用默认看图软件打开",
         "preview_dblclick_url": "双击在浏览器中打开",
         "chip_files": " {n} 个文件 ", "preview_dblclick_open": "双击打开文件",
         "dlg_error": "错误", "dlg_info": "提示",
@@ -356,7 +373,7 @@ STRINGS = {
         "count_shown": "Showing {shown} / {total} · {pinned} pinned",
         "count_match": "{n} matched", "selected_n": "{n} selected", "no_ext": "no ext",
         "hint_text": "Enter/double-click copy · Space pin · Del delete · Ctrl+A select all · F5 refresh",
-        "hint_image": "Double-click open in viewer · Enter copy image · Ctrl+O open · Ctrl+E export",
+        "hint_image": "Enter copy image · Ctrl+O open · Ctrl+E export",
         "hint_file": "Double-click open file · Enter copy files · Ctrl+O open · Right-click for more",
         "hint_url": "Double-click/Enter open in browser · Space pin · Del delete · Ctrl+A select all",
         "st_refreshed": "Refreshed", "st_captured": "New clipboard content captured",
@@ -393,7 +410,7 @@ STRINGS = {
         "preview_truncated": "\n\n…(content too long, truncated)",
         "chip_chars": " {n} chars ", "chip_lines": " {n} lines ",
         "preview_unavailable": "(Preview unavailable)",
-        "preview_dblclick_viewer": "Double-click to open in viewer",
+        "preview_dblclick_viewer": "Double-click to open with default viewer",
         "preview_dblclick_url": "Double-click to open in browser",
         "chip_files": " {n} files ", "preview_dblclick_open": "Double-click to open file",
         "dlg_error": "Error", "dlg_info": "Notice",
@@ -626,7 +643,7 @@ class AmbientLightBar(QWidget):
         w = self.width()
         if w < 20:
             return
-        n = max(8, w // self.SEG_W)
+        n = max(8, (w + self.SEG_W - 1) // self.SEG_W)
         t = time.perf_counter() - self._t0
         # Breathing: ~4.2s period
         breath = 0.5 + 0.5 * math.sin(t * 2.0 * math.pi / 4.2)
@@ -732,12 +749,283 @@ class _HotkeyWorker(threading.Thread):
 
 
 # ===========================================================================
+# Edge Resize Handles (thin strips along window edges)
+# ===========================================================================
+class _EdgeHandle(QWidget):
+    """Transparent strip along a window edge for resize with cursor feedback."""
+    THICKNESS = 6
+
+    def __init__(self, parent_window, edge):
+        """edge: 'left', 'right', 'top', 'bottom'"""
+        super().__init__(parent_window)
+        self._win = parent_window
+        self._edge = edge
+        self._dragging = False
+        self._start_pos = None
+        self._start_geo = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent;")
+        if edge in ('left', 'right'):
+            self.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
+            self.setFixedWidth(self.THICKNESS)
+        else:
+            self.setCursor(QCursor(Qt.CursorShape.SizeVerCursor))
+            self.setFixedHeight(self.THICKNESS)
+        self.raise_()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and not self._win.isMaximized():
+            self._dragging = True
+            self._start_pos = event.globalPosition().toPoint()
+            self._start_geo = self._win.geometry()
+            self.grabMouse()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging or not self._start_pos:
+            return
+        delta = event.globalPosition().toPoint() - self._start_pos
+        geo = self._start_geo
+        x, y, w, h = geo.x(), geo.y(), geo.width(), geo.height()
+        min_w, min_h = self._win.minimumWidth(), self._win.minimumHeight()
+        if self._edge == 'left':
+            new_w = w - delta.x()
+            if new_w >= min_w:
+                self._win.setGeometry(geo.x() + delta.x(), y, new_w, h)
+        elif self._edge == 'right':
+            self._win.resize(max(min_w, w + delta.x()), h)
+        elif self._edge == 'top':
+            new_h = h - delta.y()
+            if new_h >= min_h:
+                self._win.setGeometry(x, geo.y() + delta.y(), w, new_h)
+        elif self._edge == 'bottom':
+            self._win.resize(w, max(min_h, h + delta.y()))
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging:
+            self.releaseMouse()
+        self._dragging = False
+        self._start_pos = None
+
+
+# ===========================================================================
+# Resize Grip (bottom-right corner visual indicator)
+# ===========================================================================
+class _ResizeGrip(QWidget):
+    """Small grip icon in the bottom-right corner indicating resizable edges."""
+    SIZE = 18
+
+    def __init__(self, parent_window):
+        super().__init__(parent_window)
+        self._win = parent_window
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.setCursor(QCursor(Qt.CursorShape.SizeFDiagCursor))
+        self._dragging = False
+        self._start_pos = None
+        self._start_geo = None
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Draw 3 diagonal dots (classic resize grip pattern)
+        color = QColor(160, 165, 180, 140)
+        s = self.SIZE
+        for i in range(3):
+            offset = 4 + i * 5
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(color)
+            p.drawEllipse(s - offset - 1, s - offset - 1, 3, 3)
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._start_pos = event.globalPosition().toPoint()
+            self._start_geo = self._win.geometry()
+            self.grabMouse()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._dragging and self._start_pos:
+            delta = event.globalPosition().toPoint() - self._start_pos
+            new_w = max(self._win.minimumWidth(), self._start_geo.width() + delta.x())
+            new_h = max(self._win.minimumHeight(), self._start_geo.height() + delta.y())
+            self._win.resize(new_w, new_h)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging:
+            self.releaseMouse()
+        self._dragging = False
+        self._start_pos = None
+
+
+# ===========================================================================
+# Custom Title Bar (frameless window)
+# ===========================================================================
+class _TitleBar(QWidget):
+    """Custom title bar with animated gradient and window control buttons."""
+    HEIGHT = 32
+
+    def __init__(self, parent_window):
+        super().__init__()
+        self._win = parent_window
+        self._drag_pos = None
+        self.setFixedHeight(self.HEIGHT)
+        self._build()
+        # Shimmer animation timer
+        self._shimmer_offset = 0.0
+        self._shimmer_timer = QTimer(self)
+        self._shimmer_timer.timeout.connect(self._tick_shimmer)
+        self._shimmer_timer.start(50)
+
+    def _build(self):
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(10, 0, 0, 0)
+        lay.setSpacing(3)
+        # Icon
+        if LOGO_ICO and os.path.exists(LOGO_ICO):
+            ico_lbl = QLabel()
+            ico_lbl.setFixedSize(18, 18)
+            ico_lbl.setPixmap(QIcon(LOGO_ICO).pixmap(QSize(18, 18)))
+            ico_lbl.setStyleSheet("background: transparent;")
+            lay.addWidget(ico_lbl)
+        # Title
+        self._title_lbl = QLabel(APP_NAME)
+        self._title_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px; background: transparent;")
+        lay.addWidget(self._title_lbl)
+        lay.addStretch()
+        # Window buttons (icon-based)
+        btn_style_base = (
+            "border: none; border-radius: 4px; "
+            "min-width: 32px; max-width: 32px; min-height: 24px; max-height: 24px; "
+            "background: transparent;")
+        ico_size = QSize(14, 14)
+
+        self._min_btn = QPushButton()
+        self._min_btn.setIcon(QIcon(ICO_MIN))
+        self._min_btn.setIconSize(ico_size)
+        self._min_btn.setStyleSheet(btn_style_base)
+        self._min_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._min_btn.clicked.connect(self._win.showMinimized)
+        self._min_btn.enterEvent = lambda e: self._min_btn.setStyleSheet(
+            btn_style_base + "background: rgba(255,255,255,25);")
+        self._min_btn.leaveEvent = lambda e: self._min_btn.setStyleSheet(
+            btn_style_base + "background: transparent;")
+        lay.addWidget(self._min_btn)
+
+        self._max_btn = QPushButton()
+        self._max_btn.setIcon(QIcon(ICO_MAX))
+        self._max_btn.setIconSize(ico_size)
+        self._max_btn.setStyleSheet(btn_style_base)
+        self._max_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._max_btn.clicked.connect(self._toggle_max)
+        self._max_btn.enterEvent = lambda e: self._max_btn.setStyleSheet(
+            btn_style_base + "background: rgba(255,255,255,25);")
+        self._max_btn.leaveEvent = lambda e: self._max_btn.setStyleSheet(
+            btn_style_base + "background: transparent;")
+        lay.addWidget(self._max_btn)
+
+        self._close_btn = QPushButton()
+        self._close_btn.setIcon(QIcon(ICO_CLOSE))
+        self._close_btn.setIconSize(ico_size)
+        self._close_btn.setStyleSheet(btn_style_base)
+        self._close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._close_btn.clicked.connect(self._win.close)
+        self._close_btn.enterEvent = lambda e: self._close_btn.setStyleSheet(
+            btn_style_base + "background: #e04343;")
+        self._close_btn.leaveEvent = lambda e: self._close_btn.setStyleSheet(
+            btn_style_base + "background: transparent;")
+        lay.addWidget(self._close_btn)
+
+    def _toggle_max(self):
+        if self._win.isMaximized():
+            self._win.showNormal()
+            self._max_btn.setIcon(QIcon(ICO_MAX))
+        else:
+            self._win.showMaximized()
+            self._max_btn.setIcon(QIcon(ICO_RESTORE))
+        self._max_btn.repaint()
+        self.update()
+
+    def update_max_btn(self):
+        self._max_btn.setIcon(QIcon(ICO_RESTORE) if self._win.isMaximized() else QIcon(ICO_MAX))
+        self._max_btn.repaint()
+        self.update()
+
+    # --- Drag to move ---
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position().toPoint()
+            # Button area: just return, don't accept (let button receive the event)
+            if (self._min_btn.geometry().contains(pos) or
+                self._max_btn.geometry().contains(pos) or
+                self._close_btn.geometry().contains(pos)):
+                event.ignore()
+                return
+            self._drag_pos = event.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
+            if self._win.isMaximized():
+                # Un-maximize on drag
+                self._win.showNormal()
+                self._max_btn.setIcon(QIcon(ICO_MAX))
+                self._drag_pos = QPoint(int(self._win.width() / 2), int(self.HEIGHT / 2))
+            self._win.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+    def mouseDoubleClickEvent(self, event):
+        self._toggle_max()
+
+    # --- Animated shimmer ---
+    def _tick_shimmer(self):
+        self._shimmer_offset += 0.02
+        if self._shimmer_offset > 1.0:
+            self._shimmer_offset -= 1.0
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        # Vertical gradient background (dark, slightly lighter at top)
+        vgrad = QLinearGradient(0, 0, 0, h)
+        vgrad.setColorAt(0.0, QColor(28, 30, 38, 245))
+        vgrad.setColorAt(1.0, QColor(16, 17, 22, 250))
+        p.fillRect(self.rect(), vgrad)
+        # Moving shimmer with subtle blue-purple tint
+        x = int(self._shimmer_offset * w * 2 - w * 0.4)
+        sgrad = QLinearGradient(x, 0, x + w // 3, 0)
+        sgrad.setColorAt(0.0, QColor(120, 140, 255, 0))
+        sgrad.setColorAt(0.5, QColor(120, 140, 255, 14))
+        sgrad.setColorAt(1.0, QColor(180, 120, 255, 0))
+        p.fillRect(self.rect(), sgrad)
+        # Bottom accent line with shifting hue
+        hue = (self._shimmer_offset * 360) % 360
+        import colorsys
+        r, g, b = colorsys.hsv_to_rgb(hue / 360.0, 0.5, 0.7)
+        accent = QColor(int(r * 255), int(g * 255), int(b * 255), 60)
+        p.setPen(QPen(accent, 1))
+        p.drawLine(0, h - 1, w, h - 1)
+        p.end()
+
+
+# ===========================================================================
 # YouBoardApp — Main Window
 # ===========================================================================
 class YouBoardApp(QMainWindow):
 
     def __init__(self, store, monitor=None):
         super().__init__()
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.store = store
         self.monitor = monitor
         self._active_type = "text"
@@ -767,6 +1055,9 @@ class YouBoardApp(QMainWindow):
         self._bg_resize_timer = None
         self._image_loader = None
         self._fade_anim = None
+        self._resize_edge = 0
+        self._resize_start_geo = None
+        self._resize_start_pos = None
 
         self.setWindowTitle(tr("win_title"))
         self.resize(1180, 720)
@@ -802,8 +1093,11 @@ class YouBoardApp(QMainWindow):
         self._bg_label.lower()
 
         root = QVBoxLayout(central)
-        root.setContentsMargins(6, 0, 6, 6)
+        root.setContentsMargins(0, 0, 0, 6)
         root.setSpacing(0)
+        # Custom title bar (replaces native Windows title bar)
+        self._title_bar = _TitleBar(self)
+        root.addWidget(self._title_bar)
         self._build_header(root)
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -832,6 +1126,14 @@ class YouBoardApp(QMainWindow):
         self._tabs.blockSignals(False)
 
         self._build_statusbar(root)
+        # Resize grip icon (bottom-right corner)
+        self._resize_grip = _ResizeGrip(self)
+        self._resize_grip.raise_()
+        # Edge resize handles (thin strips with cursor feedback)
+        self._edge_left = _EdgeHandle(self, 'left')
+        self._edge_right = _EdgeHandle(self, 'right')
+        self._edge_top = _EdgeHandle(self, 'top')
+        self._edge_bottom = _EdgeHandle(self, 'bottom')
         self._bind_shortcuts()
 
     def _build_header(self, root):
@@ -945,11 +1247,140 @@ class YouBoardApp(QMainWindow):
                 self._bg_resize_timer = QTimer()
                 self._bg_resize_timer.setSingleShot(True)
                 self._bg_resize_timer.timeout.connect(self._scale_bg)
-                self._bg_resize_timer.start(200)
+                self._bg_resize_timer.start(30)
         # Re-render preview image on resize (label's own resizeEvent also handles this)
         if hasattr(self, '_cached_qpixmap') and self._cached_qpixmap and not self._cached_qpixmap.isNull():
             self._last_render_key = None
             self._render_preview_image()
+        # Reposition resize grip to bottom-right corner
+        if hasattr(self, '_resize_grip'):
+            if self.isMaximized():
+                self._resize_grip.hide()
+            else:
+                self._resize_grip.show()
+                self._resize_grip.move(self.width() - 20, self.height() - 20)
+        # Reposition edge resize handles
+        if hasattr(self, '_edge_left'):
+            w, h = self.width(), self.height()
+            t = _EdgeHandle.THICKNESS
+            if self.isMaximized():
+                self._edge_left.hide()
+                self._edge_right.hide()
+                self._edge_top.hide()
+                self._edge_bottom.hide()
+            else:
+                self._edge_left.setGeometry(0, t, t, h - 2 * t)
+                self._edge_right.setGeometry(w - t, t, t, h - 2 * t)
+                self._edge_top.setGeometry(t, 0, w - 2 * t, t)
+                self._edge_bottom.setGeometry(t, h - t, w - 2 * t, t)
+                self._edge_left.show()
+                self._edge_right.show()
+                self._edge_top.show()
+                self._edge_bottom.show()
+                self._edge_left.raise_()
+                self._edge_right.raise_()
+                self._edge_top.raise_()
+                self._edge_bottom.raise_()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            if hasattr(self, '_title_bar'):
+                self._title_bar.update_max_btn()
+
+    # ------------------------------------------------------------------
+    # Frameless window edge resize (pure Qt mouse events)
+    # ------------------------------------------------------------------
+    _RESIZE_BORDER = 8
+
+    def _edge_at(self, pos):
+        """Return edge code for a local position, or 0 if not on resize border."""
+        if self.isMaximized():
+            return 0
+        r = self.rect()
+        b = self._RESIZE_BORDER
+        x, y = pos.x(), pos.y()
+        left = x < b
+        right = x > r.width() - b
+        top = y < b
+        bottom = y > r.height() - b
+        if top and left:
+            return 1
+        if top and right:
+            return 2
+        if bottom and left:
+            return 3
+        if bottom and right:
+            return 4
+        if top:
+            return 5
+        if bottom:
+            return 6
+        if left:
+            return 7
+        if right:
+            return 8
+        return 0
+
+    _EDGE_CURSORS = {
+        1: Qt.CursorShape.SizeFDiagCursor,
+        4: Qt.CursorShape.SizeFDiagCursor,
+        2: Qt.CursorShape.SizeBDiagCursor,
+        3: Qt.CursorShape.SizeBDiagCursor,
+        5: Qt.CursorShape.SizeVerCursor,
+        6: Qt.CursorShape.SizeVerCursor,
+        7: Qt.CursorShape.SizeHorCursor,
+        8: Qt.CursorShape.SizeHorCursor,
+    }
+
+    def mouseMoveEvent(self, event):
+        if hasattr(self, '_resize_edge') and self._resize_edge and event.buttons() & Qt.MouseButton.LeftButton:
+            self._do_resize(event.globalPosition().toPoint())
+            return
+        edge = self._edge_at(event.position().toPoint())
+        self.setCursor(self._EDGE_CURSORS.get(edge, Qt.CursorShape.ArrowCursor))
+        super().mouseMoveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            edge = self._edge_at(event.position().toPoint())
+            if edge:
+                self._resize_edge = edge
+                self._resize_start_geo = self.geometry()
+                self._resize_start_pos = event.globalPosition().toPoint()
+                event.accept()
+                return
+        self._resize_edge = 0
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._resize_edge = 0
+        super().mouseReleaseEvent(event)
+
+    def _do_resize(self, global_pos):
+        if not hasattr(self, '_resize_start_geo') or not self._resize_start_geo:
+            return
+        dx = global_pos.x() - self._resize_start_pos.x()
+        dy = global_pos.y() - self._resize_start_pos.y()
+        geo = self._resize_start_geo
+        x, y, w, h = geo.x(), geo.y(), geo.width(), geo.height()
+        min_w, min_h = self.minimumWidth(), self.minimumHeight()
+        edge = self._resize_edge
+        if edge in (1, 3, 7):  # left side
+            new_w = w - dx
+            if new_w >= min_w:
+                x = geo.x() + dx
+                w = new_w
+        if edge in (2, 4, 8):  # right side
+            w = max(min_w, w + dx)
+        if edge in (1, 2, 5):  # top side
+            new_h = h - dy
+            if new_h >= min_h:
+                y = geo.y() + dy
+                h = new_h
+        if edge in (3, 4, 6):  # bottom side
+            h = max(min_h, h + dy)
+        self.setGeometry(x, y, w, h)
 
     # ------------------------------------------------------------------
     # Tab construction
@@ -1436,11 +1867,16 @@ class YouBoardApp(QMainWindow):
     # Preview panel
     # ------------------------------------------------------------------
     def _clear_preview(self):
-        while self._preview_layout.count():
-            item = self._preview_layout.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
+        def _clear_layout(layout):
+            while layout.count():
+                item = layout.takeAt(0)
+                w = item.widget()
+                if w:
+                    w.deleteLater()
+                child_lay = item.layout()
+                if child_lay:
+                    _clear_layout(child_lay)
+        _clear_layout(self._preview_layout)
 
     def _show_preview_placeholder(self):
         self._preview_gen += 1
@@ -1615,6 +2051,8 @@ class YouBoardApp(QMainWindow):
         except Exception:
             self._cached_qpixmap = None
         self._render_preview_image()
+        # Delayed re-render in case label size wasn't final yet
+        QTimer.singleShot(100, self._render_preview_image)
 
     def _render_preview_image(self):
         if not hasattr(self, '_preview_img_lbl'):
@@ -2118,6 +2556,7 @@ class YouBoardApp(QMainWindow):
 
     def run(self):
         """Show window with tray icon and fade-in animation."""
+        self._ui_ready = True
         # System tray
         self._tray = QSystemTrayIcon(QIcon(LOGO_ICO) if LOGO_ICO else QIcon(), self)
         tray_menu = QMenu()
@@ -2137,6 +2576,19 @@ class YouBoardApp(QMainWindow):
         # Fade-in animation
         self._fade_in()
         self.show()
+        # Add native resize borders to frameless window (WS_THICKFRAME)
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            GWL_STYLE = -16
+            WS_THICKFRAME = 0x00040000
+            WS_MINIMIZEBOX = 0x00020000
+            WS_MAXIMIZEBOX = 0x00010000  # ← 加上这行
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE,
+                                                style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+        except Exception:
+            pass
 
     # ---- Global Hotkey ----
     HOTKEY_ID = 0xB0AD
@@ -2240,16 +2692,8 @@ class YouBoardApp(QMainWindow):
             self._tray_show()
 
     def _fade_in(self):
-        effect = QGraphicsOpacityEffect(self)
-        self.setGraphicsEffect(effect)
-        anim = QPropertyAnimation(effect, b"opacity", self)
-        anim.setDuration(420)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        anim.finished.connect(lambda: self.setGraphicsEffect(None))
-        anim.start()
-        self._fade_anim = anim  # prevent GC
+        # Skip fade-in on frameless windows (QGraphicsOpacityEffect can leave window invisible)
+        pass
 
 
 # ===========================================================================
@@ -2525,6 +2969,8 @@ class SettingsDialog(QDialog):
         bg_row = QHBoxLayout()
         self._bg_lbl = QLabel(self._bg_display_name())
         self._bg_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        self._bg_lbl.setWordWrap(True)
+        self._bg_lbl.setMaximumWidth(320)
         bg_row.addWidget(self._bg_lbl, 1)
         sel_btn = QPushButton(tr("set_bg_select"))
         sel_btn.clicked.connect(self._select_bg)

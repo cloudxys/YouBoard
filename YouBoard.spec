@@ -5,7 +5,7 @@ a = Analysis(
     ['youboard_qt.py'],
     pathex=[],
     binaries=[],
-    datas=[('YouBoard.ico', '.')],
+    datas=[('YouBoard.ico', '.'), ('res', 'res')],
     hiddenimports=['PyQt6', 'PyQt6.QtWidgets', 'PyQt6.QtCore', 'PyQt6.QtGui', 'keyboard'],
     hookspath=[],
     hooksconfig={},
