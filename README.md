@@ -20,11 +20,13 @@
 - **环境灯带** — 全宽 RGB 灯带动效，呼吸流转 + 按键波纹 + 操作浪涌（QPainter 30fps）
 - **自定义背景** — 支持 PNG/JPG/BMP 静态 + GIF 动态背景，面板半透明通透显露
 - **暗色/亮色主题** — 一键切换，毛玻璃半透明面板，设置更改后窗口状态保持
+- **自定义标题栏** — 无边框窗口 + 自绘标题栏，流光动效，拖拽移动，双击最大化，图标按钮（res/ 目录 ICO），边缘拖拽缩放（四边光标反馈 + 右下角 grip）
+- **背景实时跟随** — 自定义背景图随窗口缩放实时等比重绘（30ms 响应）
 
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v1.6.0.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v1.7.0.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -54,7 +56,7 @@ python youboard_qt.py
 ### 打包 EXE
 
 ```bash
-pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data "YouBoard.ico;." --version-file=version_info.txt --hidden-import=PyQt6 --hidden-import=PyQt6.QtWidgets --hidden-import=PyQt6.QtCore --hidden-import=PyQt6.QtGui --hidden-import=keyboard youboard_qt.py
+pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data "YouBoard.ico;." --add-data "res;res" --version-file=version_info.txt --hidden-import=PyQt6 --hidden-import=PyQt6.QtWidgets --hidden-import=PyQt6.QtCore --hidden-import=PyQt6.QtGui --hidden-import=keyboard youboard_qt.py
 ```
 
 或直接双击 `YouBoard.bat` 一键打包。
@@ -63,7 +65,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v1.6.0.exe`
+输出：`YouBoard_Setup_v1.7.0.exe`
 
 ## 📁 项目结构
 
@@ -72,15 +74,34 @@ YouBoard/
 ├── youboard_qt.py       # 主程序（PyQt6 GUI 界面）
 ├── youboard_core.py     # 核心逻辑（监控、存储、Win32 API）
 ├── YouBoard.ico         # 应用图标
-├── version_info.txt     # EXE 版本信息（v1.6.0）
+├── res/                 # 标题栏按钮图标
+│   ├── zuixiao.ico      # 最小化
+│   ├── zuida.ico        # 最大化
+│   ├── zuidahuifu.ico   # 恢复
+│   └── guanbi.ico       # 关闭
+├── version_info.txt     # EXE 版本信息（v1.7.0）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
-├── youboard_setup.iss   # Inno Setup 安装脚本（v1.6.0）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v1.7.0）
 ├── youboard_config.json # 用户配置（自动生成）
 └── .youboard.json       # 剪贴板历史数据（自动生成）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v1.7.0
+
+- 🪟 **自定义标题栏增强**
+  - 窗口控制按钮改用自定义 ICO 图标（res/ 目录），替代文字字符，对齐一致
+  - 四边缘 6px 透明拖拽条：左/右 ↔ 光标、上/下 ↕ 光标，拖拽即缩放
+  - 右下角 18x18 斜向三点 grip 图标，拖拽对角缩放
+  - 背景图随窗口缩放实时等比重绘（30ms 响应，不再滞后）
+- 📦 **安装包优化**
+  - 安装后只保留一个 `uninstall.exe`（不再有 unins000.exe）
+  - 自动更新注册表卸载路径
+- 🎨 **UI 细节**
+  - 设置中背景文件名过长时自动换行，不再撑破布局
+  - 检查更新对话框中英双语显示（中文在上英文在下）
 
 ### YouBoard v1.6.0
 
