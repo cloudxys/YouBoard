@@ -32,7 +32,7 @@ except Exception:
     except Exception:
         pass
 
-APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.7"
+APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.8"
 try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
 except Exception:
@@ -54,7 +54,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QAbstractItemView, QSizePolicy,
     QGraphicsOpacityEffect, QSpacerItem, QGroupBox,
     QCheckBox, QTextEdit, QListWidget, QListWidgetItem,
-    QStyle,
+    QStyle, QProgressDialog,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
@@ -89,7 +89,7 @@ from youboard_core import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.8.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -709,6 +709,73 @@ class ImageLoader(QThread):
             self.finished.emit(self.gen, self.path, img)
         except Exception:
             pass
+
+
+# ===========================================================================
+# Update Downloader (background thread, real-time progress + mirror fallback)
+# ===========================================================================
+class _DownloadWorker(QThread):
+    """Stream-download a file with live progress and automatic mirror fallback."""
+    progress = pyqtSignal(int, int)   # received_bytes, total_bytes
+    status = pyqtSignal(str)          # status line (current mirror host)
+    finished_ok = pyqtSignal(str)     # downloaded temp file path
+    failed = pyqtSignal(str)          # error message
+
+    def __init__(self, urls, dest_path, parent=None):
+        super().__init__(parent)
+        self._urls = urls
+        self._dest = dest_path
+        self._abort = False
+
+    def abort(self):
+        self._abort = True
+
+    def run(self):
+        last_err = "未知错误"
+        for url in self._urls:
+            # Try each source up to 3 times (handles transient drops)
+            for attempt in range(3):
+                if self._abort:
+                    return
+                ok, err = self._try_one(url)
+                if ok:
+                    self.finished_ok.emit(self._dest)
+                    return
+                last_err = err
+                if self._abort:
+                    return
+        if not self._abort:
+            self.failed.emit(last_err)
+
+    def _try_one(self, url):
+        """Attempt download from a single URL. Returns (success, error_msg)."""
+        import urllib.request
+        try:
+            host = url.split("/")[2] if "/" in url else url
+            self.status.emit("正在连接: " + host)
+            req = urllib.request.Request(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) YouBoard-Updater",
+                "Accept": "*/*",
+            })
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                total = int(resp.headers.get("Content-Length", 0) or 0)
+                received = 0
+                chunk = 64 * 1024
+                with open(self._dest, "wb") as f:
+                    while True:
+                        if self._abort:
+                            return False, "已取消"
+                        buf = resp.read(chunk)
+                        if not buf:
+                            break
+                        f.write(buf)
+                        received += len(buf)
+                        self.progress.emit(received, total)
+                if received > 0 and (total == 0 or received == total):
+                    return True, ""
+                return False, "下载不完整"
+        except Exception as e:
+            return False, str(e)
 
 
 # ===========================================================================
@@ -3116,9 +3183,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, tr("upd_title"), tr("upd_failed", e=e))
 
     def _do_update(self, dl_url):
-        """Download new EXE and replace current one via batch script."""
-        import urllib.request
-        import tempfile
+        """Download new EXE in-app with live progress, then replace + restart."""
         try:
             # Determine current EXE path
             if getattr(sys, "frozen", False):
@@ -3127,10 +3192,67 @@ class SettingsDialog(QDialog):
                 current_exe = os.path.abspath(sys.argv[0])
             exe_dir = os.path.dirname(current_exe)
             tmp_exe = os.path.join(exe_dir, "_YouBoard_update.exe")
-            # Download
-            QMessageBox.information(self, "更新", "正在下载新版本，请稍候...")
-            urllib.request.urlretrieve(dl_url, tmp_exe)
-            # Create batch script to replace and restart
+
+            # Candidate URLs: direct first, then GitHub mirrors for reliability
+            urls = [dl_url]
+            if "github.com" in dl_url:
+                for mirror in ("https://ghproxy.com/", "https://mirror.ghproxy.com/",
+                               "https://gh-proxy.com/", "https://ghproxy.net/",
+                               "https://github.moeyy.xyz/", "https://gh.api.99988866.xyz/"):
+                    urls.append(mirror + dl_url)
+
+            # Real-time progress dialog
+            dlg = QProgressDialog("正在准备下载...", "取消", 0, 100, self)
+            dlg.setWindowTitle("正在更新")
+            dlg.setWindowModality(Qt.WindowModality.WindowModal)
+            dlg.setMinimumDuration(0)
+            dlg.setAutoClose(False)
+            dlg.setAutoReset(False)
+            dlg.resize(380, 130)
+
+            self._dl_current = current_exe
+            self._dl_worker = _DownloadWorker(urls, tmp_exe, self)
+
+            def on_progress(recv, total):
+                if dlg.wasCanceled():
+                    self._dl_worker.abort()
+                    return
+                if total > 0:
+                    pct = int(recv * 100 / total)
+                    dlg.setMaximum(100)
+                    dlg.setValue(pct)
+                    dlg.setLabelText(
+                        f"正在下载新版本... {recv / 1048576:.1f} / {total / 1048576:.1f} MB  ({pct}%)")
+                else:
+                    dlg.setMaximum(0)  # indeterminate
+                    dlg.setLabelText(f"正在下载新版本... {recv / 1048576:.1f} MB")
+
+            def on_status(text):
+                if not dlg.wasCanceled():
+                    dlg.setLabelText(text)
+
+            def on_ok(path):
+                dlg.close()
+                self._finish_update(path)
+
+            def on_fail(err):
+                dlg.close()
+                QMessageBox.warning(self, "更新失败", f"下载失败: {err}")
+
+            self._dl_worker.progress.connect(on_progress)
+            self._dl_worker.status.connect(on_status)
+            self._dl_worker.finished_ok.connect(on_ok)
+            self._dl_worker.failed.connect(on_fail)
+            dlg.canceled.connect(self._dl_worker.abort)
+            self._dl_worker.start()
+        except Exception as e:
+            QMessageBox.warning(self, "更新失败", f"下载或替换失败: {e}")
+
+    def _finish_update(self, tmp_exe):
+        """Write replace-and-restart batch script, launch it, and quit."""
+        try:
+            current_exe = self._dl_current
+            exe_dir = os.path.dirname(current_exe)
             bat_path = os.path.join(exe_dir, "_update.bat")
             bat_content = f"""@echo off
 timeout /t 2 /nobreak >nul
@@ -3141,13 +3263,12 @@ del "%~f0"
 """
             with open(bat_path, "w", encoding="utf-8") as f:
                 f.write(bat_content)
-            # Launch batch and exit
             import subprocess
             subprocess.Popen(["cmd.exe", "/c", bat_path],
                              creationflags=0x00000008)  # DETACHED_PROCESS
             self.app._real_quit()
         except Exception as e:
-            QMessageBox.warning(self, "更新失败", f"下载或替换失败: {e}")
+            QMessageBox.warning(self, "更新失败", f"替换失败: {e}")
 
 
 # ===========================================================================
