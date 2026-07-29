@@ -15,7 +15,7 @@
 - **历史快照** — 记录删除/清空操作，支持一键回滚，新条目淡入动画
 - **中英双语** — 设置中一键切换语言，检查更新等对话框完整适配
 - **开机自启动** — 设置中开关控制
-- **自动更新** — 设置 → 关于 → 检查更新，自动从 GitHub Releases 下载新版本
+- **自动更新** — 设置 → 关于 → 检查更新，软件内实时流式下载（进度条显示 MB/百分比），多镜像源自动轮换，下载完成自动替换重启
 - **快捷键** — Enter 复制、Del 删除、Space 置顶、Ctrl+A 全选、Ctrl+O 打开、F5 刷新
 - **环境灯带** — 全宽 RGB 灯带动效，呼吸流转 + 按键波纹 + 操作浪涌（QPainter 30fps）
 - **自定义背景** — 支持 PNG/JPG/BMP 静态 + GIF 动态背景，面板半透明通透显露
@@ -26,7 +26,7 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v1.7.0.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v1.8.0.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -65,7 +65,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v1.7.0.exe`
+输出：`YouBoard_Setup_v1.8.0.exe`
 
 ## 📁 项目结构
 
@@ -79,15 +79,23 @@ YouBoard/
 │   ├── zuida.ico        # 最大化
 │   ├── zuidahuifu.ico   # 恢复
 │   └── guanbi.ico       # 关闭
-├── version_info.txt     # EXE 版本信息（v1.7.0）
+├── version_info.txt     # EXE 版本信息（v1.8.0）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
-├── youboard_setup.iss   # Inno Setup 安装脚本（v1.7.0）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v1.8.0）
 ├── youboard_config.json # 用户配置（自动生成）
 └── .youboard.json       # 剪贴板历史数据（自动生成）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v1.8.0
+
+- 🔄 **应用内实时自动更新**
+  - 检查更新后直接在软件内流式下载新版本，实时显示已下载 MB / 总大小 / 百分比进度条
+  - 后台线程下载，界面不卡死，支持随时取消
+  - 内置多个 GitHub 镜像源自动轮换，直连失败时依次尝试，大幅提升下载成功率
+  - 下载完成后自动替换 EXE 并重启，全程无需手动操作
 
 ### YouBoard v1.7.0
 
