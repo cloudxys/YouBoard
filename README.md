@@ -1,6 +1,6 @@
 # YouBoard - 剪贴板历史管理工具
 
-一款轻量级 Windows 剪贴板管理工具，自动记录复制历史，支持文字、图片、文件、网址四大分类，随取随用。
+一款轻量级 Windows 剪贴板管理工具，自动记录复制历史，支持文字、图片、文件、网址四大分类，内置音乐播放器与视频动态背景，随取随用。
 
 ## ✨ 功能特性
 
@@ -19,14 +19,20 @@
 - **快捷键** — Enter 复制、Del 删除、Space 置顶、Ctrl+A 全选、Ctrl+O 打开、F5 刷新
 - **环境灯带** — 全宽 RGB 灯带动效，呼吸流转 + 按键波纹 + 操作浪涌（QPainter 30fps）
 - **自定义背景** — 支持 PNG/JPG/BMP 静态 + GIF 动态背景，面板半透明通透显露
+- **音乐播放器** — 独立「音乐」Tab，支持 MP3/WAV/FLAC/OGG/M4A/AAC/WMA/OPUS/AIFF/APE 等格式，播放列表持久化，列表循环/单曲循环/随机播放，进度拖拽定位，音量调节，自定义播放图标
+- **视频动态背景** — 支持 MP4/AVI/MKV/MOV/WMV/FLV/WebM 等视频作为界面背景，循环播放并保留原声，可单独调节视频音量或静音，视频进度在设置中可拖拽定位并跨重启保留
 - **暗色/亮色主题** — 一键切换，毛玻璃半透明面板，设置更改后窗口状态保持
 - **自定义标题栏** — 无边框窗口 + 自绘标题栏，流光动效，拖拽移动，双击最大化，图标按钮（res/ 目录 ICO），边缘拖拽缩放（四边光标反馈 + 右下角 grip）
 - **背景实时跟随** — 自定义背景图随窗口缩放实时等比重绘（30ms 响应）
 
+## 🎬 效果演示
+
+<video src="https://github.com/cloudxys/YouBoard/releases/download/v1.9.0/01.mp4" controls width="640"></video>
+
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v1.8.0.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v1.9.0.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -74,20 +80,40 @@ YouBoard/
 ├── youboard_qt.py       # 主程序（PyQt6 GUI 界面）
 ├── youboard_core.py     # 核心逻辑（监控、存储、Win32 API）
 ├── YouBoard.ico         # 应用图标
-├── res/                 # 标题栏按钮图标
+├── res/                 # 标题栏按钮图标 + 播放控制图标
 │   ├── zuixiao.ico      # 最小化
 │   ├── zuida.ico        # 最大化
 │   ├── zuidahuifu.ico   # 恢复
-│   └── guanbi.ico       # 关闭
-├── version_info.txt     # EXE 版本信息（v1.8.0）
+│   ├── guanbi.ico       # 关闭
+│   ├── shangyige.ico    # 音乐：上一首
+│   ├── bofang.ico       # 音乐：播放
+│   └── xiayige.ico      # 音乐：下一首
+├── version_info.txt     # EXE 版本信息（v1.9.0）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
-├── youboard_setup.iss   # Inno Setup 安装脚本（v1.8.0）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v1.9.0）
 ├── youboard_config.json # 用户配置（自动生成）
 └── .youboard.json       # 剪贴板历史数据（自动生成）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v1.9.0
+
+- 🎵 **内置音乐播放器**
+  - 新增独立「音乐」Tab，支持 MP3 / WAV / FLAC / OGG / M4A / AAC / WMA / OPUS / AIFF / APE 等主流格式
+  - 播放列表自动保存到配置，重启后保留；支持添加文件 / 添加文件夹 / 移除 / 清空
+  - 列表循环 / 单曲循环 / 随机播放三种模式，进度条可拖拽定位，音量独立调节
+  - 播放控制按钮使用自定义图标（res/ 目录 shangyige / bofang / xiayige）
+- 🎬 **视频动态背景**
+  - 支持 MP4 / AVI / MKV / MOV / WMV / FLV / WebM 等视频作为界面背景，循环播放并保留原声
+  - 采用 QVideoSink 逐帧渲染 + 暗色遮罩，视频之上所有面板内容清晰可见
+  - 设置中可单独调节视频音量或一键静音，视频进度可拖拽定位，跨重启 / 改设置后自动恢复到上次进度
+- 🧹 **卸载完全清理**
+  - 卸载时自动删除配置文件、历史数据、图片缓存、图标资源等所有残留，不再遗留任何文件
+- 🌍 **自动更新全球可用**
+  - 下载源首位始终为 GitHub 直连（全球可达），海外用户可直接检查并更新
+  - 整理镜像列表，移除失效源，保留可用加速镜像作为国内兜底
 
 ### YouBoard v1.8.0
 
