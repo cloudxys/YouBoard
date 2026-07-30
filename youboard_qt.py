@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-YouBoard v1.7.0 — 剪贴板历史管理器 / Clipboard History Manager
+YouBoard v1.9.0 — 剪贴板历史管理器 / Clipboard History Manager
 PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系统托盘。
 """
 
@@ -32,7 +32,7 @@ except Exception:
     except Exception:
         pass
 
-APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.8"
+APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.1.9"
 try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
 except Exception:
@@ -65,6 +65,7 @@ from PyQt6.QtGui import (
     QAction, QKeySequence, QShortcut, QBrush, QPen,
     QLinearGradient, QPainterPath, QCursor, QMovie,
 )
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
 
 try:
     from PIL import Image as PILImage
@@ -89,7 +90,7 @@ from youboard_core import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.9.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -112,20 +113,66 @@ ICO_MIN = _res_icon("zuixiao.ico")
 ICO_MAX = _res_icon("zuida.ico")
 ICO_RESTORE = _res_icon("zuidahuifu.ico")
 ICO_CLOSE = _res_icon("guanbi.ico")
+ICO_MUSIC_PREV = _res_icon("shangyige.ico")
+ICO_MUSIC_PLAY = _res_icon("bofang.ico")
+ICO_MUSIC_NEXT = _res_icon("xiayige.ico")
+
+
+def _make_pause_icon(size=52, color="#ffffff"):
+    """Paint a simple two-bar pause icon so the play button has a pause state."""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setBrush(QColor(color))
+    p.setPen(Qt.PenStyle.NoPen)
+    bar_w = max(2, int(size * 0.16))
+    gap = max(2, int(size * 0.10))
+    h = int(size * 0.52)
+    top = (size - h) // 2
+    cx = size // 2
+    r = bar_w / 2.5
+    p.drawRoundedRect(cx - gap - bar_w, top, bar_w, h, r, r)
+    p.drawRoundedRect(cx + gap, top, bar_w, h, r, r)
+    p.end()
+    return QIcon(pm)
+
+
+def _checkmark_png_path():
+    """Draw a white checkmark to a cached temp PNG and return its path.
+
+    Call only after a QApplication exists (needs QGuiApplication for QPixmap).
+    """
+    import tempfile
+    path = os.path.join(tempfile.gettempdir(), "youb_check.png")
+    if not os.path.exists(path):
+        pm = QPixmap(24, 24)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#ffffff"), 3.2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.drawLine(5, 13, 10, 18)
+        p.drawLine(10, 18, 19, 6)
+        p.end()
+        pm.save(path)
+    return path
 
 # ===========================================================================
 # Theme colors
 # ===========================================================================
 THEME_DARK = {
-    "BG": "#131418", "SURFACE": "#1a1c22", "SURFACE2": "#20232b",
-    "SURFACE3": "#272b34", "ROW_ALT": "#1d2027", "BORDER": "#2c303a",
-    "BORDER_LT": "#383d4a", "TEXT": "#e8eaf0", "TEXT_SEC": "#a3a9b8",
-    "TEXT_MUTED": "#6d7486", "ACCENT": "#4f9df8", "ACCENT_HV": "#6cb0ff",
-    "ACCENT_DIM": "#28374e", "TEAL": "#3fd0b6", "AMBER": "#f2b54d",
+    "BG": "#1e2128", "SURFACE": "#262a33", "SURFACE2": "#2f343f",
+    "SURFACE3": "#3a404c", "ROW_ALT": "#282c36", "BORDER": "#414855",
+    "BORDER_LT": "#525b6b", "TEXT": "#eef0f5", "TEXT_SEC": "#b3b9c6",
+    "TEXT_MUTED": "#7d8598", "ACCENT": "#4f9df8", "ACCENT_HV": "#6cb0ff",
+    "ACCENT_DIM": "#2c3d57", "TEAL": "#3fd0b6", "AMBER": "#f2b54d",
     "PIN_BG": "#2a2517", "DANGER": "#f16a5c", "SUCCESS": "#45d18c",
     "FLASH_BG": "#1e3a2c",
-    "PANEL_ALPHA": "rgba(20, 22, 28, 105)", "PANEL_ALPHA2": "rgba(26, 29, 36, 95)",
-    "HEADER_ALPHA": "rgba(16, 17, 22, 80)",
+    "PANEL_ALPHA": "rgba(40, 45, 56, 165)", "PANEL_ALPHA2": "rgba(48, 54, 66, 150)",
+    "HEADER_ALPHA": "rgba(32, 36, 45, 135)",
 }
 
 THEME_LIGHT = {
@@ -349,6 +396,28 @@ STRINGS = {
         "upd_new_title": "发现新版本",
         "upd_new_msg": "当前版本: v{cur}\n最新版本: v{new} ({name})\n\n是否立即更新？（将下载并替换当前程序）",
         "upd_failed": "检查失败: {e}",
+        # Music player
+        "tab_music": "音乐", "music_title": "音乐播放器",
+        "music_add": "添加音乐", "music_remove": "移除", "music_clear": "清空列表",
+        "music_play": "播放", "music_pause": "暂停", "music_next": "下一首", "music_prev": "上一首",
+        "music_loop": "列表循环", "music_loop_one": "单曲循环", "music_shuffle": "随机播放",
+        "music_volume": "音量", "music_empty": "播放列表为空\n点击「添加音乐」选择音频文件",
+        "music_playing": "正在播放", "music_paused": "已暂停", "music_stopped": "已停止",
+        "music_of": "{cur} / {total}",
+        "music_filter": "音频文件 (*.mp3 *.wav *.flac *.ogg *.m4a *.aac *.wma *.opus *.aiff *.ape);;所有文件 (*.*)",
+        "music_add_folder": "添加文件夹",
+        "music_folder_filter": "选择包含音频文件的文件夹",
+        # Video background
+        "set_video_bg": "视频背景 / VIDEO BACKGROUND",
+        "set_video_bg_select": "选择视频文件",
+        "set_video_bg_clear": "恢复默认",
+        "set_video_bg_hint": "支持 MP4 / AVI / MKV / MOV / WMV / FLV / WebM，视频将循环播放并带有原声",
+        "set_video_bg_current": "当前视频背景：默认（无）",
+        "set_video_bg_mute": "视频静音",
+        "set_video_bg_mute_desc": "开启后视频背景不播放声音",
+        "video_filter": "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.ts *.mpg *.mpeg);;所有文件 (*.*)",
+        "set_video_progress": "视频进度（拖动可定位）",
+        "set_video_volume": "视频音量",
     },
     "en": {
         "win_title": "YouBoard · Clipboard History", "brand_sub": "Clipboard History",
@@ -474,6 +543,28 @@ STRINGS = {
         "upd_new_title": "发现新版本 · New Version",
         "upd_new_msg": "当前版本: v{cur}\n最新版本: v{new} ({name})\n是否立即更新？（将下载并替换当前程序）\n\nCurrent: v{cur} → Latest: v{new} ({name})\nUpdate now? (Will download and replace the program)",
         "upd_failed": "检查失败: {e}\nCheck failed: {e}",
+        # Music player
+        "tab_music": "Music", "music_title": "Music Player",
+        "music_add": "Add Music", "music_remove": "Remove", "music_clear": "Clear List",
+        "music_play": "Play", "music_pause": "Pause", "music_next": "Next", "music_prev": "Previous",
+        "music_loop": "Loop All", "music_loop_one": "Loop One", "music_shuffle": "Shuffle",
+        "music_volume": "Volume", "music_empty": "Playlist is empty\nClick 'Add Music' to select audio files",
+        "music_playing": "Now Playing", "music_paused": "Paused", "music_stopped": "Stopped",
+        "music_of": "{cur} / {total}",
+        "music_filter": "Audio Files (*.mp3 *.wav *.flac *.ogg *.m4a *.aac *.wma *.opus *.aiff *.ape);;All Files (*.*)",
+        "music_add_folder": "Add Folder",
+        "music_folder_filter": "Select a folder containing audio files",
+        # Video background
+        "set_video_bg": "Video Background / 视频背景",
+        "set_video_bg_select": "Choose video file",
+        "set_video_bg_clear": "Reset to default",
+        "set_video_bg_hint": "Supports MP4 / AVI / MKV / MOV / WMV / FLV / WebM, video loops with original audio",
+        "set_video_bg_current": "Current video background: Default (none)",
+        "set_video_bg_mute": "Mute video",
+        "set_video_bg_mute_desc": "When enabled, video background plays without sound",
+        "video_filter": "Video Files (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.ts *.mpg *.mpeg);;All Files (*.*)",
+        "set_video_progress": "Video progress (drag to seek)",
+        "set_video_volume": "Video volume",
     },
 }
 
@@ -1085,6 +1176,417 @@ class _TitleBar(QWidget):
 
 
 # ===========================================================================
+# MusicPlayerTab — In-app music player with playlist
+# ===========================================================================
+AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus", ".aiff", ".ape"}
+
+
+class MusicPlayerTab(QWidget):
+    """A full-featured music player tab with playlist, loop modes, and volume control."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._playlist = []  # list of file paths
+        self._current_idx = -1
+        self._loop_mode = "list"  # "list", "one", "shuffle"
+        self._is_playing = False
+        self._seeking = False  # True while user drags the progress slider
+
+        # Audio output + player
+        self._audio_output = QAudioOutput(self)
+        self._player = QMediaPlayer(self)
+        self._player.setAudioOutput(self._audio_output)
+        self._player.mediaStatusChanged.connect(self._on_media_status)
+        self._player.positionChanged.connect(self._on_position)
+        self._player.durationChanged.connect(self._on_duration)
+        self._player.errorOccurred.connect(self._on_error)
+
+        # Load saved volume
+        cfg = load_config()
+        vol = cfg.get("music_volume", 70)
+        self._audio_output.setVolume(vol / 100.0)
+
+        self._build_ui()
+        self._load_playlist_from_config()
+
+    def _build_ui(self):
+        from PyQt6.QtWidgets import QSlider
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 14)
+        layout.setSpacing(14)
+
+        # --- Now playing (no card, sits directly on the background) ---
+        self._now_lbl = QLabel(tr("music_stopped"))
+        self._now_lbl.setStyleSheet(f"color: {C['ACCENT']}; font-size: 13px; font-weight: bold; "
+                                    f"letter-spacing: 1px; background: transparent;")
+        layout.addWidget(self._now_lbl)
+
+        self._track_lbl = QLabel(tr("music_empty"))
+        self._track_lbl.setStyleSheet(f"color: {C['TEXT']}; font-size: 15px; font-weight: bold; "
+                                      f"background: transparent;")
+        self._track_lbl.setWordWrap(True)
+        layout.addWidget(self._track_lbl)
+
+        # --- Progress row ---
+        prog_row = QHBoxLayout()
+        prog_row.setSpacing(10)
+        self._pos_lbl = QLabel("0:00")
+        self._pos_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px; background: transparent;")
+        self._pos_lbl.setFixedWidth(40)
+        prog_row.addWidget(self._pos_lbl)
+
+        self._progress = QSlider(Qt.Orientation.Horizontal)
+        self._progress.setRange(0, 0)
+        self._progress.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._progress.setStyleSheet(f"""
+            QSlider::groove:horizontal {{ background: {C['SURFACE3']}; height: 6px; border-radius: 3px; }}
+            QSlider::handle:horizontal {{ background: {C['ACCENT']}; width: 16px; height: 16px;
+                margin: -5px 0; border-radius: 8px; border: 2px solid {C['BG']}; }}
+            QSlider::handle:horizontal:hover {{ background: {C['ACCENT_HV']}; }}
+            QSlider::sub-page:horizontal {{ background: {C['ACCENT']}; border-radius: 3px; }}
+        """)
+        self._progress.sliderPressed.connect(self._on_seek_pressed)
+        self._progress.sliderReleased.connect(self._on_seek_released)
+        prog_row.addWidget(self._progress, 1)
+
+        self._dur_lbl = QLabel("0:00")
+        self._dur_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px; background: transparent;")
+        self._dur_lbl.setFixedWidth(40)
+        self._dur_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        prog_row.addWidget(self._dur_lbl)
+        layout.addLayout(prog_row)
+
+        # --- Transport controls (custom icons) ---
+        self._play_icon = QIcon(ICO_MUSIC_PLAY)
+        self._pause_icon = _make_pause_icon(52, "#ffffff")
+        ctrl_row = QHBoxLayout()
+        ctrl_row.setSpacing(16)
+        ctrl_row.addStretch()
+
+        flat_style = f"""
+            QPushButton {{ background: transparent; border: none; }}
+            QPushButton:hover {{ background: rgba(128,128,128,40); border-radius: 8px; }}
+            QPushButton:pressed {{ background: rgba(128,128,128,70); }}
+        """
+        self._prev_btn = QPushButton()
+        self._prev_btn.setIcon(QIcon(ICO_MUSIC_PREV))
+        self._prev_btn.setIconSize(QSize(40, 40))
+        self._prev_btn.setFixedSize(48, 48)
+        self._prev_btn.setToolTip(tr("music_prev"))
+        self._prev_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._prev_btn.setStyleSheet(flat_style)
+        self._prev_btn.clicked.connect(self._play_prev)
+        ctrl_row.addWidget(self._prev_btn)
+
+        self._play_btn = QPushButton()
+        self._play_btn.setIcon(self._play_icon)
+        self._play_btn.setIconSize(QSize(52, 52))
+        self._play_btn.setFixedSize(64, 64)
+        self._play_btn.setToolTip(tr("music_play"))
+        self._play_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._play_btn.setStyleSheet(flat_style)
+        self._play_btn.clicked.connect(self._toggle_play)
+        ctrl_row.addWidget(self._play_btn)
+
+        self._next_btn = QPushButton()
+        self._next_btn.setIcon(QIcon(ICO_MUSIC_NEXT))
+        self._next_btn.setIconSize(QSize(40, 40))
+        self._next_btn.setFixedSize(48, 48)
+        self._next_btn.setToolTip(tr("music_next"))
+        self._next_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._next_btn.setStyleSheet(flat_style)
+        self._next_btn.clicked.connect(self._play_next)
+        ctrl_row.addWidget(self._next_btn)
+
+        ctrl_row.addStretch()
+        layout.addLayout(ctrl_row)
+
+        # --- Secondary row: loop mode + volume ---
+        sec_row = QHBoxLayout()
+        sec_row.setSpacing(10)
+        self._loop_btn = QPushButton("\u21bb  " + tr("music_loop"))
+        self._loop_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._loop_btn.setToolTip("Loop: List → One → Shuffle")
+        self._loop_btn.clicked.connect(self._cycle_loop)
+        sec_row.addWidget(self._loop_btn)
+
+        sec_row.addStretch()
+
+        vol_lbl = QLabel("\U0001f50a")
+        vol_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 13px;")
+        sec_row.addWidget(vol_lbl)
+        self._vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._vol_slider.setRange(0, 100)
+        self._vol_slider.setValue(int(self._audio_output.volume() * 100))
+        self._vol_slider.setFixedWidth(140)
+        self._vol_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._vol_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{ background: {C['SURFACE3']}; height: 5px; border-radius: 2px; }}
+            QSlider::handle:horizontal {{ background: {C['TEAL']}; width: 13px; height: 13px;
+                margin: -4px 0; border-radius: 6px; }}
+            QSlider::sub-page:horizontal {{ background: {C['TEAL']}; border-radius: 2px; }}
+        """)
+        self._vol_slider.valueChanged.connect(self._on_volume)
+        sec_row.addWidget(self._vol_slider)
+        self._vol_pct = QLabel(f"{int(self._audio_output.volume() * 100)}%")
+        self._vol_pct.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
+        self._vol_pct.setFixedWidth(34)
+        sec_row.addWidget(self._vol_pct)
+        layout.addLayout(sec_row)
+
+        # --- Playlist management buttons ---
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        add_btn = QPushButton("+ " + tr("music_add"))
+        add_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        add_btn.clicked.connect(self._add_files)
+        btn_row.addWidget(add_btn)
+
+        add_folder_btn = QPushButton("+ " + tr("music_add_folder"))
+        add_folder_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        add_folder_btn.clicked.connect(self._add_folder)
+        btn_row.addWidget(add_folder_btn)
+
+        rm_btn = QPushButton(tr("music_remove"))
+        rm_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        rm_btn.clicked.connect(self._remove_selected)
+        btn_row.addWidget(rm_btn)
+
+        clr_btn = QPushButton(tr("music_clear"))
+        clr_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        clr_btn.setProperty("cssClass", "danger")
+        clr_btn.clicked.connect(self._clear_playlist)
+        btn_row.addWidget(clr_btn)
+
+        btn_row.addStretch()
+        self._count_lbl = QLabel("")
+        self._count_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
+        btn_row.addWidget(self._count_lbl)
+        layout.addLayout(btn_row)
+
+        # --- Playlist widget ---
+        self._list = QListWidget()
+        self._list.setAlternatingRowColors(False)
+        self._list.setStyleSheet(f"""
+            QListWidget {{ background: transparent; border: none; outline: none; }}
+            QListWidget::item {{ background: transparent; color: {C['TEXT_SEC']};
+                padding: 8px 12px; margin: 2px 4px; border-radius: 8px; }}
+            QListWidget::item:hover:!selected {{ background: {C['SURFACE3']}; color: {C['TEXT']}; }}
+            QListWidget::item:selected {{ background: {C['ACCENT_DIM']}; color: {C['TEXT']}; }}
+        """)
+        self._list.itemDoubleClicked.connect(self._on_item_dblclick)
+        layout.addWidget(self._list, 1)
+
+        self._update_count()
+
+    # --- Playlist management ---
+    def _add_files(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, tr("music_add"), "", tr("music_filter"))
+        if paths:
+            for p in paths:
+                if p not in self._playlist:
+                    self._playlist.append(p)
+                    self._list.addItem(self._display_name(p))
+            self._update_count()
+            self._save_playlist_to_config()
+
+    def _add_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, tr("music_folder_filter"))
+        if folder:
+            added = 0
+            for fname in sorted(os.listdir(folder)):
+                ext = os.path.splitext(fname)[1].lower()
+                if ext in AUDIO_EXTS:
+                    fpath = os.path.join(folder, fname)
+                    if fpath not in self._playlist:
+                        self._playlist.append(fpath)
+                        self._list.addItem(self._display_name(fpath))
+                        added += 1
+            if added:
+                self._update_count()
+                self._save_playlist_to_config()
+
+    def _remove_selected(self):
+        rows = sorted(set(idx.row() for idx in self._list.selectionModel().selectedIndexes()), reverse=True)
+        for row in rows:
+            was_current = (row == self._current_idx)
+            self._playlist.pop(row)
+            self._list.takeItem(row)
+            if was_current:
+                self._player.stop()
+                self._current_idx = -1
+                self._is_playing = False
+                self._now_lbl.setText(tr("music_stopped"))
+                self._track_lbl.setText("")
+            elif row < self._current_idx:
+                self._current_idx -= 1
+        self._update_count()
+        self._save_playlist_to_config()
+
+    def _clear_playlist(self):
+        self._player.stop()
+        self._playlist.clear()
+        self._list.clear()
+        self._current_idx = -1
+        self._is_playing = False
+        self._now_lbl.setText(tr("music_stopped"))
+        self._track_lbl.setText("")
+        self._update_count()
+        self._save_playlist_to_config()
+
+    # --- Playback ---
+    def _toggle_play(self):
+        if not self._playlist:
+            return
+        if self._is_playing:
+            self._player.pause()
+            self._is_playing = False
+            self._play_btn.setIcon(self._play_icon)
+            self._play_btn.setToolTip(tr("music_play"))
+            self._now_lbl.setText(tr("music_paused"))
+        else:
+            if self._current_idx < 0:
+                self._current_idx = 0
+            if self._player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
+                self._player.play()
+            else:
+                self._play_track(self._current_idx)
+            self._is_playing = True
+            self._play_btn.setIcon(self._pause_icon)
+            self._play_btn.setToolTip(tr("music_pause"))
+            self._now_lbl.setText(tr("music_playing"))
+
+    def _play_track(self, idx):
+        if idx < 0 or idx >= len(self._playlist):
+            return
+        self._current_idx = idx
+        from PyQt6.QtCore import QUrl
+        self._player.setSource(QUrl.fromLocalFile(self._playlist[idx]))
+        self._player.play()
+        self._is_playing = True
+        self._play_btn.setIcon(self._pause_icon)
+        self._play_btn.setToolTip(tr("music_pause"))
+        self._now_lbl.setText(tr("music_playing"))
+        name = self._display_name(self._playlist[idx])
+        self._track_lbl.setText(name)
+        # Highlight in list
+        self._list.setCurrentRow(idx)
+
+    def _play_next(self):
+        if not self._playlist:
+            return
+        if self._loop_mode == "shuffle":
+            idx = random.randint(0, len(self._playlist) - 1)
+        else:
+            idx = (self._current_idx + 1) % len(self._playlist)
+        self._play_track(idx)
+
+    def _play_prev(self):
+        if not self._playlist:
+            return
+        idx = (self._current_idx - 1) % len(self._playlist)
+        self._play_track(idx)
+
+    def _cycle_loop(self):
+        modes = ["list", "one", "shuffle"]
+        labels = [tr("music_loop"), tr("music_loop_one"), tr("music_shuffle")]
+        cur = modes.index(self._loop_mode)
+        nxt = (cur + 1) % 3
+        self._loop_mode = modes[nxt]
+        self._loop_btn.setText("\u21bb  " + labels[nxt])
+        self._save_playlist_to_config()
+
+    def _on_media_status(self, status):
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            if self._loop_mode == "one":
+                self._player.setPosition(0)
+                self._player.play()
+            else:
+                self._play_next()
+
+    def _on_position(self, pos):
+        if not self._seeking:
+            self._progress.blockSignals(True)
+            self._progress.setValue(pos)
+            self._progress.blockSignals(False)
+            self._pos_lbl.setText(self._fmt_time(pos))
+
+    def _on_duration(self, dur):
+        self._progress.setRange(0, dur if dur > 0 else 0)
+        self._dur_lbl.setText(self._fmt_time(dur))
+
+    def _on_error(self, error, msg):
+        if error != QMediaPlayer.Error.NoError:
+            self._now_lbl.setText(f"Error: {msg}")
+
+    def _on_seek_pressed(self):
+        self._seeking = True
+
+    def _on_seek_released(self):
+        self._seeking = False
+        if self._player.duration() > 0:
+            self._player.setPosition(self._progress.value())
+            self._pos_lbl.setText(self._fmt_time(self._progress.value()))
+
+    def _on_volume(self, val):
+        self._audio_output.setVolume(val / 100.0)
+        self._vol_pct.setText(f"{val}%")
+        cfg = load_config()
+        cfg["music_volume"] = val
+        save_config(cfg)
+
+    def _on_item_dblclick(self, item):
+        idx = self._list.row(item)
+        self._play_track(idx)
+
+    # --- Helpers ---
+    @staticmethod
+    def _fmt_time(ms):
+        s = ms // 1000
+        m, sec = divmod(s, 60)
+        h, m2 = divmod(m, 60)
+        if h > 0:
+            return f"{h}:{m2:02d}:{sec:02d}"
+        return f"{m}:{sec:02d}"
+
+    @staticmethod
+    def _display_name(path):
+        """Return the file name without its extension (e.g. 'song.mp3' -> 'song')."""
+        return os.path.splitext(os.path.basename(path))[0]
+
+    def _update_count(self):
+        n = len(self._playlist)
+        self._count_lbl.setText(tr("music_of", cur=n, total=n) if n else "")
+        if n == 0:
+            self._track_lbl.setText(tr("music_empty"))
+
+    def _save_playlist_to_config(self):
+        cfg = load_config()
+        cfg["music_playlist"] = self._playlist
+        cfg["music_loop"] = self._loop_mode
+        save_config(cfg)
+
+    def _load_playlist_from_config(self):
+        cfg = load_config()
+        saved = cfg.get("music_playlist", [])
+        for p in saved:
+            if os.path.exists(p):
+                self._playlist.append(p)
+                self._list.addItem(self._display_name(p))
+        self._loop_mode = cfg.get("music_loop", "list")
+        modes = ["list", "one", "shuffle"]
+        labels = [tr("music_loop"), tr("music_loop_one"), tr("music_shuffle")]
+        if self._loop_mode in modes:
+            self._loop_btn.setText("\u21bb  " + labels[modes.index(self._loop_mode)])
+        self._update_count()
+
+    def stop_playback(self):
+        """Stop playback (called on app close)."""
+        self._player.stop()
+        self._is_playing = False
+
+
+# ===========================================================================
 # YouBoardApp — Main Window
 # ===========================================================================
 class YouBoardApp(QMainWindow):
@@ -1120,6 +1622,15 @@ class YouBoardApp(QMainWindow):
         self._bg_movie = None
         self._bg_pixmap = None
         self._bg_resize_timer = None
+        self._video_player = None
+        self._video_audio = None
+        self._video_sink = None
+        self._video_label = None
+        self._video_scrim = None
+        self._video_frame = None
+        self._video_save_timer = None
+        self._video_cur_pos = 0
+        self._video_resume_pos = 0
         self._image_loader = None
         self._fade_anim = None
         self._resize_edge = 0
@@ -1190,6 +1701,9 @@ class YouBoardApp(QMainWindow):
             tab_w = QWidget()
             self._tabs.addTab(tab_w, f"  {TAB_ICONS[etype]}  {self._type_label(etype)}  0  ")
             self._build_tab(tab_w, etype)
+        # Music player tab (5th tab)
+        self._music_tab = MusicPlayerTab()
+        self._tabs.addTab(self._music_tab, f"  \u266b  {tr('tab_music')}  ")
         self._tabs.blockSignals(False)
 
         self._build_statusbar(root)
@@ -1276,8 +1790,17 @@ class YouBoardApp(QMainWindow):
         root.addWidget(self.lightbar)
 
     def _apply_background(self):
-        """Load and display custom background image (static or animated GIF)."""
+        """Load and display custom background (image/GIF or video)."""
         cfg = load_config()
+        # --- Video background (takes priority over image) ---
+        video_path = cfg.get("bg_video", "")
+        if video_path and os.path.exists(video_path):
+            self._bg_label.hide()
+            self._start_video_bg(video_path, cfg.get("bg_video_mute", False))
+            return
+        # --- Stop any existing video ---
+        self._stop_video_bg()
+        # --- Image background ---
         bg_path = cfg.get("bg_image", "")
         if not bg_path or not os.path.exists(bg_path):
             self._bg_label.hide()
@@ -1290,6 +1813,151 @@ class YouBoardApp(QMainWindow):
         else:
             self._bg_pixmap = QPixmap(bg_path)
             self._scale_bg()
+
+    def _start_video_bg(self, video_path, muted=False):
+        """Create and start a looping video background rendered into a QLabel.
+
+        Uses QVideoSink to grab frames into a QLabel (same mechanism as the image
+        background) so the semi-transparent UI panels stay visible on top. A dark
+        scrim is layered above the video to keep content readable over bright clips.
+        """
+        self._stop_video_bg()
+        central = self.centralWidget()
+        cfg = load_config()
+
+        # Video frame label (bottom-most layer)
+        self._video_label = QLabel(central)
+        self._video_label.setGeometry(self.rect())
+        self._video_label.lower()
+        self._video_label.show()
+
+        # Dark scrim for readability (above video, below content)
+        self._video_scrim = QLabel(central)
+        self._video_scrim.setGeometry(self.rect())
+        self._video_scrim.setStyleSheet("background: rgba(0, 0, 0, 90);")
+        self._video_scrim.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._video_scrim.raise_()
+        self._video_scrim.show()
+
+        # Audio + player + video sink
+        self._video_audio = QAudioOutput(self)
+        self._video_cur_pos = 0
+        self._video_resume_pos = cfg.get("bg_video_pos", 0)
+        self.apply_video_audio()
+        self._video_sink = QVideoSink(self)
+        self._video_sink.videoFrameChanged.connect(self._on_video_frame)
+        self._video_player = QMediaPlayer(self)
+        self._video_player.setAudioOutput(self._video_audio)
+        self._video_player.setVideoOutput(self._video_sink)
+        self._video_player.mediaStatusChanged.connect(self._on_video_status)
+        self._video_player.positionChanged.connect(self._on_video_position)
+        from PyQt6.QtCore import QUrl
+        self._video_player.setSource(QUrl.fromLocalFile(video_path))
+        self._video_player.play()
+
+        # Periodically persist position so it survives restarts / setting changes
+        self._video_save_timer = QTimer(self)
+        self._video_save_timer.timeout.connect(self._save_video_pos)
+        self._video_save_timer.start(3000)
+
+    def apply_video_audio(self):
+        """Apply configured volume + mute to the running video background player."""
+        cfg = load_config()
+        muted = cfg.get("bg_video_mute", False)
+        vol = cfg.get("bg_video_volume", 50)
+        if self._video_audio:
+            self._video_audio.setVolume(0.0 if muted else max(0, min(100, vol)) / 100.0)
+
+    def _on_video_position(self, pos):
+        # Clamp to [0, duration] to avoid overshoot jitter at loop boundaries
+        if self._video_player:
+            dur = self._video_player.duration()
+            if dur > 0 and pos > dur:
+                pos = dur
+        if pos < 0:
+            pos = 0
+        self._video_cur_pos = pos
+
+    def _save_video_pos(self):
+        if self._video_player and self._video_cur_pos > 0:
+            cfg = load_config()
+            cfg["bg_video_pos"] = self._video_cur_pos
+            save_config(cfg)
+
+    def video_position(self):
+        return self._video_cur_pos if self._video_player else 0
+
+    def video_duration(self):
+        return self._video_player.duration() if self._video_player else 0
+
+    def video_seek(self, ms):
+        if self._video_player:
+            self._video_player.setPosition(ms)
+            self._video_cur_pos = ms
+
+    def _stop_video_bg(self):
+        """Stop and destroy video background player."""
+        if hasattr(self, "_video_save_timer") and self._video_save_timer:
+            self._video_save_timer.stop()
+            self._video_save_timer.deleteLater()
+            self._video_save_timer = None
+        # Persist final position before teardown
+        if self._video_player and getattr(self, "_video_cur_pos", 0) > 0:
+            cfg = load_config()
+            cfg["bg_video_pos"] = self._video_cur_pos
+            save_config(cfg)
+        if self._video_player:
+            self._video_player.stop()
+            self._video_player.deleteLater()
+            self._video_player = None
+        if self._video_audio:
+            self._video_audio.deleteLater()
+            self._video_audio = None
+        if self._video_sink:
+            self._video_sink.deleteLater()
+            self._video_sink = None
+        if self._video_label:
+            self._video_label.hide()
+            self._video_label.deleteLater()
+            self._video_label = None
+        if self._video_scrim:
+            self._video_scrim.hide()
+            self._video_scrim.deleteLater()
+            self._video_scrim = None
+        self._video_frame = None
+
+    def _on_video_frame(self, frame):
+        """Receive a decoded video frame and paint it onto the background label."""
+        if not frame.isValid() or not self._video_label:
+            return
+        img = frame.toImage()
+        if img.isNull():
+            return
+        self._video_frame = QPixmap.fromImage(img)
+        self._scale_video_bg()
+
+    def _scale_video_bg(self):
+        if self._video_frame and not self._video_frame.isNull() and self._video_label:
+            scaled = self._video_frame.scaled(
+                self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation)
+            self._video_label.setPixmap(scaled)
+            self._video_label.setGeometry(self.rect())
+
+    def _on_video_status(self, status):
+        """Restore saved position on load and loop video at the end."""
+        if status == QMediaPlayer.MediaStatus.LoadedMedia and self._video_player:
+            resume = getattr(self, "_video_resume_pos", 0)
+            dur = self._video_player.duration()
+            if resume and dur and 0 < resume < dur:
+                self._video_player.setPosition(resume)
+                self._video_cur_pos = resume
+            # Apply resume only once so a media reload won't jump back again
+            self._video_resume_pos = 0
+        elif status == QMediaPlayer.MediaStatus.EndOfMedia and self._video_player:
+            self._video_player.setPosition(0)
+            self._video_cur_pos = 0
+            self._video_player.play()
 
     def _on_bg_frame(self):
         if self._bg_movie:
@@ -1315,6 +1983,12 @@ class YouBoardApp(QMainWindow):
                 self._bg_resize_timer.setSingleShot(True)
                 self._bg_resize_timer.timeout.connect(self._scale_bg)
                 self._bg_resize_timer.start(30)
+        if self._video_label:
+            self._video_label.setGeometry(self.rect())
+            if self._video_frame and not self._video_frame.isNull():
+                self._scale_video_bg()
+        if self._video_scrim:
+            self._video_scrim.setGeometry(self.rect())
         # Re-render preview image on resize (label's own resizeEvent also handles this)
         if hasattr(self, '_cached_qpixmap') and self._cached_qpixmap and not self._cached_qpixmap.isNull():
             self._last_render_key = None
@@ -2606,6 +3280,9 @@ class YouBoardApp(QMainWindow):
     def closeEvent(self, event):
         """X = quit the app."""
         self._unregister_hotkey()
+        if hasattr(self, '_music_tab') and self._music_tab:
+            self._music_tab.stop_playback()
+        self._stop_video_bg()
         if self.monitor:
             self.monitor.stop()
         if hasattr(self, '_tray') and self._tray:
@@ -3050,6 +3727,111 @@ class SettingsDialog(QDialog):
         hint.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
         self._lay.addWidget(hint)
 
+        # Video background card
+        self._card(tr("set_video_bg"))
+        self._video_bg_path = cfg.get("bg_video", "")
+        vbg_row = QHBoxLayout()
+        self._vbg_lbl = QLabel(self._vbg_display_name())
+        self._vbg_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        self._vbg_lbl.setWordWrap(True)
+        self._vbg_lbl.setMaximumWidth(320)
+        vbg_row.addWidget(self._vbg_lbl, 1)
+        vbg_sel_btn = QPushButton(tr("set_video_bg_select"))
+        vbg_sel_btn.clicked.connect(self._select_video_bg)
+        vbg_row.addWidget(vbg_sel_btn)
+        vbg_clr_btn = QPushButton(tr("set_video_bg_clear"))
+        vbg_clr_btn.clicked.connect(self._clear_video_bg)
+        vbg_row.addWidget(vbg_clr_btn)
+        self._lay.addLayout(vbg_row)
+        vbg_hint = QLabel(tr("set_video_bg_hint"))
+        vbg_hint.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
+        self._lay.addWidget(vbg_hint)
+
+        # --- Video progress slider (drag to seek the live background video) ---
+        from PyQt6.QtWidgets import QSlider
+        prog_lbl = QLabel(tr("set_video_progress"))
+        prog_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold; font-size: 11px; padding-top: 4px;")
+        self._lay.addWidget(prog_lbl)
+        vprog_row = QHBoxLayout()
+        self._vprog_pos = QLabel("0:00")
+        self._vprog_pos.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
+        self._vprog_pos.setFixedWidth(38)
+        vprog_row.addWidget(self._vprog_pos)
+        self._vprog_slider = QSlider(Qt.Orientation.Horizontal)
+        self._vprog_slider.setRange(0, 0)
+        self._vprog_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._vprog_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{ background: {C['SURFACE3']}; height: 6px; border-radius: 3px; }}
+            QSlider::handle:horizontal {{ background: {C['ACCENT']}; width: 15px; height: 15px;
+                margin: -5px 0; border-radius: 7px; }}
+            QSlider::sub-page:horizontal {{ background: {C['ACCENT']}; border-radius: 3px; }}
+        """)
+        self._vprog_slider.sliderPressed.connect(self._vprog_pressed)
+        self._vprog_slider.sliderReleased.connect(self._vprog_released)
+        vprog_row.addWidget(self._vprog_slider, 1)
+        self._vprog_dur = QLabel("0:00")
+        self._vprog_dur.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
+        self._vprog_dur.setFixedWidth(38)
+        self._vprog_dur.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        vprog_row.addWidget(self._vprog_dur)
+        self._lay.addLayout(vprog_row)
+        self._vprog_seeking = False
+        # Poll the live player to reflect progress
+        self._vprog_timer = QTimer(self)
+        self._vprog_timer.timeout.connect(self._vprog_tick)
+        self._vprog_timer.start(500)
+
+        # --- Video volume slider ---
+        vol_lbl = QLabel(tr("set_video_volume"))
+        vol_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold; font-size: 11px; padding-top: 4px;")
+        self._lay.addWidget(vol_lbl)
+        vvol_row = QHBoxLayout()
+        vvol_icon = QLabel("\U0001f50a")
+        vvol_icon.setStyleSheet("font-size: 13px;")
+        vvol_row.addWidget(vvol_icon)
+        self._vvol_slider = QSlider(Qt.Orientation.Horizontal)
+        self._vvol_slider.setRange(0, 100)
+        self._vvol_slider.setValue(cfg.get("bg_video_volume", 50))
+        self._vvol_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._vvol_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{ background: {C['SURFACE3']}; height: 5px; border-radius: 2px; }}
+            QSlider::handle:horizontal {{ background: {C['TEAL']}; width: 13px; height: 13px;
+                margin: -4px 0; border-radius: 6px; }}
+            QSlider::sub-page:horizontal {{ background: {C['TEAL']}; border-radius: 2px; }}
+        """)
+        self._vvol_slider.valueChanged.connect(self._vvol_changed)
+        vvol_row.addWidget(self._vvol_slider, 1)
+        self._vvol_pct = QLabel(f"{cfg.get('bg_video_volume', 50)}%")
+        self._vvol_pct.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
+        self._vvol_pct.setFixedWidth(34)
+        vvol_row.addWidget(self._vvol_pct)
+        self._lay.addLayout(vvol_row)
+
+        # Mute checkbox (with a clear checkmark indicator)
+        mute_row = QHBoxLayout()
+        mute_txt = QVBoxLayout()
+        mt1 = QLabel(tr("set_video_bg_mute"))
+        mt1.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        mt2 = QLabel(tr("set_video_bg_mute_desc"))
+        mt2.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
+        mute_txt.addWidget(mt1)
+        mute_txt.addWidget(mt2)
+        mute_row.addLayout(mute_txt, 1)
+        self._vbg_mute_cb = QCheckBox()
+        self._vbg_mute_cb.setChecked(cfg.get("bg_video_mute", False))
+        check_png = _checkmark_png_path().replace("\\", "/")
+        self._vbg_mute_cb.setStyleSheet(f"""
+            QCheckBox {{ spacing: 6px; }}
+            QCheckBox::indicator {{ width: 20px; height: 20px; border: 2px solid {C['BORDER_LT']};
+                border-radius: 5px; background: {C['SURFACE2']}; }}
+            QCheckBox::indicator:hover {{ border-color: {C['ACCENT']}; }}
+            QCheckBox::indicator:checked {{ background: {C['ACCENT']}; border-color: {C['ACCENT']};
+                image: url({check_png}); }}
+        """)
+        self._vbg_mute_cb.toggled.connect(self._vmute_toggled)
+        mute_row.addWidget(self._vbg_mute_cb)
+        self._lay.addLayout(mute_row)
+
         # About card
         self._card(tr("set_about"))
         ver = QLabel(f"{APP_NAME}  v{APP_VERSION}")
@@ -3128,13 +3910,81 @@ class SettingsDialog(QDialog):
         self._bg_path = ""
         self._bg_lbl.setText(tr("set_bg_current"))
 
+    def _vbg_display_name(self):
+        if self._video_bg_path and os.path.exists(self._video_bg_path):
+            return os.path.basename(self._video_bg_path)
+        return tr("set_video_bg_current")
+
+    def _select_video_bg(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("set_video_bg_select"), "", tr("video_filter"))
+        if path:
+            self._video_bg_path = path
+            self._vbg_lbl.setText(os.path.basename(path))
+
+    def _clear_video_bg(self):
+        self._video_bg_path = ""
+        self._vbg_lbl.setText(tr("set_video_bg_current"))
+
+    @staticmethod
+    def _vfmt(ms):
+        s = ms // 1000
+        m, sec = divmod(s, 60)
+        h, m2 = divmod(m, 60)
+        return f"{h}:{m2:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+    def _vprog_pressed(self):
+        self._vprog_seeking = True
+
+    def _vprog_released(self):
+        self._vprog_seeking = False
+        self.app.video_seek(self._vprog_slider.value())
+
+    def _vprog_tick(self):
+        dur = self.app.video_duration()
+        if dur <= 0:
+            return
+        if self._vprog_slider.maximum() != dur:
+            self._vprog_slider.setRange(0, dur)
+            self._vprog_dur.setText(self._vfmt(dur))
+        if not self._vprog_seeking:
+            pos = self.app.video_position()
+            if pos < 0:
+                pos = 0
+            elif pos > dur:
+                pos = dur
+            self._vprog_slider.blockSignals(True)
+            self._vprog_slider.setValue(pos)
+            self._vprog_slider.blockSignals(False)
+            self._vprog_pos.setText(self._vfmt(pos))
+
+    def _vvol_changed(self, val):
+        self._vvol_pct.setText(f"{val}%")
+        cfg = load_config()
+        cfg["bg_video_volume"] = val
+        save_config(cfg)
+        self.app.apply_video_audio()
+
+    def _vmute_toggled(self, checked):
+        cfg = load_config()
+        cfg["bg_video_mute"] = checked
+        save_config(cfg)
+        self.app.apply_video_audio()
+
     def _save(self):
+        if hasattr(self, "_vprog_timer") and self._vprog_timer:
+            self._vprog_timer.stop()
         cfg = load_config()
         old_bg = cfg.get("bg_image", "")
-        bg_changed = (old_bg != self._bg_path)
+        old_video = cfg.get("bg_video", "")
+        bg_changed = (old_bg != self._bg_path) or (old_video != self._video_bg_path)
         cfg["bg_image"] = self._bg_path
+        cfg["bg_video"] = self._video_bg_path
+        cfg["bg_video_mute"] = self._vbg_mute_cb.isChecked()
+        cfg["bg_video_volume"] = self._vvol_slider.value()
         cfg["hotkey"] = self._hotkey_edit.get_hotkey() or "alt+q"
         save_config(cfg)
+        self.app.apply_video_audio()
         self.accept()
         self.app.apply_settings(self._lang_sel, self._auto_cb.isChecked(),
                                 self._theme_sel, bg_changed)
@@ -3193,12 +4043,14 @@ class SettingsDialog(QDialog):
             exe_dir = os.path.dirname(current_exe)
             tmp_exe = os.path.join(exe_dir, "_YouBoard_update.exe")
 
-            # Candidate URLs: direct first, then GitHub mirrors for reliability
+            # Candidate URLs: direct GitHub first (works worldwide, including
+            # overseas users), then a curated set of accelerators as fallbacks
+            # (mainly for users in mainland China where GitHub can be unreliable).
             urls = [dl_url]
             if "github.com" in dl_url:
-                for mirror in ("https://ghproxy.com/", "https://mirror.ghproxy.com/",
-                               "https://gh-proxy.com/", "https://ghproxy.net/",
-                               "https://github.moeyy.xyz/", "https://gh.api.99988866.xyz/"):
+                for mirror in ("https://ghproxy.net/", "https://gh-proxy.com/",
+                               "https://mirror.ghproxy.com/", "https://ghfast.top/",
+                               "https://github.moeyy.xyz/", "https://ghproxy.com/"):
                     urls.append(mirror + dl_url)
 
             # Real-time progress dialog
