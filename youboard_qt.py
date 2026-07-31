@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-YouBoard v2.0.0 — 剪贴板历史管理器 / Clipboard History Manager
+YouBoard v2.1.0 — 剪贴板历史管理器 / Clipboard History Manager
 PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系统托盘。
 """
 
@@ -32,7 +32,7 @@ except Exception:
     except Exception:
         pass
 
-APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.2.0"
+APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.2.1"
 try:
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
 except Exception:
@@ -90,7 +90,7 @@ from youboard_core import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -396,6 +396,8 @@ STRINGS = {
         "upd_new_title": "发现新版本",
         "upd_new_msg": "当前版本: v{cur}\n最新版本: v{new} ({name})\n\n是否立即更新？（将下载并替换当前程序）",
         "upd_failed": "检查失败: {e}",
+        "upd_network_err": "无法连接到更新服务器，请检查网络后重试",
+        "upd_rate_limit": "请求过于频繁，请稍后再试（GitHub 限流）",
         # Music player
         "tab_music": "音乐", "music_title": "音乐播放器",
         "music_add": "添加音乐", "music_remove": "移除", "music_clear": "清空列表",
@@ -551,6 +553,8 @@ STRINGS = {
         "upd_new_title": "发现新版本 · New Version",
         "upd_new_msg": "当前版本: v{cur}\n最新版本: v{new} ({name})\n是否立即更新？（将下载并替换当前程序）\n\nCurrent: v{cur} → Latest: v{new} ({name})\nUpdate now? (Will download and replace the program)",
         "upd_failed": "检查失败: {e}\nCheck failed: {e}",
+        "upd_network_err": "Cannot connect to update server. Please check your network and try again.\n无法连接到更新服务器，请检查网络后重试",
+        "upd_rate_limit": "Too many requests. Please try again later (GitHub rate limit).\n请求过于频繁，请稍后再试（GitHub 限流）",
         # Music player
         "tab_music": "Music", "music_title": "Music Player",
         "music_add": "Add Music", "music_remove": "Remove", "music_clear": "Clear List",
@@ -833,12 +837,15 @@ class _DownloadWorker(QThread):
     CHUNK = 512 * 1024    # 512KB read buffer
     TIMEOUT = 12          # connection timeout seconds
     MAX_PARALLEL = 4      # mirror racing fallback: race up to 4 sources
+    SPEED_CHECK_TIME = 5  # seconds to wait before judging speed
+    MIN_SPEED = 200 * 1024  # 200KB/s minimum acceptable speed
 
     def __init__(self, urls, dest_path, parent=None):
         super().__init__(parent)
         self._urls = urls
         self._dest = dest_path
         self._abort = False
+        self._slow_abort = False  # set when current source is too slow
         self._lock = threading.Lock()
         self._received = 0  # total bytes received across all segments
         self._total = 0
@@ -914,12 +921,15 @@ class _DownloadWorker(QThread):
             return False
 
     def _segmented_download(self, url, total):
-        """Download file in parallel segments using Range requests. Returns (ok, err)."""
+        """Download file in parallel segments using Range requests. Returns (ok, err).
+        If speed is below MIN_SPEED after SPEED_CHECK_TIME, aborts to try next source."""
         import concurrent.futures
-        # Reset progress
+        import time as _time
+        # Reset progress and slow flag for this source
         with self._lock:
             self._received = 0
             self._total = total
+        self._slow_abort = False
         self.progress.emit(0, total)
 
         # Pre-allocate output file
@@ -938,30 +948,47 @@ class _DownloadWorker(QThread):
             end = (start + seg_size - 1) if i < self.SEGMENTS - 1 else (total - 1)
             segments.append((start, end))
 
+        start_time = _time.monotonic()
+        speed_checked = False
         errors = []
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.SEGMENTS) as pool:
             futures = [pool.submit(self._download_segment, url, start, end)
                        for start, end in segments]
             for fut in concurrent.futures.as_completed(futures):
+                # Speed check: after warmup, if too slow, abort this source
+                if not speed_checked:
+                    elapsed = _time.monotonic() - start_time
+                    if elapsed >= self.SPEED_CHECK_TIME:
+                        speed_checked = True
+                        with self._lock:
+                            recv = self._received
+                        speed = recv / elapsed if elapsed > 0 else 0
+                        if speed < self.MIN_SPEED and recv < total * 0.5:
+                            # Too slow and not even halfway done → try next source
+                            self._slow_abort = True
+                            try:
+                                os.remove(self._dest)
+                            except OSError:
+                                pass
+                            return False, "速度过慢，切换源"
                 try:
                     ok, err = fut.result()
                     if not ok:
                         errors.append(err)
                 except Exception as e:
                     errors.append(str(e))
-                if self._abort:
-                    return False, "已取消"
+                if self._abort or self._slow_abort:
+                    return False, "已取消" if self._abort else "速度过慢，切换源"
 
         if errors and len(errors) == len(segments):
-            # All segments failed
             try:
                 os.remove(self._dest)
             except OSError:
                 pass
             return False, errors[0]
         if errors:
-            # Some segments failed - retry them once
-            pass  # For simplicity, if any failed we consider it failed
+            pass
         return True, ""
 
     def _download_segment(self, url, start, end):
@@ -977,7 +1004,7 @@ class _DownloadWorker(QThread):
                 with open(self._dest, "r+b") as f:
                     f.seek(offset)
                     while True:
-                        if self._abort:
+                        if self._abort or self._slow_abort:
                             return False, "已取消"
                         buf = resp.read(self.CHUNK)
                         if not buf:
@@ -1038,7 +1065,12 @@ class _HotkeyWorker(threading.Thread):
 
     def run(self):
         user32 = ctypes.windll.user32
-        user32.RegisterHotKey(None, HOTKEY_ID, self._mods, self._vk)
+        # Try to register; if fails, unregister stale entry and retry
+        if not user32.RegisterHotKey(None, HOTKEY_ID, self._mods, self._vk):
+            user32.UnregisterHotKey(None, HOTKEY_ID)
+            import time
+            time.sleep(0.1)
+            user32.RegisterHotKey(None, HOTKEY_ID, self._mods, self._vk)
         msg = ctypes.wintypes.MSG()
         while self._running:
             ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
@@ -3687,7 +3719,12 @@ class YouBoardApp(QMainWindow):
         return mods, vk
 
     def _on_hotkey(self):
-        """Toggle window visibility on hotkey press."""
+        """Toggle window visibility on hotkey press (with debounce)."""
+        import time
+        now = time.monotonic()
+        if hasattr(self, '_hk_last_time') and (now - self._hk_last_time) < 0.4:
+            return  # debounce: ignore rapid double-fires
+        self._hk_last_time = now
         if self.isVisible() and not self.isMinimized():
             self.hide()
         else:
@@ -4303,7 +4340,14 @@ class SettingsDialog(QDialog):
             # Download new EXE
             self._do_update(dl_url)
         except Exception as e:
-            QMessageBox.warning(self, tr("upd_title"), tr("upd_failed", e=e))
+            import urllib.error
+            err_str = str(e)
+            if isinstance(e, urllib.error.HTTPError) and e.code == 403:
+                QMessageBox.warning(self, tr("upd_title"), tr("upd_rate_limit"))
+            elif isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError, OSError)):
+                QMessageBox.warning(self, tr("upd_title"), tr("upd_network_err"))
+            else:
+                QMessageBox.warning(self, tr("upd_title"), tr("upd_failed", e=err_str))
 
     def _do_update(self, dl_url):
         """Download new EXE in-app with live progress, then replace + restart."""
@@ -4380,9 +4424,17 @@ class SettingsDialog(QDialog):
             exe_dir = os.path.dirname(current_exe)
             bat_path = os.path.join(exe_dir, "_update.bat")
             bat_content = f"""@echo off
-timeout /t 2 /nobreak >nul
-del /f "{current_exe}"
-move /y "{tmp_exe}" "{current_exe}"
+chcp 65001 >nul 2>&1
+timeout /t 3 /nobreak >nul
+:del_loop
+del /f "{current_exe}" >nul 2>&1
+if exist "{current_exe}" (
+    timeout /t 1 /nobreak >nul
+    goto del_loop
+)
+move /y "{tmp_exe}" "{current_exe}" >nul 2>&1
+for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
+timeout /t 1 /nobreak >nul
 start "" "{current_exe}"
 del "%~f0"
 """
