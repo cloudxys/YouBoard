@@ -15,7 +15,7 @@
 - **历史快照** — 记录删除/清空操作，支持一键回滚，新条目淡入动画
 - **中英双语** — 设置中一键切换语言，检查更新等对话框完整适配
 - **开机自启动** — 设置中开关控制
-- **自动更新** — 设置 → 关于 → 检查更新，软件内多线程分段下载（8线程并行 Range 请求，类似 IDM 原理，跑满带宽），进度条实时显示 MB/百分比，多镜像源自动探测，下载完成自动替换重启
+- **自动更新** — 设置 → 关于 → 检查更新，软件内多线程分段下载（8线程并行 Range 请求，类似 IDM 原理，跑满带宽），5秒速度检测自动切换最快源，进度条实时显示 MB/百分比，全球多镜像探测，下载完成自动替换重启
 - **快捷键** — Enter 复制、Del 删除、Space 置顶、Ctrl+A 全选、Ctrl+O 打开、F5 刷新
 - **环境灯带** — 全宽 RGB 灯带动效，呼吸流转 + 按键波纹 + 操作浪涌（QPainter 30fps）
 - **自定义背景** — 支持 PNG/JPG/BMP 静态 + GIF 动态背景，面板半透明通透显露
@@ -32,7 +32,7 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v2.0.0.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v2.1.0.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -71,7 +71,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v2.0.0.exe`
+输出：`YouBoard_Setup_v2.1.0.exe`
 
 ## 📁 项目结构
 
@@ -88,15 +88,34 @@ YouBoard/
 │   ├── shangyige.ico    # 音乐：上一首
 │   ├── bofang.ico       # 音乐：播放
 │   └── xiayige.ico      # 音乐：下一首
-├── version_info.txt     # EXE 版本信息（v2.0.0）
+├── version_info.txt     # EXE 版本信息（v2.1.0）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
-├── youboard_setup.iss   # Inno Setup 安装脚本（v2.0.0）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v2.1.0）
 ├── youboard_config.json # 用户配置（自动生成）
 └── .youboard.json       # 剪贴板历史数据（自动生成）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v2.1.0
+
+- 🔧 **更新重启修复**
+  - 修复自动更新后弹出 "Failed to load Python DLL" 错误弹窗的问题
+  - 更新脚本增加文件锁重试、临时目录清理和启动缓冲，确保新旧进程平稳交接
+  - 更新只替换 EXE，所有用户数据（历史、配置、播放列表、背景）完整保留
+- 🌍 **全球下载速度优化**
+  - 新增速度检测机制：下载 5 秒后评估实际速度，低于 200KB/s 自动切换下一个镜像源
+  - 海外用户走 GitHub 直连 CDN + 8 线程分段，跑满带宽不受镜像影响
+  - 国内用户 GitHub 慢时秒切加速镜像，不再傻等超时
+  - 每个源都先探测 Range 支持，支持就 8 线程并行，不支持就单流，太慢就切
+- 🛡️ **检查更新友好提示**
+  - GitHub 403 限流 → "请求过于频繁，请稍后再试"（中英双语）
+  - 网络断开/超时 → "无法连接到更新服务器，请检查网络后重试"（中英双语）
+  - 不再显示原始英文报错
+- ⌨️ **全局快捷键稳定性**
+  - 新增 400ms 防抖：防止快捷键双触发导致窗口弹出后立刻缩回
+  - Win32 注册失败时自动反注册重试，避免静默失效
 
 ### YouBoard v2.0.0
 
