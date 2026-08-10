@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-YouBoard v2.1.0 — 剪贴板历史管理器 / Clipboard History Manager
+YouBoard v2.2.0 — 剪贴板历史管理器 / Clipboard History Manager
 PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系统托盘。
 """
 
 import colorsys
 import ctypes
 import ctypes.wintypes
+import gc
 import locale
 import math
 import os
@@ -65,10 +66,8 @@ from PyQt6.QtGui import (
     QAction, QKeySequence, QShortcut, QBrush, QPen,
     QLinearGradient, QPainterPath, QCursor, QMovie,
 )
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink
-
 try:
-    from PIL import Image as PILImage
+    import PIL  # noqa: F401  # 轻量探测；PIL.Image 按需在调用点懒加载，降低常驻内存
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -90,12 +89,14 @@ from youboard_core import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
 PREVIEW_MAX = 1600
 TAB_ICONS = {"text": "\u270e", "image": "\u25a3", "file": "\u25a0", "url": "\u25c9"}
+TAB_ICON_FILES = {"text": "wenben.ico", "image": "tupian.ico",
+                  "file": "wenjian.ico", "url": "wangzhi.ico"}
 
 
 def _res_icon(name):
@@ -109,33 +110,34 @@ def _res_icon(name):
     return os.path.join(here, "res", name)
 
 
+def _build_tray_icon():
+    """Build the tray QIcon straight from YouBoard.ico.
+
+    直接让 Windows/Qt 从 ico 选尺寸缩放（窗口图标已验证该路径必然正常）；
+    预缩放 pixmap 转 HICON 在部分系统上会产生空白占位图标，弃用。
+    ico 文件本身不做任何修改。
+    """
+    if not LOGO_ICO or not os.path.exists(LOGO_ICO):
+        return QIcon()
+    return QIcon(LOGO_ICO)
+
+
 ICO_MIN = _res_icon("zuixiao.ico")
 ICO_MAX = _res_icon("zuida.ico")
 ICO_RESTORE = _res_icon("zuidahuifu.ico")
 ICO_CLOSE = _res_icon("guanbi.ico")
-ICO_MUSIC_PREV = _res_icon("shangyige.ico")
-ICO_MUSIC_PLAY = _res_icon("bofang.ico")
-ICO_MUSIC_NEXT = _res_icon("xiayige.ico")
+ICO_SETTINGS = _res_icon("shezhi.ico")
 
 
-def _make_pause_icon(size=52, color="#ffffff"):
-    """Paint a simple two-bar pause icon so the play button has a pause state."""
-    pm = QPixmap(size, size)
-    pm.fill(Qt.GlobalColor.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.setBrush(QColor(color))
-    p.setPen(Qt.PenStyle.NoPen)
-    bar_w = max(2, int(size * 0.16))
-    gap = max(2, int(size * 0.10))
-    h = int(size * 0.52)
-    top = (size - h) // 2
-    cx = size // 2
-    r = bar_w / 2.5
-    p.drawRoundedRect(cx - gap - bar_w, top, bar_w, h, r, r)
-    p.drawRoundedRect(cx + gap, top, bar_w, h, r, r)
-    p.end()
-    return QIcon(pm)
+def _force_square_corners(widget):
+    """Win11 会给无边框窗口自动加圆角（四角留缝），用 DWM 强制直角贴合屏幕。"""
+    try:
+        hwnd = int(widget.winId())
+        pref = ctypes.c_int(1)  # DWMWCP_DONOTROUND
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))  # DWMWA_WINDOW_CORNER_PREFERENCE
+    except Exception:
+        pass
 
 
 def _checkmark_png_path():
@@ -202,14 +204,23 @@ apply_theme(load_config().get("theme", "dark"))
 # QSS stylesheet generation
 # ===========================================================================
 
-def build_qss(theme_name="dark"):
-    """Generate a complete QSS stylesheet for the given theme."""
+def build_qss(theme_name="dark", flush=False):
+    """Generate a complete QSS stylesheet for the given theme.
+
+    flush=True（窗口最大化时）：面板与搜索框左侧改直角，
+    内容贴合屏幕左缘，消除圆角在屏幕边缘形成的缺口观感。
+    """
     apply_theme(theme_name)
     c = C
+    pane_radius = "0" if flush else "8px"
+    flush_rules = ""
+    if flush:
+        flush_rules = ("QLineEdit#searchEdit { border-top-left-radius: 0; border-bottom-left-radius: 0; }"
+                       "QTabBar::tab:first:selected { border-top-left-radius: 0; }")
     return f"""
     QMainWindow, QDialog {{ background-color: {c['BG']}; }}
     QWidget {{ color: {c['TEXT']}; font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; font-size: 13px; }}
-    QTabWidget::pane {{ border: none; background: {c['PANEL_ALPHA']}; border-radius: 8px; }}
+    QTabWidget::pane {{ border: none; background: {c['PANEL_ALPHA']}; border-radius: {pane_radius}; }}
     QTabBar::tab {{ background: transparent; color: {c['TEXT_SEC']}; padding: 8px 18px; margin-right: 2px;
         border-top-left-radius: 6px; border-top-right-radius: 6px; font-weight: bold; }}
     QTabBar::tab:selected {{ background: {c['PANEL_ALPHA']}; color: {c['ACCENT']}; }}
@@ -267,6 +278,7 @@ def build_qss(theme_name="dark"):
         border-radius: 10px; }}
     QFrame[cssClass="glass2"] {{ background: {c['PANEL_ALPHA2']}; border: 1px solid {c['BORDER']};
         border-radius: 8px; }}
+    {flush_rules}
     """
 
 # ===========================================================================
@@ -278,7 +290,7 @@ STRINGS = {
         "manage": " 管理 ▾ ", "settings_btn": " ⚙ 设置 ",
         "total_records": "共 {n} 条记录", "monitor_live": "实时监控中",
         "monitor_off": "未监控", "monitor_stopped": "监控已停止",
-        "type_text": "文字", "type_image": "图片", "type_file": "文件", "type_url": "网址",
+        "type_text": "文本", "type_image": "图片", "type_file": "文件", "type_url": "网址",
         "panel_preview": " 预览 ", "panel_snapshots": " 历史快照 ", "panel_urls": " 网址 ",
         "preview_placeholder": "选择一条记录\n即可预览",
         "btn_restore": "恢复选中状态", "btn_clear_history": "清空历史",
@@ -318,7 +330,7 @@ STRINGS = {
         "st_nothing_to_export": "没有可导出的记录", "st_exported": "已导出至 {name}",
         "st_export_files_hint": "文件记录引用的是外部路径，可用「复制路径」",
         "st_copied_image_path": "已复制图片文件路径", "st_copied_paths": "已复制文件路径列表",
-        "st_copied_preview": "已复制预览文字（{n} 字符）",
+        "st_copied_preview": "已复制预览文本（{n} 字符）",
         "st_autostart_on": "已开启开机自启动", "st_autostart_off": "已关闭开机自启动",
         "st_autostart_failed": "设置开机自启动失败",
         "st_restored": "已恢复历史状态", "st_history_cleared": "历史记录已清空",
@@ -357,7 +369,7 @@ STRINGS = {
         "m_open_locate": "打开 / 定位文件  (Ctrl+O)", "m_copy_paths": "复制路径列表",
         "m_toggle_pin": "置顶 / 取消置顶  (Space)", "m_delete": "删除  (Del)",
         "m_delete_n": "删除（{n} 条）  (Del)",
-        "m_copy_selection": "复制选中文字", "m_copy_all": "复制全部内容",
+        "m_copy_selection": "复制选中文本", "m_copy_all": "复制全部内容",
         "m_select_all": "全选", "m_open_url": "在浏览器中打开网址",
         "m_refresh": "刷新列表  (F5)",
         "m_clear_type": "清空「{t}」分类…", "m_clear_type_unpinned": "清除「{t}」非置顶…",
@@ -390,6 +402,13 @@ STRINGS = {
         "tray_quit": "退出",
         "set_hotkey_title": "全局快捷键",
         "set_hotkey_desc": "按下快捷键显示/隐藏 YouBoard（如 alt+q、ctrl+shift+v）",
+        "set_widget_title": "桌面小组件",
+        "set_widget_desc": "在桌面显示一个置顶小窗口，实时更新当前剪贴板内容与最近记录，点击条目即可复制（默认开启）",
+        "widget_title": "剪贴板 · 实时",
+        "widget_empty": "暂无剪贴内容",
+        "widget_history": "最近记录（点击可复制）",
+        "widget_click_copy": "点击复制回剪贴板",
+        "st_copied": "已复制回剪贴板",
         "set_check_update": "检查更新",
         "upd_title": "检查更新",
         "upd_latest": "已是最新版本 v{v}",
@@ -398,36 +417,6 @@ STRINGS = {
         "upd_failed": "检查失败: {e}",
         "upd_network_err": "无法连接到更新服务器，请检查网络后重试",
         "upd_rate_limit": "请求过于频繁，请稍后再试（GitHub 限流）",
-        # Music player
-        "tab_music": "音乐", "music_title": "音乐播放器",
-        "music_add": "添加音乐", "music_remove": "移除", "music_clear": "清空列表",
-        "music_play": "播放", "music_pause": "暂停", "music_next": "下一首", "music_prev": "上一首",
-        "music_loop": "列表循环", "music_loop_one": "单曲循环", "music_shuffle": "随机播放",
-        "music_volume": "音量", "music_empty": "播放列表为空\n点击「添加音乐」选择音频文件",
-        "music_playing": "正在播放", "music_paused": "已暂停", "music_stopped": "已停止",
-        "music_of": "{cur} / {total}",
-        "music_filter": "音频文件 (*.mp3 *.wav *.flac *.ogg *.m4a *.aac *.wma *.opus *.aiff *.ape);;所有文件 (*.*)",
-        "music_add_folder": "添加文件夹",
-        "music_folder_filter": "选择包含音频文件的文件夹",
-        "music_library": "音乐库",
-        "music_library_set": "设置音乐库文件夹",
-        "music_library_refresh": "刷新音乐库",
-        "music_library_current": "音乐库：{path}",
-        "music_library_none": "未设置音乐库",
-        "music_library_scanned": "已扫描音乐库，新增 {n} 首歌曲",
-        "music_library_no_new": "音乐库无新歌曲",
-        "music_library_folder_title": "选择音乐库文件夹（自动识别其中所有歌曲）",
-        # Video background
-        "set_video_bg": "视频背景 / VIDEO BACKGROUND",
-        "set_video_bg_select": "选择视频文件",
-        "set_video_bg_clear": "恢复默认",
-        "set_video_bg_hint": "支持 MP4 / AVI / MKV / MOV / WMV / FLV / WebM，视频将循环播放并带有原声",
-        "set_video_bg_current": "当前视频背景：默认（无）",
-        "set_video_bg_mute": "视频静音",
-        "set_video_bg_mute_desc": "开启后视频背景不播放声音",
-        "video_filter": "视频文件 (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.ts *.mpg *.mpeg);;所有文件 (*.*)",
-        "set_video_progress": "视频进度（拖动可定位）",
-        "set_video_volume": "视频音量",
     },
     "en": {
         "win_title": "YouBoard · Clipboard History", "brand_sub": "Clipboard History",
@@ -547,6 +536,13 @@ STRINGS = {
         "tray_quit": "Quit",
         "set_hotkey_title": "HOTKEY",
         "set_hotkey_desc": "Press shortcut to show/hide YouBoard (e.g. alt+q, ctrl+shift+v)",
+        "set_widget_title": "Desktop Widget",
+        "set_widget_desc": "Show a small always-on-top window with live clipboard content and recent history; click an item to copy it (on by default)",
+        "widget_title": "Clipboard · Live",
+        "widget_empty": "Clipboard is empty",
+        "widget_history": "Recent (click to copy)",
+        "widget_click_copy": "Click to copy back to clipboard",
+        "st_copied": "Copied back to clipboard",
         "set_check_update": "Check Update",
         "upd_title": "检查更新 · Check Update",
         "upd_latest": "已是最新版本 v{v}\nAlready on the latest version v{v}",
@@ -555,36 +551,6 @@ STRINGS = {
         "upd_failed": "检查失败: {e}\nCheck failed: {e}",
         "upd_network_err": "Cannot connect to update server. Please check your network and try again.\n无法连接到更新服务器，请检查网络后重试",
         "upd_rate_limit": "Too many requests. Please try again later (GitHub rate limit).\n请求过于频繁，请稍后再试（GitHub 限流）",
-        # Music player
-        "tab_music": "Music", "music_title": "Music Player",
-        "music_add": "Add Music", "music_remove": "Remove", "music_clear": "Clear List",
-        "music_play": "Play", "music_pause": "Pause", "music_next": "Next", "music_prev": "Previous",
-        "music_loop": "Loop All", "music_loop_one": "Loop One", "music_shuffle": "Shuffle",
-        "music_volume": "Volume", "music_empty": "Playlist is empty\nClick 'Add Music' to select audio files",
-        "music_playing": "Now Playing", "music_paused": "Paused", "music_stopped": "Stopped",
-        "music_of": "{cur} / {total}",
-        "music_filter": "Audio Files (*.mp3 *.wav *.flac *.ogg *.m4a *.aac *.wma *.opus *.aiff *.ape);;All Files (*.*)",
-        "music_add_folder": "Add Folder",
-        "music_folder_filter": "Select a folder containing audio files",
-        "music_library": "Library",
-        "music_library_set": "Set Library Folder",
-        "music_library_refresh": "Refresh Library",
-        "music_library_current": "Library: {path}",
-        "music_library_none": "No library folder set",
-        "music_library_scanned": "Library scanned, {n} new song(s) added",
-        "music_library_no_new": "No new songs in library",
-        "music_library_folder_title": "Select music library folder (auto-detects all songs)",
-        # Video background
-        "set_video_bg": "Video Background / 视频背景",
-        "set_video_bg_select": "Choose video file",
-        "set_video_bg_clear": "Reset to default",
-        "set_video_bg_hint": "Supports MP4 / AVI / MKV / MOV / WMV / FLV / WebM, video loops with original audio",
-        "set_video_bg_current": "Current video background: Default (none)",
-        "set_video_bg_mute": "Mute video",
-        "set_video_bg_mute_desc": "When enabled, video background plays without sound",
-        "video_filter": "Video Files (*.mp4 *.avi *.mkv *.mov *.wmv *.flv *.webm *.m4v *.ts *.mpg *.mpeg);;All Files (*.*)",
-        "set_video_progress": "Video progress (drag to seek)",
-        "set_video_volume": "Video volume",
     },
 }
 
@@ -699,6 +665,16 @@ class AmbientLightBar(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(33)  # ~30 fps
 
+    def pause(self):
+        """Stop the animation timer (window hidden) to save CPU."""
+        self._timer.stop()
+
+    def resume(self):
+        """Restart the animation timer (window shown)."""
+        if not self._timer.isActive():
+            self._last_tick = time.perf_counter()
+            self._timer.start(33)
+
     def pulse(self, hue, x=None, strength=1.0):
         """Emit an expanding ring pulse at normalised position x."""
         if x is None:
@@ -809,6 +785,7 @@ class ImageLoader(QThread):
 
     def run(self):
         try:
+            from PIL import Image as PILImage
             img = PILImage.open(self.path)
             img.load()
             if img.mode not in ("RGB", "RGBA"):
@@ -1326,6 +1303,13 @@ class _TitleBar(QWidget):
         self._toggle_max()
 
     # --- Animated shimmer ---
+    def pause_shimmer(self):
+        self._shimmer_timer.stop()
+
+    def resume_shimmer(self):
+        if not self._shimmer_timer.isActive():
+            self._shimmer_timer.start(50)
+
     def _tick_shimmer(self):
         self._shimmer_offset += 0.02
         if self._shimmer_offset > 1.0:
@@ -1359,536 +1343,356 @@ class _TitleBar(QWidget):
 
 
 # ===========================================================================
-# MusicPlayerTab — In-app music player with playlist
+# DesktopClipboardWidget — 桌面小组件：实时显示当前剪贴板内容 + 最近历史
 # ===========================================================================
-AUDIO_EXTS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus", ".aiff", ".ape"}
+class DesktopClipboardWidget(QWidget):
+    """小型置顶桌面窗口：显示最新一条剪贴板内容 + 最近 20 条历史记录。
 
+    特性：无边框、总在最前、不在任务栏显示；可拖拽移动（位置记忆）；
+    拖动右下角可缩放大小（尺寸记忆）；点击历史条目复制回剪贴板；
+    右上角 ✕ 关闭并在设置中停用本组件。
+    """
 
-class MusicPlayerTab(QWidget):
-    """A full-featured music player tab with playlist, loop modes, and volume control."""
+    HISTORY_ROWS = 20
+    MIN_W, MIN_H = 230, 170
+    MAX_W, MAX_H = 1200, 1080
+    _GRIP = 18        # 右下角缩放热区边长
+    _EDGE = 12        # 底边上下缩放缓区高度
+    IDLE_OPACITY = 0.55   # 平时若隐若现
+    HOVER_OPACITY = 1.0   # 鼠标悬停时完全清晰
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._playlist = []  # list of file paths
-        self._current_idx = -1
-        self._loop_mode = "list"  # "list", "one", "shuffle"
-        self._is_playing = False
-        self._seeking = False  # True while user drags the progress slider
-
-        # Audio output + player
-        self._audio_output = QAudioOutput(self)
-        self._player = QMediaPlayer(self)
-        self._player.setAudioOutput(self._audio_output)
-        self._player.mediaStatusChanged.connect(self._on_media_status)
-        self._player.positionChanged.connect(self._on_position)
-        self._player.durationChanged.connect(self._on_duration)
-        self._player.errorOccurred.connect(self._on_error)
-
-        # Load saved volume
-        cfg = load_config()
-        vol = cfg.get("music_volume", 70)
-        self._audio_output.setVolume(vol / 100.0)
-
-        self._build_ui()
-        self._load_playlist_from_config()
-
-    def _build_ui(self):
-        from PyQt6.QtWidgets import QSlider
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 14)
-        layout.setSpacing(14)
-
-        # --- Now playing (no card, sits directly on the background) ---
-        self._now_lbl = QLabel(tr("music_stopped"))
-        self._now_lbl.setStyleSheet(f"color: {C['ACCENT']}; font-size: 13px; font-weight: bold; "
-                                    f"letter-spacing: 1px; background: transparent;")
-        layout.addWidget(self._now_lbl)
-
-        self._track_lbl = QLabel(tr("music_empty"))
-        self._track_lbl.setStyleSheet(f"color: {C['TEXT']}; font-size: 15px; font-weight: bold; "
-                                      f"background: transparent;")
-        self._track_lbl.setWordWrap(True)
-        layout.addWidget(self._track_lbl)
-
-        # --- Progress row ---
-        prog_row = QHBoxLayout()
-        prog_row.setSpacing(10)
-        self._pos_lbl = QLabel("0:00")
-        self._pos_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px; background: transparent;")
-        self._pos_lbl.setFixedWidth(40)
-        prog_row.addWidget(self._pos_lbl)
-
-        self._progress = QSlider(Qt.Orientation.Horizontal)
-        self._progress.setRange(0, 0)
-        self._progress.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._progress.setStyleSheet(f"""
-            QSlider::groove:horizontal {{ background: {C['SURFACE3']}; height: 6px; border-radius: 3px; }}
-            QSlider::handle:horizontal {{ background: {C['ACCENT']}; width: 16px; height: 16px;
-                margin: -5px 0; border-radius: 8px; border: 2px solid {C['BG']}; }}
-            QSlider::handle:horizontal:hover {{ background: {C['ACCENT_HV']}; }}
-            QSlider::sub-page:horizontal {{ background: {C['ACCENT']}; border-radius: 3px; }}
-        """)
-        self._progress.sliderPressed.connect(self._on_seek_pressed)
-        self._progress.sliderReleased.connect(self._on_seek_released)
-        prog_row.addWidget(self._progress, 1)
-
-        self._dur_lbl = QLabel("0:00")
-        self._dur_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px; background: transparent;")
-        self._dur_lbl.setFixedWidth(40)
-        self._dur_lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        prog_row.addWidget(self._dur_lbl)
-        layout.addLayout(prog_row)
-
-        # --- Transport controls (custom icons) ---
-        self._play_icon = QIcon(ICO_MUSIC_PLAY)
-        self._pause_icon = _make_pause_icon(52, "#ffffff")
-        ctrl_row = QHBoxLayout()
-        ctrl_row.setSpacing(16)
-        ctrl_row.addStretch()
-
-        flat_style = f"""
-            QPushButton {{ background: transparent; border: none; }}
-            QPushButton:hover {{ background: rgba(128,128,128,40); border-radius: 8px; }}
-            QPushButton:pressed {{ background: rgba(128,128,128,70); }}
-        """
-        self._prev_btn = QPushButton()
-        self._prev_btn.setIcon(QIcon(ICO_MUSIC_PREV))
-        self._prev_btn.setIconSize(QSize(40, 40))
-        self._prev_btn.setFixedSize(48, 48)
-        self._prev_btn.setToolTip(tr("music_prev"))
-        self._prev_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._prev_btn.setStyleSheet(flat_style)
-        self._prev_btn.clicked.connect(self._play_prev)
-        ctrl_row.addWidget(self._prev_btn)
-
-        self._play_btn = QPushButton()
-        self._play_btn.setIcon(self._play_icon)
-        self._play_btn.setIconSize(QSize(52, 52))
-        self._play_btn.setFixedSize(64, 64)
-        self._play_btn.setToolTip(tr("music_play"))
-        self._play_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._play_btn.setStyleSheet(flat_style)
-        self._play_btn.clicked.connect(self._toggle_play)
-        ctrl_row.addWidget(self._play_btn)
-
-        self._next_btn = QPushButton()
-        self._next_btn.setIcon(QIcon(ICO_MUSIC_NEXT))
-        self._next_btn.setIconSize(QSize(40, 40))
-        self._next_btn.setFixedSize(48, 48)
-        self._next_btn.setToolTip(tr("music_next"))
-        self._next_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._next_btn.setStyleSheet(flat_style)
-        self._next_btn.clicked.connect(self._play_next)
-        ctrl_row.addWidget(self._next_btn)
-
-        ctrl_row.addStretch()
-        layout.addLayout(ctrl_row)
-
-        # --- Secondary row: loop mode + volume ---
-        sec_row = QHBoxLayout()
-        sec_row.setSpacing(10)
-        self._loop_btn = QPushButton("\u21bb  " + tr("music_loop"))
-        self._loop_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._loop_btn.setToolTip("Loop: List → One → Shuffle")
-        self._loop_btn.clicked.connect(self._cycle_loop)
-        sec_row.addWidget(self._loop_btn)
-
-        sec_row.addStretch()
-
-        vol_lbl = QLabel("\U0001f50a")
-        vol_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 13px;")
-        sec_row.addWidget(vol_lbl)
-        self._vol_slider = QSlider(Qt.Orientation.Horizontal)
-        self._vol_slider.setRange(0, 100)
-        self._vol_slider.setValue(int(self._audio_output.volume() * 100))
-        self._vol_slider.setFixedWidth(140)
-        self._vol_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._vol_slider.setStyleSheet(f"""
-            QSlider::groove:horizontal {{ background: {C['SURFACE3']}; height: 5px; border-radius: 2px; }}
-            QSlider::handle:horizontal {{ background: {C['TEAL']}; width: 13px; height: 13px;
-                margin: -4px 0; border-radius: 6px; }}
-            QSlider::sub-page:horizontal {{ background: {C['TEAL']}; border-radius: 2px; }}
-        """)
-        self._vol_slider.valueChanged.connect(self._on_volume)
-        sec_row.addWidget(self._vol_slider)
-        self._vol_pct = QLabel(f"{int(self._audio_output.volume() * 100)}%")
-        self._vol_pct.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        self._vol_pct.setFixedWidth(34)
-        sec_row.addWidget(self._vol_pct)
-        layout.addLayout(sec_row)
-
-        # --- Playlist management buttons ---
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        add_btn = QPushButton("+ " + tr("music_add"))
-        add_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        add_btn.clicked.connect(self._add_files)
-        btn_row.addWidget(add_btn)
-
-        add_folder_btn = QPushButton("+ " + tr("music_add_folder"))
-        add_folder_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        add_folder_btn.clicked.connect(self._add_folder)
-        btn_row.addWidget(add_folder_btn)
-
-        rm_btn = QPushButton(tr("music_remove"))
-        rm_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        rm_btn.clicked.connect(self._remove_selected)
-        btn_row.addWidget(rm_btn)
-
-        clr_btn = QPushButton(tr("music_clear"))
-        clr_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        clr_btn.setProperty("cssClass", "danger")
-        clr_btn.clicked.connect(self._clear_playlist)
-        btn_row.addWidget(clr_btn)
-
-        btn_row.addStretch()
-        self._count_lbl = QLabel("")
-        self._count_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        btn_row.addWidget(self._count_lbl)
-        layout.addLayout(btn_row)
-
-        # --- Music library folder row ---
-        lib_row = QHBoxLayout()
-        lib_row.setSpacing(8)
-        lib_set_btn = QPushButton("\U0001f4c2 " + tr("music_library_set"))
-        lib_set_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        lib_set_btn.clicked.connect(self._set_library_folder)
-        lib_row.addWidget(lib_set_btn)
-
-        lib_refresh_btn = QPushButton("\u21bb " + tr("music_library_refresh"))
-        lib_refresh_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        lib_refresh_btn.clicked.connect(self._refresh_library)
-        lib_row.addWidget(lib_refresh_btn)
-
-        lib_row.addStretch()
-        self._lib_lbl = QLabel("")
-        self._lib_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px; background: transparent;")
-        self._lib_lbl.setMaximumWidth(260)
-        lib_row.addWidget(self._lib_lbl)
-        layout.addLayout(lib_row)
-
-        # --- Playlist widget ---
-        self._list = QListWidget()
-        self._list.setAlternatingRowColors(False)
-        self._list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
-        self._list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self._list.setDragEnabled(True)
-        self._list.setStyleSheet(f"""
-            QListWidget {{ background: transparent; border: none; outline: none; }}
-            QListWidget::item {{ background: transparent; color: {C['TEXT_SEC']};
-                padding: 8px 12px; margin: 2px 4px; border-radius: 8px; }}
-            QListWidget::item:hover:!selected {{ background: {C['SURFACE3']}; color: {C['TEXT']}; }}
-            QListWidget::item:selected {{ background: {C['ACCENT_DIM']}; color: {C['TEXT']}; }}
-        """)
-        self._list.itemDoubleClicked.connect(self._on_item_dblclick)
-        self._list.model().rowsMoved.connect(self._on_playlist_reordered)
-        layout.addWidget(self._list, 1)
-
-        self._update_count()
-
-    # --- Playlist management ---
-    def _add_files(self):
-        paths, _ = QFileDialog.getOpenFileNames(self, tr("music_add"), "", tr("music_filter"))
-        if paths:
-            for p in paths:
-                if p not in self._playlist:
-                    self._playlist.append(p)
-                    self._add_list_item(p)
-            self._update_count()
-            self._save_playlist_to_config()
-
-    def _add_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, tr("music_folder_filter"))
-        if folder:
-            added = 0
-            for fname in sorted(os.listdir(folder)):
-                ext = os.path.splitext(fname)[1].lower()
-                if ext in AUDIO_EXTS:
-                    fpath = os.path.join(folder, fname)
-                    if fpath not in self._playlist:
-                        self._playlist.append(fpath)
-                        self._add_list_item(fpath)
-                        added += 1
-            if added:
-                self._update_count()
-                self._save_playlist_to_config()
-
-    def _remove_selected(self):
-        rows = sorted(set(idx.row() for idx in self._list.selectionModel().selectedIndexes()), reverse=True)
-        for row in rows:
-            was_current = (row == self._current_idx)
-            self._playlist.pop(row)
-            self._list.takeItem(row)
-            if was_current:
-                self._player.stop()
-                self._current_idx = -1
-                self._is_playing = False
-                self._now_lbl.setText(tr("music_stopped"))
-                self._track_lbl.setText("")
-            elif row < self._current_idx:
-                self._current_idx -= 1
-        self._update_count()
-        self._save_playlist_to_config()
-
-    def _clear_playlist(self):
-        self._player.stop()
-        self._playlist.clear()
-        self._list.clear()
-        self._current_idx = -1
-        self._is_playing = False
-        self._now_lbl.setText(tr("music_stopped"))
-        self._track_lbl.setText("")
-        self._update_count()
-        self._save_playlist_to_config()
-
-    # --- Playback ---
-    def _toggle_play(self):
-        if not self._playlist:
-            return
-        if self._is_playing:
-            self._player.pause()
-            self._is_playing = False
-            self._play_btn.setIcon(self._play_icon)
-            self._play_btn.setToolTip(tr("music_play"))
-            self._now_lbl.setText(tr("music_paused"))
-        else:
-            if self._current_idx < 0:
-                self._current_idx = 0
-            if self._player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
-                self._player.play()
-            else:
-                self._play_track(self._current_idx)
-            self._is_playing = True
-            self._play_btn.setIcon(self._pause_icon)
-            self._play_btn.setToolTip(tr("music_pause"))
-            self._now_lbl.setText(tr("music_playing"))
-
-    def _play_track(self, idx):
-        if idx < 0 or idx >= len(self._playlist):
-            return
-        self._current_idx = idx
-        from PyQt6.QtCore import QUrl
-        self._player.setSource(QUrl.fromLocalFile(self._playlist[idx]))
-        self._player.play()
-        self._is_playing = True
-        self._play_btn.setIcon(self._pause_icon)
-        self._play_btn.setToolTip(tr("music_pause"))
-        self._now_lbl.setText(tr("music_playing"))
-        name = self._display_name(self._playlist[idx])
-        self._track_lbl.setText(name)
-        # Highlight in list
-        self._list.setCurrentRow(idx)
-
-    def _play_next(self):
-        if not self._playlist:
-            return
-        if self._loop_mode == "shuffle":
-            idx = random.randint(0, len(self._playlist) - 1)
-        else:
-            idx = (self._current_idx + 1) % len(self._playlist)
-        self._play_track(idx)
-
-    def _play_prev(self):
-        if not self._playlist:
-            return
-        idx = (self._current_idx - 1) % len(self._playlist)
-        self._play_track(idx)
-
-    def _cycle_loop(self):
-        modes = ["list", "one", "shuffle"]
-        labels = [tr("music_loop"), tr("music_loop_one"), tr("music_shuffle")]
-        cur = modes.index(self._loop_mode)
-        nxt = (cur + 1) % 3
-        self._loop_mode = modes[nxt]
-        self._loop_btn.setText("\u21bb  " + labels[nxt])
-        self._save_playlist_to_config()
-
-    def _on_media_status(self, status):
-        if status == QMediaPlayer.MediaStatus.EndOfMedia:
-            if self._loop_mode == "one":
-                self._player.setPosition(0)
-                self._player.play()
-            else:
-                self._play_next()
-
-    def _on_position(self, pos):
-        if not self._seeking:
-            self._progress.blockSignals(True)
-            self._progress.setValue(pos)
-            self._progress.blockSignals(False)
-            self._pos_lbl.setText(self._fmt_time(pos))
-
-    def _on_duration(self, dur):
-        self._progress.setRange(0, dur if dur > 0 else 0)
-        self._dur_lbl.setText(self._fmt_time(dur))
-
-    def _on_error(self, error, msg):
-        if error != QMediaPlayer.Error.NoError:
-            self._now_lbl.setText(f"Error: {msg}")
-
-    def _on_seek_pressed(self):
-        self._seeking = True
-
-    def _on_seek_released(self):
-        self._seeking = False
-        if self._player.duration() > 0:
-            self._player.setPosition(self._progress.value())
-            self._pos_lbl.setText(self._fmt_time(self._progress.value()))
-
-    def _on_volume(self, val):
-        self._audio_output.setVolume(val / 100.0)
-        self._vol_pct.setText(f"{val}%")
-        cfg = load_config()
-        cfg["music_volume"] = val
-        save_config(cfg)
-
-    def _on_item_dblclick(self, item):
-        idx = self._list.row(item)
-        self._play_track(idx)
-
-    def _on_playlist_reordered(self, *args):
-        """Sync internal playlist order after user drag-and-drop reorders items."""
-        # Rebuild _playlist from the current widget order
-        new_order = []
-        for i in range(self._list.count()):
-            text = self._list.item(i).text()
-            new_order.append(text)
-        # Map display names back to file paths using current playlist
-        # Since display names may not be unique, rebuild by matching indices
-        old_playlist = list(self._playlist)
-        # The widget items were moved; we need to track by data
-        # Simpler approach: store paths as item data
-        # For now, rebuild from the list widget's item order using stored paths
-        new_playlist = []
-        for i in range(self._list.count()):
-            item = self._list.item(i)
-            path = item.data(Qt.ItemDataRole.UserRole)
-            if path:
-                new_playlist.append(path)
-        if new_playlist and len(new_playlist) == len(old_playlist):
-            # Update current index
-            if self._current_idx >= 0 and self._current_idx < len(old_playlist):
-                current_path = old_playlist[self._current_idx]
-                if current_path in new_playlist:
-                    self._current_idx = new_playlist.index(current_path)
-            self._playlist = new_playlist
-            self._save_playlist_to_config()
-
-    # --- Helpers ---
-    @staticmethod
-    def _fmt_time(ms):
-        s = ms // 1000
-        m, sec = divmod(s, 60)
-        h, m2 = divmod(m, 60)
-        if h > 0:
-            return f"{h}:{m2:02d}:{sec:02d}"
-        return f"{m}:{sec:02d}"
-
-    @staticmethod
-    def _display_name(path):
-        """Return the file name without its extension (e.g. 'song.mp3' -> 'song')."""
-        return os.path.splitext(os.path.basename(path))[0]
-
-    def _add_list_item(self, path):
-        """Add a playlist item to the list widget with path stored as UserRole data."""
-        from PyQt6.QtWidgets import QListWidgetItem
-        item = QListWidgetItem(self._display_name(path))
-        item.setData(Qt.ItemDataRole.UserRole, path)
-        self._list.addItem(item)
-
-    def _update_count(self):
-        n = len(self._playlist)
-        self._count_lbl.setText(tr("music_of", cur=n, total=n) if n else "")
-        if n == 0:
-            self._track_lbl.setText(tr("music_empty"))
-
-    def _save_playlist_to_config(self):
-        cfg = load_config()
-        cfg["music_playlist"] = self._playlist
-        cfg["music_loop"] = self._loop_mode
-        save_config(cfg)
-
-    def _load_playlist_from_config(self):
-        cfg = load_config()
-        saved = cfg.get("music_playlist", [])
-        for p in saved:
+    def __init__(self, app):
+        super().__init__(None)
+        self.app = app
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint
+                            | Qt.WindowType.WindowStaysOnTopHint
+                            | Qt.WindowType.Tool)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setMouseTracking(True)
+        self.setWindowOpacity(self.IDLE_OPACITY)
+        self._drag_pos = None
+        self._resize_mode = None
+        self._resize_origin = None
+        self._resize_geo = None
+        self._entries = []
+        self._icons = {}
+        for etype in ("text", "image", "file", "url"):
+            p = _res_icon(TAB_ICON_FILES[etype])
             if os.path.exists(p):
-                self._playlist.append(p)
-                self._add_list_item(p)
-        self._loop_mode = cfg.get("music_loop", "list")
-        modes = ["list", "one", "shuffle"]
-        labels = [tr("music_loop"), tr("music_loop_one"), tr("music_shuffle")]
-        if self._loop_mode in modes:
-            self._loop_btn.setText("\u21bb  " + labels[modes.index(self._loop_mode)])
-        self._update_count()
-        # Auto-scan library folder on startup
-        self._update_lib_label()
-        lib_folder = cfg.get("music_library_folder", "")
-        if lib_folder and os.path.isdir(lib_folder):
-            self._scan_library_folder(lib_folder, silent=True)
+                self._icons[etype] = QIcon(p)
+        self._build()
+        self._apply_theme()
+        self._restore_geometry()
 
-    # --- Music Library Folder ---
-    def _set_library_folder(self):
-        """Let user pick a folder to use as persistent music library."""
-        folder = QFileDialog.getExistingDirectory(self, tr("music_library_folder_title"))
-        if folder:
-            cfg = load_config()
-            cfg["music_library_folder"] = folder
-            save_config(cfg)
-            self._update_lib_label()
-            self._scan_library_folder(folder, silent=False)
+    # ---- UI ----
+    def _build(self):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self._card = QFrame()
+        self._card.setObjectName("dwCard")
+        lay = QVBoxLayout(self._card)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(5)
 
-    def _refresh_library(self):
-        """Re-scan the configured library folder for new songs."""
-        cfg = load_config()
-        lib_folder = cfg.get("music_library_folder", "")
-        if not lib_folder or not os.path.isdir(lib_folder):
-            QMessageBox.information(self, tr("music_library"), tr("music_library_none"))
+        head = QHBoxLayout()
+        self._title_lbl = QLabel(tr("widget_title"))
+        head.addWidget(self._title_lbl)
+        head.addStretch()
+        close_btn = QPushButton("\u2715")
+        close_btn.setObjectName("dwClose")
+        close_btn.setFixedSize(20, 20)
+        close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        close_btn.clicked.connect(self._close_to_config)
+        head.addWidget(close_btn)
+        lay.addLayout(head)
+
+        # 当前剪贴板内容（图标 + 文本）
+        cur_row = QHBoxLayout()
+        cur_row.setSpacing(6)
+        self._cur_icon = QLabel()
+        self._cur_icon.setFixedSize(20, 20)
+        cur_row.addWidget(self._cur_icon)
+        self._cur_lbl = QLabel(tr("widget_empty"))
+        self._cur_lbl.setObjectName("dwCur")
+        self._cur_lbl.setWordWrap(True)
+        cur_row.addWidget(self._cur_lbl, 1)
+        lay.addLayout(cur_row)
+
+        self._hist_title = QLabel(tr("widget_history"))
+        self._hist_title.setObjectName("dwHistTitle")
+        lay.addWidget(self._hist_title)
+
+        self._hist_list = QListWidget()
+        self._hist_list.setObjectName("dwList")
+        self._hist_list.setIconSize(QSize(16, 16))
+        self._hist_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._hist_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._hist_list.itemClicked.connect(self._on_item_clicked)
+        lay.addWidget(self._hist_list, 1)
+
+        outer.addWidget(self._card)
+
+        # 子控件默认不接收无按键鼠标移动，事件无法冒泡到父窗口，
+        # 边缘缩放光标就不会触发；统一开启 mouseTracking。
+        self._card.setMouseTracking(True)
+        for _w in (self._title_lbl, self._cur_icon, self._cur_lbl, self._hist_title):
+            _w.setMouseTracking(True)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Qt6 Windows：半透明分层窗口首次合成可能缺失而不可见，
+        # 透明度变化才会强制 UpdateLayeredWindow；顺带形成淡入效果。
+        self.setWindowOpacity(1.0)
+        QTimer.singleShot(150, self._fade_to_idle)
+        # 兜底：延迟用原生 SetWindowPos 尺寸 nudge 强制 DWM 合成
+        QTimer.singleShot(800, self._kick_render)
+
+    def _fade_to_idle(self):
+        if self.isVisible():
+            self.setWindowOpacity(self.IDLE_OPACITY)
+
+    def _kick_render(self):
+        if not self.isVisible():
             return
-        self._scan_library_folder(lib_folder, silent=False)
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            x, y, w, h = self.x(), self.y(), self.width(), self.height()
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, x + 1, y, w + 1, h + 1, 0x0004)
+            QTimer.singleShot(60, self._kick_restore)
+        except Exception:
+            pass
 
-    def _scan_library_folder(self, folder, silent=False):
-        """Recursively scan folder for audio files and add new ones to playlist."""
-        added = 0
-        existing_set = set(os.path.normpath(p) for p in self._playlist)
-        for root, _dirs, files in os.walk(folder):
-            for fname in sorted(files):
-                ext = os.path.splitext(fname)[1].lower()
-                if ext in AUDIO_EXTS:
-                    fpath = os.path.normpath(os.path.join(root, fname))
-                    if fpath not in existing_set:
-                        self._playlist.append(fpath)
-                        self._add_list_item(fpath)
-                        existing_set.add(fpath)
-                        added += 1
-        if added:
-            self._update_count()
-            self._save_playlist_to_config()
-        if not silent:
-            if added > 0:
-                QMessageBox.information(self, tr("music_library"),
-                                        tr("music_library_scanned", n=added))
-            else:
-                QMessageBox.information(self, tr("music_library"),
-                                        tr("music_library_no_new"))
+    def _kick_restore(self):
+        if not self.isVisible():
+            return
+        try:
+            import ctypes
+            hwnd = int(self.winId())
+            x, y, w, h = self.x(), self.y(), self.width(), self.height()
+            ctypes.windll.user32.SetWindowPos(hwnd, 0, x - 1, y, w - 1, h - 1, 0x0004)
+        except Exception:
+            pass
 
-    def _update_lib_label(self):
-        """Update the library folder path label."""
-        cfg = load_config()
-        lib_folder = cfg.get("music_library_folder", "")
-        if lib_folder and os.path.isdir(lib_folder):
-            # Show just the folder name to save space
-            name = os.path.basename(lib_folder.rstrip("/\\"))
-            self._lib_lbl.setText(tr("music_library_current", path=name))
-            self._lib_lbl.setToolTip(lib_folder)
+    def _apply_theme(self):
+        theme = load_config().get("theme", "dark")
+        if theme == "light":
+            card_bg, txt, sec, border = "rgba(255,255,255,250)", "#1f2329", "#6b7280", "rgba(0,0,0,40)"
+            hover = "rgba(0,0,0,14)"
         else:
-            self._lib_lbl.setText("")
-            self._lib_lbl.setToolTip("")
+            card_bg, txt, sec, border = "rgba(24,26,33,250)", "#e8eaed", "#9aa0a6", "rgba(255,255,255,34)"
+            hover = "rgba(255,255,255,22)"
+        self.setStyleSheet(f"""
+            #dwCard {{ background: {card_bg}; border: 1px solid {border}; border-radius: 10px; }}
+            QLabel {{ background: transparent; color: {txt};
+                      font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; }}
+            #dwCur {{ font-size: 12px; }}
+            #dwHistTitle {{ color: {sec}; font-size: 10px; }}
+            #dwClose {{ background: transparent; border: none; color: {sec}; font-size: 11px; }}
+            #dwClose:hover {{ color: {txt}; }}
+            #dwList {{ background: transparent; border: none; color: {txt}; font-size: 11px;
+                       outline: 0; }}
+            #dwList::item {{ padding: 3px 4px; border-radius: 5px; }}
+            #dwList::item:hover {{ background: {hover}; }}
+            #dwList::item:selected {{ background: {hover}; color: {txt}; }}
+            #dwList QScrollBar:vertical {{ background: transparent; width: 8px; }}
+            #dwList QScrollBar::handle:vertical {{ background: {border}; border-radius: 4px; min-height: 26px; }}
+            #dwList QScrollBar::add-line:vertical, #dwList QScrollBar::sub-line:vertical {{ height: 0; }}
+        """)
 
-    def stop_playback(self):
-        """Stop playback (called on app close)."""
-        self._player.stop()
-        self._is_playing = False
+    # ---- data ----
+    def refresh(self):
+        """重载最新剪贴板内容 + 最近历史。"""
+        try:
+            all_entries = self.app.store.get_all()
+            all_entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        except Exception:
+            all_entries = []
+        self._entries = all_entries[:1 + self.HISTORY_ROWS]
+        if not self._entries:
+            self._cur_icon.clear()
+            self._cur_lbl.setText(tr("widget_empty"))
+            self._hist_list.clear()
+            return
+        cur = self._entries[0]
+        ico = self._icons.get(cur.get("type", "text"))
+        self._cur_icon.setPixmap(ico.pixmap(QSize(20, 20)) if ico else QPixmap())
+        self._cur_lbl.setText(self._fmt(cur, 160))
+        self._hist_list.clear()
+        for e in self._entries[1:]:
+            item = QListWidgetItem(self._fmt(e, 60))
+            ico2 = self._icons.get(e.get("type", "text"))
+            if ico2:
+                item.setIcon(ico2)
+            item.setToolTip(tr("widget_click_copy"))
+            self._hist_list.addItem(item)
+
+    def _fmt(self, entry, limit):
+        etype = entry.get("type", "text")
+        if etype == "image":
+            text = f"{entry.get('width', '?')}\u00d7{entry.get('height', '?')} "
+            src = entry.get("source_name", "")
+            text += src if src else tr("type_image")
+        elif etype == "file":
+            paths = entry.get("file_paths", [])
+            name = os.path.basename(paths[0]) if paths else "?"
+            n = entry.get("file_count", len(paths))
+            text = (name + f" (+{n - 1})") if n > 1 else name
+        else:
+            text = str(entry.get("content", ""))
+        text = text.replace("\n", " ").replace("\r", " ").strip()
+        if len(text) > limit:
+            text = text[:limit] + "\u2026"
+        return text
+
+    # ---- interactions ----
+    def _on_item_clicked(self, item):
+        row = self._hist_list.row(item)
+        entries = self._entries[1:]
+        if row < 0 or row >= len(entries):
+            return
+        try:
+            self.app.copy_entry_to_clipboard(entries[row])
+            try:
+                self.app._set_status(tr("st_copied"), "ok")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _close_to_config(self):
+        cfg = load_config()
+        cfg["desktop_widget"] = False
+        save_config(cfg)
+        self.hide()
+
+    # ---- drag / resize / persist geometry ----
+    def _hit_zone(self, pos):
+        """corner=右下；corner_l=左下；corner_tr=右上；corner_tl=左上（均双向缩放）；
+        hedge_r/hedge_l=右/左水平；vedge/tedge=底/顶垂直；None=拖动。"""
+        x, y = pos.x(), pos.y()
+        if x >= self.width() - self._GRIP and y >= self.height() - self._GRIP:
+            return "corner"
+        if x <= self._GRIP and y >= self.height() - self._GRIP:
+            return "corner_l"
+        if x >= self.width() - self._GRIP and y <= self._GRIP:
+            return "corner_tr"
+        if x <= self._GRIP and y <= self._GRIP:
+            return "corner_tl"
+        if x >= self.width() - self._EDGE:
+            return "hedge_r"
+        if x <= self._EDGE:
+            return "hedge_l"
+        if y >= self.height() - self._EDGE:
+            return "vedge"
+        if y <= self._EDGE:
+            return "tedge"
+        return None
+
+    def enterEvent(self, event):
+        self.setWindowOpacity(self.HOVER_OPACITY)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.setWindowOpacity(self.IDLE_OPACITY)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            zone = self._hit_zone(event.position().toPoint())
+            if zone:
+                self._resize_mode = zone
+                self._resize_origin = event.globalPosition().toPoint()
+                self._resize_geo = self.geometry()
+            else:
+                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._resize_mode and self._resize_origin is not None:
+            delta = event.globalPosition().toPoint() - self._resize_origin
+            geo = self._resize_geo
+            gx, gy, gw, gh = geo.x(), geo.y(), geo.width(), geo.height()
+            if self._resize_mode == "corner":
+                w = max(self.MIN_W, min(self.MAX_W, gw + delta.x()))
+                h = max(self.MIN_H, min(self.MAX_H, gh + delta.y()))
+                self.resize(int(w), int(h))
+            elif self._resize_mode == "corner_l":
+                nw = max(self.MIN_W, min(self.MAX_W, gw - delta.x()))
+                h = max(self.MIN_H, min(self.MAX_H, gh + delta.y()))
+                self.setGeometry(gx + gw - nw, gy, int(nw), int(h))
+            elif self._resize_mode == "corner_tr":
+                w = max(self.MIN_W, min(self.MAX_W, gw + delta.x()))
+                nh = max(self.MIN_H, min(self.MAX_H, gh - delta.y()))
+                self.setGeometry(gx, gy + gh - nh, int(w), int(nh))
+            elif self._resize_mode == "corner_tl":
+                nw = max(self.MIN_W, min(self.MAX_W, gw - delta.x()))
+                nh = max(self.MIN_H, min(self.MAX_H, gh - delta.y()))
+                self.setGeometry(gx + gw - nw, gy + gh - nh, int(nw), int(nh))
+            elif self._resize_mode == "hedge_r":
+                w = max(self.MIN_W, min(self.MAX_W, gw + delta.x()))
+                self.resize(int(w), gh)
+            elif self._resize_mode == "hedge_l":
+                nw = max(self.MIN_W, min(self.MAX_W, gw - delta.x()))
+                self.setGeometry(gx + gw - nw, gy, int(nw), gh)
+            elif self._resize_mode == "tedge":
+                nh = max(self.MIN_H, min(self.MAX_H, gh - delta.y()))
+                self.setGeometry(gx, gy + gh - nh, gw, int(nh))
+            else:  # vedge：上下缩放只改高度
+                h = max(self.MIN_H, min(self.MAX_H, gh + delta.y()))
+                self.resize(gw, int(h))
+            event.accept()
+            return
+        if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+            return
+        zone = self._hit_zone(event.position().toPoint())
+        if zone in ("corner", "corner_tl"):
+            self.setCursor(QCursor(Qt.CursorShape.SizeFDiagCursor))
+        elif zone in ("corner_l", "corner_tr"):
+            self.setCursor(QCursor(Qt.CursorShape.SizeBDiagCursor))
+        elif zone in ("hedge_l", "hedge_r"):
+            self.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
+        elif zone in ("vedge", "tedge"):
+            self.setCursor(QCursor(Qt.CursorShape.SizeVerCursor))
+        else:
+            self.unsetCursor()
+
+    def mouseReleaseEvent(self, event):
+        was_resizing = self._resize_mode is not None
+        self._resize_mode = None
+        self._resize_origin = None
+        self._resize_geo = None
+        self._drag_pos = None
+        self.unsetCursor()
+        if was_resizing or event.button() == Qt.MouseButton.LeftButton:
+            try:
+                cfg = load_config()
+                cfg["widget_pos"] = [self.x(), self.y()]
+                cfg["widget_size"] = [self.width(), self.height()]
+                save_config(cfg)
+            except Exception:
+                pass
+        event.accept()
+
+    def _restore_geometry(self):
+        cfg = load_config()
+        screen = QApplication.primaryScreen().availableGeometry()
+        size = cfg.get("widget_size")
+        if isinstance(size, (list, tuple)) and len(size) == 2:
+            w = max(self.MIN_W, min(self.MAX_W, int(size[0])))
+            h = max(self.MIN_H, min(self.MAX_H, int(size[1])))
+        else:
+            w, h = 300, 560
+        self.resize(w, h)
+        pos = cfg.get("widget_pos")
+        if (isinstance(pos, (list, tuple)) and len(pos) == 2
+                and screen.left() - 60 <= pos[0] <= screen.right()
+                and screen.top() - 60 <= pos[1] <= screen.bottom()):
+            self.move(int(pos[0]), int(pos[1]))
+        else:
+            self.move(screen.right() - w - 24, screen.top() + 90)
 
 
 # ===========================================================================
@@ -1904,6 +1708,7 @@ class YouBoardApp(QMainWindow):
         self.monitor = monitor
         self._active_type = "text"
         self._tables = {}
+        self._tab_layouts = []
         self._iid_to_hash = {"text": {}, "image": {}, "file": {}, "url": {}}
         self._search_edits = {}
         self._search_timers = {}
@@ -1927,15 +1732,6 @@ class YouBoardApp(QMainWindow):
         self._bg_movie = None
         self._bg_pixmap = None
         self._bg_resize_timer = None
-        self._video_player = None
-        self._video_audio = None
-        self._video_sink = None
-        self._video_label = None
-        self._video_scrim = None
-        self._video_frame = None
-        self._video_save_timer = None
-        self._video_cur_pos = 0
-        self._video_resume_pos = 0
         self._image_loader = None
         self._fade_anim = None
         self._resize_edge = 0
@@ -1955,6 +1751,7 @@ class YouBoardApp(QMainWindow):
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
 
+        self._init_tray()  # 提前创建托盘图标，保证启动后及时显示
         self._build_ui()
         self._apply_background()
         QTimer.singleShot(150, self._initial_refresh)
@@ -1963,6 +1760,15 @@ class YouBoardApp(QMainWindow):
         self._poll_timer.timeout.connect(self._poll_monitor)
         self._poll_timer.start(120)
         self._animate_dot()
+        # 桌面小组件（可选功能，默认开启；延迟创建不影响启动速度）
+        self._desk_widget = None
+        QTimer.singleShot(600, self._apply_desktop_widget)
+        # 启动构建完成后回收一次内存垃圾，降低常驻占用
+        QTimer.singleShot(3000, gc.collect)
+        QTimer.singleShot(10000, gc.collect)
+        # Win11 无边框窗口强制直角，消除左上角缝隙
+        QTimer.singleShot(0, lambda: _force_square_corners(self))
+        self._apply_max_state()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -2002,13 +1808,13 @@ class YouBoardApp(QMainWindow):
         self._splitter.setSizes([700, 380])
 
         self._tabs.blockSignals(True)
+        self._tabs.setIconSize(QSize(18, 18))
         for etype in ("text", "image", "file", "url"):
             tab_w = QWidget()
-            self._tabs.addTab(tab_w, f"  {TAB_ICONS[etype]}  {self._type_label(etype)}  0  ")
+            self._tabs.addTab(tab_w, f"  {self._type_label(etype)}  0  ")
+            self._tabs.setTabIcon(self._tabs.count() - 1,
+                                  QIcon(_res_icon(TAB_ICON_FILES[etype])))
             self._build_tab(tab_w, etype)
-        # Music player tab (5th tab)
-        self._music_tab = MusicPlayerTab()
-        self._tabs.addTab(self._music_tab, f"  \u266b  {tr('tab_music')}  ")
         self._tabs.blockSignals(False)
 
         self._build_statusbar(root)
@@ -2081,8 +1887,16 @@ class YouBoardApp(QMainWindow):
         self._header_count.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px; background: transparent;")
         hl.addWidget(self._header_count)
 
-        settings_btn = QPushButton(tr("settings_btn"))
+        settings_btn = QPushButton()
+        settings_btn.setIcon(QIcon(ICO_SETTINGS))
+        settings_btn.setIconSize(QSize(20, 20))
+        settings_btn.setToolTip(tr("settings_btn").replace("\u2699", "").strip())
+        settings_btn.setFixedSize(30, 26)
         settings_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        settings_btn.setStyleSheet(
+            "QPushButton { border: none; background: transparent; border-radius: 6px; }"
+            "QPushButton:hover { background: rgba(128,128,128,0.18); }"
+            "QPushButton:pressed { background: rgba(128,128,128,0.30); }")
         settings_btn.clicked.connect(self._open_settings)
         hl.addWidget(settings_btn)
         self._manage_btn = QPushButton(tr("manage"))
@@ -2095,16 +1909,8 @@ class YouBoardApp(QMainWindow):
         root.addWidget(self.lightbar)
 
     def _apply_background(self):
-        """Load and display custom background (image/GIF or video)."""
+        """Load and display custom background (image/GIF)."""
         cfg = load_config()
-        # --- Video background (takes priority over image) ---
-        video_path = cfg.get("bg_video", "")
-        if video_path and os.path.exists(video_path):
-            self._bg_label.hide()
-            self._start_video_bg(video_path, cfg.get("bg_video_mute", False))
-            return
-        # --- Stop any existing video ---
-        self._stop_video_bg()
         # --- Image background ---
         bg_path = cfg.get("bg_image", "")
         if not bg_path or not os.path.exists(bg_path):
@@ -2112,157 +1918,16 @@ class YouBoardApp(QMainWindow):
             return
         self._bg_label.show()
         if bg_path.lower().endswith(".gif"):
+            self._bg_is_gif = True
+            self._bg_image_path = ""
             self._bg_movie = QMovie(bg_path)
             self._bg_movie.frameChanged.connect(self._on_bg_frame)
             self._bg_movie.start()
         else:
+            self._bg_is_gif = False
+            self._bg_image_path = bg_path
             self._bg_pixmap = QPixmap(bg_path)
             self._scale_bg()
-
-    def _start_video_bg(self, video_path, muted=False):
-        """Create and start a looping video background rendered into a QLabel.
-
-        Uses QVideoSink to grab frames into a QLabel (same mechanism as the image
-        background) so the semi-transparent UI panels stay visible on top. A dark
-        scrim is layered above the video to keep content readable over bright clips.
-        """
-        self._stop_video_bg()
-        central = self.centralWidget()
-        cfg = load_config()
-
-        # Video frame label (bottom-most layer)
-        self._video_label = QLabel(central)
-        self._video_label.setGeometry(self.rect())
-        self._video_label.lower()
-        self._video_label.show()
-
-        # Dark scrim for readability (above video, below content)
-        self._video_scrim = QLabel(central)
-        self._video_scrim.setGeometry(self.rect())
-        self._video_scrim.setStyleSheet("background: rgba(0, 0, 0, 90);")
-        self._video_scrim.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self._video_scrim.raise_()
-        self._video_scrim.show()
-
-        # Audio + player + video sink
-        self._video_audio = QAudioOutput(self)
-        self._video_cur_pos = 0
-        self._video_resume_pos = cfg.get("bg_video_pos", 0)
-        self.apply_video_audio()
-        self._video_sink = QVideoSink(self)
-        self._video_sink.videoFrameChanged.connect(self._on_video_frame)
-        self._video_player = QMediaPlayer(self)
-        self._video_player.setAudioOutput(self._video_audio)
-        self._video_player.setVideoOutput(self._video_sink)
-        self._video_player.mediaStatusChanged.connect(self._on_video_status)
-        self._video_player.positionChanged.connect(self._on_video_position)
-        from PyQt6.QtCore import QUrl
-        self._video_player.setSource(QUrl.fromLocalFile(video_path))
-        self._video_player.play()
-
-        # Periodically persist position so it survives restarts / setting changes
-        self._video_save_timer = QTimer(self)
-        self._video_save_timer.timeout.connect(self._save_video_pos)
-        self._video_save_timer.start(3000)
-
-    def apply_video_audio(self):
-        """Apply configured volume + mute to the running video background player."""
-        cfg = load_config()
-        muted = cfg.get("bg_video_mute", False)
-        vol = cfg.get("bg_video_volume", 50)
-        if self._video_audio:
-            self._video_audio.setVolume(0.0 if muted else max(0, min(100, vol)) / 100.0)
-
-    def _on_video_position(self, pos):
-        # Clamp to [0, duration] to avoid overshoot jitter at loop boundaries
-        if self._video_player:
-            dur = self._video_player.duration()
-            if dur > 0 and pos > dur:
-                pos = dur
-        if pos < 0:
-            pos = 0
-        self._video_cur_pos = pos
-
-    def _save_video_pos(self):
-        if self._video_player and self._video_cur_pos > 0:
-            cfg = load_config()
-            cfg["bg_video_pos"] = self._video_cur_pos
-            save_config(cfg)
-
-    def video_position(self):
-        return self._video_cur_pos if self._video_player else 0
-
-    def video_duration(self):
-        return self._video_player.duration() if self._video_player else 0
-
-    def video_seek(self, ms):
-        if self._video_player:
-            self._video_player.setPosition(ms)
-            self._video_cur_pos = ms
-
-    def _stop_video_bg(self):
-        """Stop and destroy video background player."""
-        if hasattr(self, "_video_save_timer") and self._video_save_timer:
-            self._video_save_timer.stop()
-            self._video_save_timer.deleteLater()
-            self._video_save_timer = None
-        # Persist final position before teardown
-        if self._video_player and getattr(self, "_video_cur_pos", 0) > 0:
-            cfg = load_config()
-            cfg["bg_video_pos"] = self._video_cur_pos
-            save_config(cfg)
-        if self._video_player:
-            self._video_player.stop()
-            self._video_player.deleteLater()
-            self._video_player = None
-        if self._video_audio:
-            self._video_audio.deleteLater()
-            self._video_audio = None
-        if self._video_sink:
-            self._video_sink.deleteLater()
-            self._video_sink = None
-        if self._video_label:
-            self._video_label.hide()
-            self._video_label.deleteLater()
-            self._video_label = None
-        if self._video_scrim:
-            self._video_scrim.hide()
-            self._video_scrim.deleteLater()
-            self._video_scrim = None
-        self._video_frame = None
-
-    def _on_video_frame(self, frame):
-        """Receive a decoded video frame and paint it onto the background label."""
-        if not frame.isValid() or not self._video_label:
-            return
-        img = frame.toImage()
-        if img.isNull():
-            return
-        self._video_frame = QPixmap.fromImage(img)
-        self._scale_video_bg()
-
-    def _scale_video_bg(self):
-        if self._video_frame and not self._video_frame.isNull() and self._video_label:
-            scaled = self._video_frame.scaled(
-                self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation)
-            self._video_label.setPixmap(scaled)
-            self._video_label.setGeometry(self.rect())
-
-    def _on_video_status(self, status):
-        """Restore saved position on load and loop video at the end."""
-        if status == QMediaPlayer.MediaStatus.LoadedMedia and self._video_player:
-            resume = getattr(self, "_video_resume_pos", 0)
-            dur = self._video_player.duration()
-            if resume and dur and 0 < resume < dur:
-                self._video_player.setPosition(resume)
-                self._video_cur_pos = resume
-            # Apply resume only once so a media reload won't jump back again
-            self._video_resume_pos = 0
-        elif status == QMediaPlayer.MediaStatus.EndOfMedia and self._video_player:
-            self._video_player.setPosition(0)
-            self._video_cur_pos = 0
-            self._video_player.play()
 
     def _on_bg_frame(self):
         if self._bg_movie:
@@ -2270,12 +1935,23 @@ class YouBoardApp(QMainWindow):
             self._scale_bg()
 
     def _scale_bg(self):
-        if self._bg_pixmap and not self._bg_pixmap.isNull():
-            scaled = self._bg_pixmap.scaled(
+        pm = self._bg_pixmap
+        is_gif = getattr(self, "_bg_is_gif", False)
+        path = getattr(self, "_bg_image_path", "")
+        # 静态图：缓存比窗口小（窗口放大）或缓存丢失时，从磁盘重新加载
+        if (not is_gif and path and os.path.exists(path)
+                and (pm is None or pm.isNull()
+                     or self.width() > pm.width() or self.height() > pm.height())):
+            pm = QPixmap(path)
+        if pm and not pm.isNull():
+            scaled = pm.scaled(
                 self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                 Qt.TransformationMode.SmoothTransformation)
             self._bg_label.setPixmap(scaled)
             self._bg_label.setGeometry(self.rect())
+            if not is_gif:
+                # 只保留缩放后的窗口尺寸副本，释放原图大图内存
+                self._bg_pixmap = scaled
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2288,12 +1964,6 @@ class YouBoardApp(QMainWindow):
                 self._bg_resize_timer.setSingleShot(True)
                 self._bg_resize_timer.timeout.connect(self._scale_bg)
                 self._bg_resize_timer.start(30)
-        if self._video_label:
-            self._video_label.setGeometry(self.rect())
-            if self._video_frame and not self._video_frame.isNull():
-                self._scale_video_bg()
-        if self._video_scrim:
-            self._video_scrim.setGeometry(self.rect())
         # Re-render preview image on resize (label's own resizeEvent also handles this)
         if hasattr(self, '_cached_qpixmap') and self._cached_qpixmap and not self._cached_qpixmap.isNull():
             self._last_render_key = None
@@ -2333,6 +2003,54 @@ class YouBoardApp(QMainWindow):
         if event.type() == QEvent.Type.WindowStateChange:
             if hasattr(self, '_title_bar'):
                 self._title_bar.update_max_btn()
+            self._apply_max_state()
+            if self.isMinimized():
+                self._pause_motion()
+            elif self.isVisible():
+                self._resume_motion()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._resume_motion()
+
+    def hideEvent(self, event):
+        self._pause_motion()
+        super().hideEvent(event)
+
+    def _pause_motion(self):
+        """Stop all continuous animations while hidden/minimized (saves CPU)."""
+        try:
+            self.lightbar.pause()
+        except Exception:
+            pass
+        try:
+            self._title_bar.pause_shimmer()
+        except Exception:
+            pass
+        if getattr(self, "_bg_movie", None):
+            self._bg_movie.setPaused(True)
+        # 隐藏/最小化时释放进程工作集，降低后台常驻内存
+        try:
+            k32 = ctypes.windll.kernel32
+            k32.SetProcessWorkingSetSize.argtypes = [
+                ctypes.wintypes.HANDLE, ctypes.c_size_t, ctypes.c_size_t]
+            _minus1 = ctypes.c_size_t(-1).value
+            k32.SetProcessWorkingSetSize(k32.GetCurrentProcess(), _minus1, _minus1)
+        except Exception:
+            pass
+
+    def _resume_motion(self):
+        """Resume animations when the window becomes visible again."""
+        try:
+            self.lightbar.resume()
+        except Exception:
+            pass
+        try:
+            self._title_bar.resume_shimmer()
+        except Exception:
+            pass
+        if getattr(self, "_bg_movie", None):
+            self._bg_movie.setPaused(False)
 
     # ------------------------------------------------------------------
     # Frameless window edge resize (pure Qt mouse events)
@@ -2440,10 +2158,16 @@ class YouBoardApp(QMainWindow):
         lay = QVBoxLayout(parent)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
+        self._tab_layouts.append(lay)
 
         search_row = QHBoxLayout()
         search_edit = QLineEdit()
-        search_edit.setPlaceholderText("\U0001f50d  " + tr("col_preview") + "...")
+        search_edit.setObjectName("searchEdit")
+        search_edit.setPlaceholderText(tr("col_preview") + "...")
+        _sousuo = _res_icon("sousuo.ico")
+        if os.path.exists(_sousuo):
+            search_edit.addAction(QIcon(_sousuo),
+                                  QLineEdit.ActionPosition.LeadingPosition)
         search_edit.setClearButtonEnabled(True)
         search_edit.textChanged.connect(lambda _, t=etype: self._debounce_search(t))
         search_edit.returnPressed.connect(self._copy_selected)
@@ -2642,6 +2366,7 @@ class YouBoardApp(QMainWindow):
             self._refresh_tab(etype)
         self._refresh_history_list()
         self._update_hint()
+        self._update_desk_widget()
         try:
             self.lightbar.surge(210.0, 0.8)
             for i, x in enumerate((0.2, 0.5, 0.8)):
@@ -2772,7 +2497,7 @@ class YouBoardApp(QMainWindow):
     def _update_tab_badge(self, etype):
         n = self.store.count(etype)
         idx = ("text", "image", "file", "url").index(etype)
-        self._tabs.setTabText(idx, f"  {TAB_ICONS[etype]}  {self._type_label(etype)}  {n}  ")
+        self._tabs.setTabText(idx, f"  {self._type_label(etype)}  {n}  ")
 
     def _update_header_stats(self):
         self._header_count.setText(tr("total_records", n=self.store.count()))
@@ -3180,6 +2905,28 @@ class YouBoardApp(QMainWindow):
     # ------------------------------------------------------------------
     # Actions: copy / open / pin / delete / export
     # ------------------------------------------------------------------
+    def copy_entry_to_clipboard(self, entry):
+        """Copy a history entry back to the clipboard (used by desktop widget).
+
+        Marked as self-copy so the monitor won't re-capture it. Raises on failure.
+        """
+        etype = entry.get("type", "text")
+        self._last_self_copy = time.time()
+        self.store.mark_self_copy()
+        if etype in ("text", "url"):
+            set_clipboard_text(entry.get("content", ""))
+        elif etype == "image":
+            img_path = self._image_full_path(entry)
+            if os.path.exists(img_path) and HAS_PIL:
+                from PIL import Image as PILImage
+                img = PILImage.open(img_path)
+                img.load()
+                set_clipboard_image(img)
+        else:
+            paths = [p for p in entry.get("file_paths", []) if os.path.exists(p)]
+            if paths:
+                set_clipboard_files(paths)
+
     def _copy_selected(self):
         entry = self._get_selected_entry()
         if not entry:
@@ -3195,6 +2942,7 @@ class YouBoardApp(QMainWindow):
             elif etype == "image":
                 img_path = self._image_full_path(entry)
                 if os.path.exists(img_path) and HAS_PIL:
+                    from PIL import Image as PILImage
                     img = PILImage.open(img_path)
                     img.load()
                     set_clipboard_image(img)
@@ -3485,10 +3233,12 @@ class YouBoardApp(QMainWindow):
     # ------------------------------------------------------------------
     def _poll_monitor(self):
         changed = False
-        if self.monitor and self.monitor.consume_change():
-            changed = True
+        if self.monitor and self.monitor.is_alive():
+            # 正常路径：只消费监控线程的变化信号（轻量事件检查，不碰剪贴板）
+            if self.monitor.consume_change():
+                changed = True
         else:
-            # Fallback: direct clipboard text comparison (in case monitor thread died)
+            # Fallback: direct clipboard text comparison (only when monitor thread died)
             try:
                 import pyperclip
                 txt = pyperclip.paste()
@@ -3522,6 +3272,7 @@ class YouBoardApp(QMainWindow):
             if etype != self._active_type:
                 self._update_tab_badge(etype)
         self._update_header_stats()
+        self._update_desk_widget()
         try:
             self.lightbar.pulse(190.0, 0.0, strength=1.0)
         except Exception:
@@ -3569,6 +3320,8 @@ class YouBoardApp(QMainWindow):
         # Re-register hotkey if it changed (takes effect immediately)
         self._unregister_hotkey()
         self._register_hotkey()
+        # Optional desktop widget — apply live
+        self._apply_desktop_widget()
         if need_restart:
             # Save window state so it persists across restart
             geo = self.geometry()
@@ -3579,15 +3332,44 @@ class YouBoardApp(QMainWindow):
             self._restarting = True
             self.close()
 
+    def _apply_desktop_widget(self):
+        """Create/show or hide the optional desktop clipboard widget."""
+        enabled = bool(load_config().get("desktop_widget", True))
+        if enabled:
+            if self._desk_widget is None:
+                self._desk_widget = DesktopClipboardWidget(self)
+            self._desk_widget.refresh()
+            self._desk_widget.show()
+            self._desk_widget.raise_()
+        elif self._desk_widget is not None:
+            self._desk_widget.hide()
+
+    def _update_desk_widget(self):
+        w = getattr(self, "_desk_widget", None)
+        if w is not None and w.isVisible():
+            w.refresh()
+
     # ------------------------------------------------------------------
     # Cleanup / tray / fade-in
     # ------------------------------------------------------------------
+    def _apply_max_state(self):
+        """最大化时内容贴合屏幕左缘（左边距归零 + 直角面板），消除圆角缺口。"""
+        maxed = self.isMaximized()
+        if getattr(self, "_flush", None) == maxed:
+            return
+        self._flush = maxed
+        for lay in getattr(self, "_tab_layouts", []):
+            lay.setContentsMargins(0 if maxed else 8, 8, 8, 8)
+        try:
+            self.setStyleSheet(build_qss(load_config().get("theme", "dark"), flush=maxed))
+        except Exception:
+            pass
+
     def closeEvent(self, event):
         """X = quit the app."""
         self._unregister_hotkey()
-        if hasattr(self, '_music_tab') and self._music_tab:
-            self._music_tab.stop_playback()
-        self._stop_video_bg()
+        if hasattr(self, '_desk_widget') and self._desk_widget:
+            self._desk_widget.close()
         if self.monitor:
             self.monitor.stop()
         if hasattr(self, '_tray') and self._tray:
@@ -3603,11 +3385,11 @@ class YouBoardApp(QMainWindow):
             self._tray.hide()
         QApplication.quit()
 
-    def run(self):
-        """Show window with tray icon and fade-in animation."""
-        self._ui_ready = True
-        # System tray
-        self._tray = QSystemTrayIcon(QIcon(LOGO_ICO) if LOGO_ICO else QIcon(), self)
+    def _init_tray(self):
+        """创建并显示系统托盘图标（幂等）。启动早期调用，保证图标及时出现。"""
+        if getattr(self, "_tray", None) is not None:
+            return
+        self._tray = QSystemTrayIcon(_build_tray_icon(), self)
         tray_menu = QMenu()
         show_act = QAction(tr("tray_show"), self)
         show_act.triggered.connect(self._tray_show)
@@ -3620,6 +3402,68 @@ class YouBoardApp(QMainWindow):
         self._tray.setToolTip("YouBoard v" + APP_VERSION)
         self._tray.activated.connect(self._on_tray_activated)
         self._tray.show()
+        # 个别系统托盘区首显可能是空白占位，稍后重设一次图标
+        QTimer.singleShot(1500, self._refresh_tray_icon)
+        # Win11：自提升托盘图标到可见区并更新系统识别的快照图标
+        QTimer.singleShot(2500, self._promote_tray_icon_registry)
+        QTimer.singleShot(3200, self._refresh_tray_icon)
+
+    def _refresh_tray_icon(self):
+        if getattr(self, "_tray", None) is not None:
+            self._tray.setIcon(_build_tray_icon())
+
+    def _promote_tray_icon_registry(self):
+        """Win11 默认把新托盘图标放进溢出区。扫描注册表找到当前 EXE 的
+        通知区条目，写 isPromoted=1 使其显示在可见托盘区；同时把
+        IconSnapshot 更新为当前图标的 16x16 PNG，保证系统识别的图标正确。"""
+        try:
+            import winreg
+            exe = os.path.normcase(os.path.abspath(
+                sys.executable if getattr(sys, "frozen", False) else __file__))
+            snap = b""
+            try:
+                from PyQt6.QtCore import QBuffer, QIODevice
+                pm = _build_tray_icon().pixmap(16, 16)
+                buf = QBuffer()
+                buf.open(QIODevice.OpenModeFlag.WriteOnly)
+                pm.save(buf, "PNG")
+                buf.close()
+                snap = bytes(buf.data())
+            except Exception:
+                snap = b""
+            base = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                  r"Control Panel\NotifyIconSettings",
+                                  0, winreg.KEY_READ)
+            i = 0
+            while True:
+                try:
+                    name = winreg.EnumKey(base, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    sub = winreg.OpenKey(base, name, 0,
+                                         winreg.KEY_READ | winreg.KEY_WRITE)
+                except OSError:
+                    continue
+                try:
+                    val, _ = winreg.QueryValueEx(sub, "ExecutablePath")
+                except OSError:
+                    val = None
+                if val and os.path.normcase(os.path.abspath(str(val))) == exe:
+                    winreg.SetValueEx(sub, "isPromoted", 0, winreg.REG_DWORD, 1)
+                    if snap:
+                        winreg.SetValueEx(sub, "IconSnapshot", 0,
+                                          winreg.REG_BINARY, snap)
+                winreg.CloseKey(sub)
+            winreg.CloseKey(base)
+        except Exception:
+            pass
+
+    def run(self):
+        """Show window with tray icon and fade-in animation."""
+        self._ui_ready = True
+        self._init_tray()
         # Register global hotkey
         self._register_hotkey()
         # Fade-in animation
@@ -4002,12 +3846,32 @@ class SettingsDialog(QDialog):
         hk_row.addWidget(self._hotkey_edit)
         self._lay.addLayout(hk_row)
 
+        # Desktop widget row (on by default)
+        widget_row = QHBoxLayout()
+        widget_txt = QVBoxLayout()
+        wg_title = QLabel(tr("set_widget_title"))
+        wg_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        wg_desc = QLabel(tr("set_widget_desc"))
+        wg_desc.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
+        wg_desc.setWordWrap(True)
+        widget_txt.addWidget(wg_title)
+        widget_txt.addWidget(wg_desc)
+        widget_row.addLayout(widget_txt, 1)
+        self._widget_cb = QCheckBox()
+        self._widget_cb.setChecked(bool(cfg.get("desktop_widget", True)))
+        widget_row.addWidget(self._widget_cb)
+        self._lay.addLayout(widget_row)
+
         # Theme card
         self._card(tr("set_theme"))
         theme_row = QHBoxLayout()
         self._theme_btns = {}
-        for tname, icon in (("dark", "\U0001f319"), ("light", "\u2600\ufe0f")):
-            btn = QPushButton(f"{icon}  {tr('set_theme_' + tname)}")
+        for tname, ico in (("dark", "anse.ico"), ("light", "liangse.ico")):
+            btn = QPushButton(tr("set_theme_" + tname))
+            _tp = _res_icon(ico)
+            if os.path.exists(_tp):
+                btn.setIcon(QIcon(_tp))
+                btn.setIconSize(QSize(16, 16))
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btn.clicked.connect(lambda _, t=tname: self._pick_theme(t))
             self._theme_btns[tname] = btn
@@ -4037,110 +3901,6 @@ class SettingsDialog(QDialog):
         hint.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
         self._lay.addWidget(hint)
 
-        # Video background card
-        self._card(tr("set_video_bg"))
-        self._video_bg_path = cfg.get("bg_video", "")
-        vbg_row = QHBoxLayout()
-        self._vbg_lbl = QLabel(self._vbg_display_name())
-        self._vbg_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
-        self._vbg_lbl.setWordWrap(True)
-        self._vbg_lbl.setMaximumWidth(320)
-        vbg_row.addWidget(self._vbg_lbl, 1)
-        vbg_sel_btn = QPushButton(tr("set_video_bg_select"))
-        vbg_sel_btn.clicked.connect(self._select_video_bg)
-        vbg_row.addWidget(vbg_sel_btn)
-        vbg_clr_btn = QPushButton(tr("set_video_bg_clear"))
-        vbg_clr_btn.clicked.connect(self._clear_video_bg)
-        vbg_row.addWidget(vbg_clr_btn)
-        self._lay.addLayout(vbg_row)
-        vbg_hint = QLabel(tr("set_video_bg_hint"))
-        vbg_hint.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        self._lay.addWidget(vbg_hint)
-
-        # --- Video progress slider (drag to seek the live background video) ---
-        from PyQt6.QtWidgets import QSlider
-        prog_lbl = QLabel(tr("set_video_progress"))
-        prog_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold; font-size: 11px; padding-top: 4px;")
-        self._lay.addWidget(prog_lbl)
-        vprog_row = QHBoxLayout()
-        self._vprog_pos = QLabel("0:00")
-        self._vprog_pos.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        self._vprog_pos.setFixedWidth(38)
-        vprog_row.addWidget(self._vprog_pos)
-        self._vprog_slider = QSlider(Qt.Orientation.Horizontal)
-        self._vprog_slider.setRange(0, 0)
-        self._vprog_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._vprog_slider.setStyleSheet(f"""
-            QSlider::groove:horizontal {{ background: {C['SURFACE3']}; height: 6px; border-radius: 3px; }}
-            QSlider::handle:horizontal {{ background: {C['ACCENT']}; width: 15px; height: 15px;
-                margin: -5px 0; border-radius: 7px; }}
-            QSlider::sub-page:horizontal {{ background: {C['ACCENT']}; border-radius: 3px; }}
-        """)
-        self._vprog_slider.sliderPressed.connect(self._vprog_pressed)
-        self._vprog_slider.sliderReleased.connect(self._vprog_released)
-        vprog_row.addWidget(self._vprog_slider, 1)
-        self._vprog_dur = QLabel("0:00")
-        self._vprog_dur.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        self._vprog_dur.setFixedWidth(38)
-        self._vprog_dur.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        vprog_row.addWidget(self._vprog_dur)
-        self._lay.addLayout(vprog_row)
-        self._vprog_seeking = False
-        # Poll the live player to reflect progress
-        self._vprog_timer = QTimer(self)
-        self._vprog_timer.timeout.connect(self._vprog_tick)
-        self._vprog_timer.start(500)
-
-        # --- Video volume slider ---
-        vol_lbl = QLabel(tr("set_video_volume"))
-        vol_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold; font-size: 11px; padding-top: 4px;")
-        self._lay.addWidget(vol_lbl)
-        vvol_row = QHBoxLayout()
-        vvol_icon = QLabel("\U0001f50a")
-        vvol_icon.setStyleSheet("font-size: 13px;")
-        vvol_row.addWidget(vvol_icon)
-        self._vvol_slider = QSlider(Qt.Orientation.Horizontal)
-        self._vvol_slider.setRange(0, 100)
-        self._vvol_slider.setValue(cfg.get("bg_video_volume", 50))
-        self._vvol_slider.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._vvol_slider.setStyleSheet(f"""
-            QSlider::groove:horizontal {{ background: {C['SURFACE3']}; height: 5px; border-radius: 2px; }}
-            QSlider::handle:horizontal {{ background: {C['TEAL']}; width: 13px; height: 13px;
-                margin: -4px 0; border-radius: 6px; }}
-            QSlider::sub-page:horizontal {{ background: {C['TEAL']}; border-radius: 2px; }}
-        """)
-        self._vvol_slider.valueChanged.connect(self._vvol_changed)
-        vvol_row.addWidget(self._vvol_slider, 1)
-        self._vvol_pct = QLabel(f"{cfg.get('bg_video_volume', 50)}%")
-        self._vvol_pct.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        self._vvol_pct.setFixedWidth(34)
-        vvol_row.addWidget(self._vvol_pct)
-        self._lay.addLayout(vvol_row)
-
-        # Mute checkbox (with a clear checkmark indicator)
-        mute_row = QHBoxLayout()
-        mute_txt = QVBoxLayout()
-        mt1 = QLabel(tr("set_video_bg_mute"))
-        mt1.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
-        mt2 = QLabel(tr("set_video_bg_mute_desc"))
-        mt2.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        mute_txt.addWidget(mt1)
-        mute_txt.addWidget(mt2)
-        mute_row.addLayout(mute_txt, 1)
-        self._vbg_mute_cb = QCheckBox()
-        self._vbg_mute_cb.setChecked(cfg.get("bg_video_mute", False))
-        check_png = _checkmark_png_path().replace("\\", "/")
-        self._vbg_mute_cb.setStyleSheet(f"""
-            QCheckBox {{ spacing: 6px; }}
-            QCheckBox::indicator {{ width: 20px; height: 20px; border: 2px solid {C['BORDER_LT']};
-                border-radius: 5px; background: {C['SURFACE2']}; }}
-            QCheckBox::indicator:hover {{ border-color: {C['ACCENT']}; }}
-            QCheckBox::indicator:checked {{ background: {C['ACCENT']}; border-color: {C['ACCENT']};
-                image: url({check_png}); }}
-        """)
-        self._vbg_mute_cb.toggled.connect(self._vmute_toggled)
-        mute_row.addWidget(self._vbg_mute_cb)
-        self._lay.addLayout(mute_row)
 
         # About card
         self._card(tr("set_about"))
@@ -4220,81 +3980,13 @@ class SettingsDialog(QDialog):
         self._bg_path = ""
         self._bg_lbl.setText(tr("set_bg_current"))
 
-    def _vbg_display_name(self):
-        if self._video_bg_path and os.path.exists(self._video_bg_path):
-            return os.path.basename(self._video_bg_path)
-        return tr("set_video_bg_current")
-
-    def _select_video_bg(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, tr("set_video_bg_select"), "", tr("video_filter"))
-        if path:
-            self._video_bg_path = path
-            self._vbg_lbl.setText(os.path.basename(path))
-
-    def _clear_video_bg(self):
-        self._video_bg_path = ""
-        self._vbg_lbl.setText(tr("set_video_bg_current"))
-
-    @staticmethod
-    def _vfmt(ms):
-        s = ms // 1000
-        m, sec = divmod(s, 60)
-        h, m2 = divmod(m, 60)
-        return f"{h}:{m2:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
-
-    def _vprog_pressed(self):
-        self._vprog_seeking = True
-
-    def _vprog_released(self):
-        self._vprog_seeking = False
-        self.app.video_seek(self._vprog_slider.value())
-
-    def _vprog_tick(self):
-        dur = self.app.video_duration()
-        if dur <= 0:
-            return
-        if self._vprog_slider.maximum() != dur:
-            self._vprog_slider.setRange(0, dur)
-            self._vprog_dur.setText(self._vfmt(dur))
-        if not self._vprog_seeking:
-            pos = self.app.video_position()
-            if pos < 0:
-                pos = 0
-            elif pos > dur:
-                pos = dur
-            self._vprog_slider.blockSignals(True)
-            self._vprog_slider.setValue(pos)
-            self._vprog_slider.blockSignals(False)
-            self._vprog_pos.setText(self._vfmt(pos))
-
-    def _vvol_changed(self, val):
-        self._vvol_pct.setText(f"{val}%")
-        cfg = load_config()
-        cfg["bg_video_volume"] = val
-        save_config(cfg)
-        self.app.apply_video_audio()
-
-    def _vmute_toggled(self, checked):
-        cfg = load_config()
-        cfg["bg_video_mute"] = checked
-        save_config(cfg)
-        self.app.apply_video_audio()
-
     def _save(self):
-        if hasattr(self, "_vprog_timer") and self._vprog_timer:
-            self._vprog_timer.stop()
         cfg = load_config()
-        old_bg = cfg.get("bg_image", "")
-        old_video = cfg.get("bg_video", "")
-        bg_changed = (old_bg != self._bg_path) or (old_video != self._video_bg_path)
+        bg_changed = cfg.get("bg_image", "") != self._bg_path
         cfg["bg_image"] = self._bg_path
-        cfg["bg_video"] = self._video_bg_path
-        cfg["bg_video_mute"] = self._vbg_mute_cb.isChecked()
-        cfg["bg_video_volume"] = self._vvol_slider.value()
+        cfg["desktop_widget"] = self._widget_cb.isChecked()
         cfg["hotkey"] = self._hotkey_edit.get_hotkey() or "alt+q"
         save_config(cfg)
-        self.app.apply_video_audio()
         self.accept()
         self.app.apply_settings(self._lang_sel, self._auto_cb.isChecked(),
                                 self._theme_sel, bg_changed)
