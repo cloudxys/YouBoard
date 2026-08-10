@@ -1354,7 +1354,7 @@ class DesktopClipboardWidget(QWidget):
     """
 
     HISTORY_ROWS = 20
-    MIN_W, MIN_H = 230, 170
+    MIN_W, MIN_H = 140, 100
     MAX_W, MAX_H = 1200, 1080
     _GRIP = 18        # 右下角缩放热区边长
     _EDGE = 12        # 底边上下缩放缓区高度
