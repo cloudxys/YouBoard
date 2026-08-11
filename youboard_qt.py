@@ -111,15 +111,27 @@ def _res_icon(name):
 
 
 def _build_tray_icon():
-    """Build the tray QIcon straight from YouBoard.ico.
+    """Build a multi-size tray QIcon from YouBoard.ico.
 
-    直接让 Windows/Qt 从 ico 选尺寸缩放（窗口图标已验证该路径必然正常）；
-    预缩放 pixmap 转 HICON 在部分系统上会产生空白占位图标，弃用。
-    ico 文件本身不做任何修改。
+    YouBoard.ico 只有单张 512x512，直接转小尺寸 HICON 在部分系统/DPI 下
+    会产生空白占位图标。这里预渲染常用托盘尺寸的清晰 pixmap 加入 QIcon，
+    让 Windows 托盘取到合适的小尺寸位图。ico 文件本身不做任何修改。
     """
     if not LOGO_ICO or not os.path.exists(LOGO_ICO):
         return QIcon()
-    return QIcon(LOGO_ICO)
+    base = QPixmap(LOGO_ICO)
+    if base.isNull():
+        img = QImage(LOGO_ICO)
+        if img.isNull():
+            return QIcon()
+        base = QPixmap.fromImage(img)
+    icon = QIcon()
+    for s in (16, 20, 24, 32, 40, 48, 64):
+        pm = base.scaled(s, s,
+                         Qt.AspectRatioMode.KeepAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+        icon.addPixmap(pm, QIcon.Mode.Normal, QIcon.State.Off)
+    return icon
 
 
 ICO_MIN = _res_icon("zuixiao.ico")
@@ -1092,7 +1104,16 @@ class _EdgeHandle(QWidget):
         self.raise_()
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton and not self._win.isMaximized():
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._win.isMaximized():
+                # 对齐原生 Win11 手感：最大化时拖边缘先还原再缩放
+                self._win.showNormal()
+            wh = self._win.windowHandle()
+            edge_map = {'left': Qt.Edge.LeftEdge, 'right': Qt.Edge.RightEdge,
+                        'top': Qt.Edge.TopEdge, 'bottom': Qt.Edge.BottomEdge}
+            if wh is not None and wh.startSystemResize(edge_map[self._edge]):
+                event.accept()
+                return
             self._dragging = True
             self._start_pos = event.globalPosition().toPoint()
             self._start_geo = self._win.geometry()
@@ -1159,6 +1180,11 @@ class _ResizeGrip(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            wh = self._win.windowHandle()
+            if wh is not None and wh.startSystemResize(
+                    Qt.Edge.BottomEdge | Qt.Edge.RightEdge):
+                event.accept()
+                return
             self._dragging = True
             self._start_pos = event.globalPosition().toPoint()
             self._start_geo = self._win.geometry()
@@ -1178,6 +1204,45 @@ class _ResizeGrip(QWidget):
             self.releaseMouse()
         self._dragging = False
         self._start_pos = None
+
+
+# ===========================================================================
+# Corner Resize Handle (transparent, diagonal cursor, native resize)
+# ===========================================================================
+class _CornerHandle(QWidget):
+    """透明角缩放热区：对角光标 + 原生 startSystemResize 双向缩放。"""
+    SIZE = 14
+
+    def __init__(self, parent_window, corner):
+        """corner: 'tl' / 'tr' / 'bl'"""
+        super().__init__(parent_window)
+        self._win = parent_window
+        self._corner = corner
+        self.setFixedSize(self.SIZE, self.SIZE)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setStyleSheet("background: transparent;")
+        # 与小组件约定一致：tl/br=SizeFDiag，tr/bl=SizeBDiag
+        if corner in ("tl", "br"):
+            self.setCursor(QCursor(Qt.CursorShape.SizeFDiagCursor))
+        else:
+            self.setCursor(QCursor(Qt.CursorShape.SizeBDiagCursor))
+        self.raise_()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._win.isMaximized():
+                self._win.showNormal()
+            wh = self._win.windowHandle()
+            edges = {
+                "tl": Qt.Edge.TopEdge | Qt.Edge.LeftEdge,
+                "tr": Qt.Edge.TopEdge | Qt.Edge.RightEdge,
+                "bl": Qt.Edge.BottomEdge | Qt.Edge.LeftEdge,
+                "br": Qt.Edge.BottomEdge | Qt.Edge.RightEdge,
+            }
+            if wh is not None and wh.startSystemResize(edges[self._corner]):
+                event.accept()
+                return
+            event.accept()
 
 
 # ===========================================================================
@@ -1282,6 +1347,10 @@ class _TitleBar(QWidget):
                 self._max_btn.geometry().contains(pos) or
                 self._close_btn.geometry().contains(pos)):
                 event.ignore()
+                return
+            wh = self._win.windowHandle()
+            if wh is not None and wh.startSystemMove():
+                event.accept()
                 return
             self._drag_pos = event.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
             event.accept()
@@ -1415,6 +1484,10 @@ class DesktopClipboardWidget(QWidget):
         self._cur_lbl = QLabel(tr("widget_empty"))
         self._cur_lbl.setObjectName("dwCur")
         self._cur_lbl.setWordWrap(True)
+        # 内容适应组件尺寸，而非组件跟随内容变大
+        self._cur_lbl.setSizePolicy(QSizePolicy.Policy.Ignored,
+                                    QSizePolicy.Policy.Ignored)
+        self._cur_lbl.setMinimumHeight(0)
         cur_row.addWidget(self._cur_lbl, 1)
         lay.addLayout(cur_row)
 
@@ -1425,6 +1498,9 @@ class DesktopClipboardWidget(QWidget):
         self._hist_list = QListWidget()
         self._hist_list.setObjectName("dwList")
         self._hist_list.setIconSize(QSize(16, 16))
+        self._hist_list.setSizePolicy(QSizePolicy.Policy.Expanding,
+                                      QSizePolicy.Policy.Ignored)
+        self._hist_list.setMinimumHeight(0)
         self._hist_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._hist_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._hist_list.itemClicked.connect(self._on_item_clicked)
@@ -1456,9 +1532,12 @@ class DesktopClipboardWidget(QWidget):
             return
         try:
             import ctypes
-            hwnd = int(self.winId())
-            x, y, w, h = self.x(), self.y(), self.width(), self.height()
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, x + 1, y, w + 1, h + 1, 0x0004)
+            g = self.geometry()
+            self._kick_target = (g.x(), g.y(), g.width(), g.height())
+            ctypes.windll.user32.SetWindowPos(int(self.winId()), 0,
+                                              g.x() + 1, g.y(),
+                                              g.width() + 1, g.height() + 1,
+                                              0x0004)
             QTimer.singleShot(60, self._kick_restore)
         except Exception:
             pass
@@ -1468,9 +1547,10 @@ class DesktopClipboardWidget(QWidget):
             return
         try:
             import ctypes
-            hwnd = int(self.winId())
-            x, y, w, h = self.x(), self.y(), self.width(), self.height()
-            ctypes.windll.user32.SetWindowPos(hwnd, 0, x - 1, y, w - 1, h - 1, 0x0004)
+            x, y, w, h = getattr(self, "_kick_target", (0, 0, 0, 0))
+            if w and h:
+                ctypes.windll.user32.SetWindowPos(int(self.winId()), 0,
+                                                  x, y, w, h, 0x0004)
         except Exception:
             pass
 
@@ -1501,31 +1581,50 @@ class DesktopClipboardWidget(QWidget):
         """)
 
     # ---- data ----
-    def refresh(self):
-        """重载最新剪贴板内容 + 最近历史。"""
+    def refresh(self, override=None):
+        """重载最新剪贴板内容 + 最近历史。
+
+        override：应用内复制（Enter / 点击组件条目）时直接指定当前行
+        显示的条目——这类复制不会新增记录，组件需跟随显示。
+        """
         try:
             all_entries = self.app.store.get_all()
             all_entries.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
         except Exception:
             all_entries = []
         self._entries = all_entries[:1 + self.HISTORY_ROWS]
-        if not self._entries:
+        if override is not None:
+            cur = override
+            rest = [e for e in self._entries
+                    if e.get("hash") != override.get("hash")][:self.HISTORY_ROWS]
+        else:
+            cur = self._entries[0] if self._entries else None
+            rest = self._entries[1:]
+        if cur is None:
             self._cur_icon.clear()
             self._cur_lbl.setText(tr("widget_empty"))
             self._hist_list.clear()
+            self._hist_entries = []
             return
-        cur = self._entries[0]
         ico = self._icons.get(cur.get("type", "text"))
         self._cur_icon.setPixmap(ico.pixmap(QSize(20, 20)) if ico else QPixmap())
         self._cur_lbl.setText(self._fmt(cur, 160))
+        self._hist_entries = rest
         self._hist_list.clear()
-        for e in self._entries[1:]:
+        for e in rest:
             item = QListWidgetItem(self._fmt(e, 60))
             ico2 = self._icons.get(e.get("type", "text"))
             if ico2:
                 item.setIcon(ico2)
             item.setToolTip(tr("widget_click_copy"))
             self._hist_list.addItem(item)
+        # 内容变化后用不可感知的透明度微抖强制 DWM 重合成
+        # （不动几何，避免位置漂移；hover 能唤醒即证明透明度变化有效）
+        try:
+            self.setWindowOpacity(min(1.0, self.IDLE_OPACITY + 0.01))
+            QTimer.singleShot(80, self._fade_to_idle)
+        except Exception:
+            pass
 
     def _fmt(self, entry, limit):
         etype = entry.get("type", "text")
@@ -1548,11 +1647,12 @@ class DesktopClipboardWidget(QWidget):
     # ---- interactions ----
     def _on_item_clicked(self, item):
         row = self._hist_list.row(item)
-        entries = self._entries[1:]
+        entries = getattr(self, "_hist_entries", self._entries[1:])
         if row < 0 or row >= len(entries):
             return
         try:
             self.app.copy_entry_to_clipboard(entries[row])
+            self.refresh(entries[row])
             try:
                 self.app._set_status(tr("st_copied"), "ok")
             except Exception:
@@ -1744,7 +1844,14 @@ class YouBoardApp(QMainWindow):
         # Restore saved window geometry
         cfg = load_config()
         saved_geo = cfg.get("win_geometry")
-        if saved_geo and len(saved_geo) == 4:
+        geo_ok = bool(saved_geo and len(saved_geo) == 4)
+        if geo_ok:
+            # 保存值若是最大化尺寸（>=屏幕可用区），属污染数据，
+            # 不能当作普通几何，否则最大化还原后仍是全屏
+            _avail = QApplication.primaryScreen().availableGeometry()
+            if saved_geo[2] >= _avail.width() and saved_geo[3] >= _avail.height():
+                geo_ok = False
+        if geo_ok:
             self.setGeometry(saved_geo[0], saved_geo[1], saved_geo[2], saved_geo[3])
         if cfg.get("win_maximized", False):
             self.showMaximized()
@@ -1826,6 +1933,10 @@ class YouBoardApp(QMainWindow):
         self._edge_right = _EdgeHandle(self, 'right')
         self._edge_top = _EdgeHandle(self, 'top')
         self._edge_bottom = _EdgeHandle(self, 'bottom')
+        # Corner resize handles (top-left / top-right / bottom-left, diagonal cursors)
+        self._corner_tl = _CornerHandle(self, 'tl')
+        self._corner_tr = _CornerHandle(self, 'tr')
+        self._corner_bl = _CornerHandle(self, 'bl')
         self._bind_shortcuts()
 
     def _build_header(self, root):
@@ -1976,27 +2087,37 @@ class YouBoardApp(QMainWindow):
                 self._resize_grip.show()
                 self._resize_grip.move(self.width() - 20, self.height() - 20)
         # Reposition edge resize handles
+        # 最大化时也保留边缘热区：拖拽时先还原再缩放（见 _EdgeHandle.mousePressEvent）
         if hasattr(self, '_edge_left'):
             w, h = self.width(), self.height()
             t = _EdgeHandle.THICKNESS
+            self._edge_left.setGeometry(0, t, t, h - 2 * t)
+            self._edge_right.setGeometry(w - t, t, t, h - 2 * t)
+            self._edge_top.setGeometry(t, 0, w - 2 * t, t)
+            self._edge_bottom.setGeometry(t, h - t, w - 2 * t, t)
+            self._edge_left.show()
+            self._edge_right.show()
+            self._edge_top.show()
+            self._edge_bottom.show()
+            self._edge_left.raise_()
+            self._edge_right.raise_()
+            self._edge_top.raise_()
+            self._edge_bottom.raise_()
+        # Reposition corner resize handles (top-left / top-right / bottom-left)
+        if hasattr(self, '_corner_tl'):
+            w, h = self.width(), self.height()
+            s = _CornerHandle.SIZE
             if self.isMaximized():
-                self._edge_left.hide()
-                self._edge_right.hide()
-                self._edge_top.hide()
-                self._edge_bottom.hide()
+                self._corner_tl.hide()
+                self._corner_tr.hide()
+                self._corner_bl.hide()
             else:
-                self._edge_left.setGeometry(0, t, t, h - 2 * t)
-                self._edge_right.setGeometry(w - t, t, t, h - 2 * t)
-                self._edge_top.setGeometry(t, 0, w - 2 * t, t)
-                self._edge_bottom.setGeometry(t, h - t, w - 2 * t, t)
-                self._edge_left.show()
-                self._edge_right.show()
-                self._edge_top.show()
-                self._edge_bottom.show()
-                self._edge_left.raise_()
-                self._edge_right.raise_()
-                self._edge_top.raise_()
-                self._edge_bottom.raise_()
+                self._corner_tl.move(0, 0)
+                self._corner_tr.move(w - s, 0)
+                self._corner_bl.move(0, h - s)
+                for _c in (self._corner_tl, self._corner_tr, self._corner_bl):
+                    _c.show()
+                    _c.raise_()
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -2958,6 +3079,7 @@ class YouBoardApp(QMainWindow):
                 else:
                     self._set_status(tr("st_paths_missing"), "err")
                     return
+            self._update_desk_widget(entry)
             self._flash_selected()
         except Exception as ex:
             QMessageBox.critical(self, tr("dlg_error"), tr("msg_copy_failed", err=ex))
@@ -3324,7 +3446,7 @@ class YouBoardApp(QMainWindow):
         self._apply_desktop_widget()
         if need_restart:
             # Save window state so it persists across restart
-            geo = self.geometry()
+            geo = self.normalGeometry() if self.isMaximized() else self.geometry()
             cfg["win_geometry"] = [geo.x(), geo.y(), geo.width(), geo.height()]
             cfg["win_maximized"] = self.isMaximized()
             save_config(cfg)
@@ -3344,10 +3466,10 @@ class YouBoardApp(QMainWindow):
         elif self._desk_widget is not None:
             self._desk_widget.hide()
 
-    def _update_desk_widget(self):
+    def _update_desk_widget(self, entry=None):
         w = getattr(self, "_desk_widget", None)
         if w is not None and w.isVisible():
-            w.refresh()
+            w.refresh(entry)
 
     # ------------------------------------------------------------------
     # Cleanup / tray / fade-in
