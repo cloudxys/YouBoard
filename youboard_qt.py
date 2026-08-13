@@ -89,7 +89,7 @@ from youboard_core import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.3.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -412,6 +412,12 @@ STRINGS = {
         "cli_stopped": "已停止",
         "tray_show": "显示 YouBoard",
         "tray_quit": "退出",
+        "tray_privacy": "隐私模式（暂停记录）",
+        "set_privacy_title": "隐私模式",
+        "set_privacy_desc": "开启后暂停记录剪贴板内容，复制密码等敏感信息不入库（不影响已存历史）",
+        "btn_purge_missing": "清理失效",
+        "file_missing": "已失效",
+        "purge_done": "已清理 {n} 条失效记录",
         "set_hotkey_title": "全局快捷键",
         "set_hotkey_desc": "按下快捷键显示/隐藏 YouBoard（如 alt+q、ctrl+shift+v）",
         "set_widget_title": "桌面小组件",
@@ -546,6 +552,12 @@ STRINGS = {
         "cli_stopped": "Stopped",
         "tray_show": "Show YouBoard",
         "tray_quit": "Quit",
+        "tray_privacy": "Privacy mode (pause recording)",
+        "set_privacy_title": "Privacy Mode",
+        "set_privacy_desc": "When on, clipboard content is not recorded; sensitive copies (e.g. passwords) are ignored (existing history untouched)",
+        "btn_purge_missing": "Purge Missing",
+        "file_missing": "missing",
+        "purge_done": "Purged {n} missing entries",
         "set_hotkey_title": "HOTKEY",
         "set_hotkey_desc": "Press shortcut to show/hide YouBoard (e.g. alt+q, ctrl+shift+v)",
         "set_widget_title": "Desktop Widget",
@@ -1105,20 +1117,26 @@ class _EdgeHandle(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            pressed_at = event.globalPosition().toPoint()
             if self._win.isMaximized():
                 # 对齐原生 Win11 手感：最大化时拖边缘先还原再缩放
+                # 延迟到窗口状态切换完成后再启动原生缩放，避免 Qt fail-fast 崩溃
                 self._win.showNormal()
-            wh = self._win.windowHandle()
-            edge_map = {'left': Qt.Edge.LeftEdge, 'right': Qt.Edge.RightEdge,
-                        'top': Qt.Edge.TopEdge, 'bottom': Qt.Edge.BottomEdge}
-            if wh is not None and wh.startSystemResize(edge_map[self._edge]):
-                event.accept()
-                return
-            self._dragging = True
-            self._start_pos = event.globalPosition().toPoint()
-            self._start_geo = self._win.geometry()
-            self.grabMouse()
+                QTimer.singleShot(0, lambda: self._start_resize(pressed_at))
+            else:
+                self._start_resize(pressed_at)
             event.accept()
+
+    def _start_resize(self, global_pos):
+        wh = self._win.windowHandle()
+        edge_map = {'left': Qt.Edge.LeftEdge, 'right': Qt.Edge.RightEdge,
+                    'top': Qt.Edge.TopEdge, 'bottom': Qt.Edge.BottomEdge}
+        if wh is not None and wh.startSystemResize(edge_map[self._edge]):
+            return
+        self._dragging = True
+        self._start_pos = global_pos
+        self._start_geo = self._win.geometry()
+        self.grabMouse()
 
     def mouseMoveEvent(self, event):
         if not self._dragging or not self._start_pos:
@@ -1180,16 +1198,23 @@ class _ResizeGrip(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            wh = self._win.windowHandle()
-            if wh is not None and wh.startSystemResize(
-                    Qt.Edge.BottomEdge | Qt.Edge.RightEdge):
-                event.accept()
-                return
-            self._dragging = True
-            self._start_pos = event.globalPosition().toPoint()
-            self._start_geo = self._win.geometry()
-            self.grabMouse()
+            pressed_at = event.globalPosition().toPoint()
+            if self._win.isMaximized():
+                self._win.showNormal()
+                QTimer.singleShot(0, lambda: self._start_resize(pressed_at))
+            else:
+                self._start_resize(pressed_at)
             event.accept()
+
+    def _start_resize(self, global_pos):
+        wh = self._win.windowHandle()
+        if wh is not None and wh.startSystemResize(
+                Qt.Edge.BottomEdge | Qt.Edge.RightEdge):
+            return
+        self._dragging = True
+        self._start_pos = global_pos
+        self._start_geo = self._win.geometry()
+        self.grabMouse()
 
     def mouseMoveEvent(self, event):
         if self._dragging and self._start_pos:
@@ -1230,19 +1255,24 @@ class _CornerHandle(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            pressed_at = event.globalPosition().toPoint()
             if self._win.isMaximized():
                 self._win.showNormal()
-            wh = self._win.windowHandle()
-            edges = {
-                "tl": Qt.Edge.TopEdge | Qt.Edge.LeftEdge,
-                "tr": Qt.Edge.TopEdge | Qt.Edge.RightEdge,
-                "bl": Qt.Edge.BottomEdge | Qt.Edge.LeftEdge,
-                "br": Qt.Edge.BottomEdge | Qt.Edge.RightEdge,
-            }
-            if wh is not None and wh.startSystemResize(edges[self._corner]):
-                event.accept()
-                return
+                QTimer.singleShot(0, lambda: self._start_resize(pressed_at))
+            else:
+                self._start_resize(pressed_at)
             event.accept()
+
+    def _start_resize(self, global_pos):
+        wh = self._win.windowHandle()
+        edges = {
+            "tl": Qt.Edge.TopEdge | Qt.Edge.LeftEdge,
+            "tr": Qt.Edge.TopEdge | Qt.Edge.RightEdge,
+            "bl": Qt.Edge.BottomEdge | Qt.Edge.LeftEdge,
+            "br": Qt.Edge.BottomEdge | Qt.Edge.RightEdge,
+        }
+        if wh is not None and wh.startSystemResize(edges[self._corner]):
+            return
 
 
 # ===========================================================================
@@ -1281,9 +1311,10 @@ class _TitleBar(QWidget):
         lay.addWidget(self._title_lbl)
         lay.addStretch()
         # Window buttons (icon-based)
+        # 直角 + 铺满标题栏高度：关闭按钮贴满窗口右上角，消除圆角露出的缝隙。
         btn_style_base = (
-            "border: none; border-radius: 4px; "
-            "min-width: 32px; max-width: 32px; min-height: 24px; max-height: 24px; "
+            "border: none; border-radius: 0; padding: 0; margin: 0; "
+            "min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; "
             "background: transparent;")
         ico_size = QSize(14, 14)
 
@@ -1423,11 +1454,13 @@ class DesktopClipboardWidget(QWidget):
     """
 
     HISTORY_ROWS = 20
-    MIN_W, MIN_H = 140, 100
+    # 最小尺寸 = 完整内容尺寸（标题 + 当前行 + 历史标题 + 至少一条历史），
+    # 避免启动后或拖动时缩成 90x60 的小药丸，保证“退出前多大，重启后还多大”。
+    MIN_W, MIN_H = 90, 60
     MAX_W, MAX_H = 1200, 1080
     _GRIP = 18        # 右下角缩放热区边长
     _EDGE = 12        # 底边上下缩放缓区高度
-    IDLE_OPACITY = 0.55   # 平时若隐若现
+    IDLE_OPACITY = 0.45   # 常驻透明度
     HOVER_OPACITY = 1.0   # 鼠标悬停时完全清晰
 
     def __init__(self, app):
@@ -1443,7 +1476,13 @@ class DesktopClipboardWidget(QWidget):
         self._resize_mode = None
         self._resize_origin = None
         self._resize_geo = None
+        self._press_pos = None
+        self._press_zone = None
+        self._press_active = False
         self._entries = []
+        # 布局派生的 minimumSize 会把窗口锁在 ~87px 高，覆盖掉，
+        # 下限由 MIN_W/MIN_H 与分级收敛逻辑共同管理
+        self.setMinimumSize(self.MIN_W, self.MIN_H)
         self._icons = {}
         for etype in ("text", "image", "file", "url"):
             p = _res_icon(TAB_ICON_FILES[etype])
@@ -1451,7 +1490,15 @@ class DesktopClipboardWidget(QWidget):
                 self._icons[etype] = QIcon(p)
         self._build()
         self._apply_theme()
+        self._cache_geo_consts()
         self._restore_geometry()
+        # 几何自动保存：位置/尺寸一变就落盘（5 秒轮询），
+        # 强退/崩溃也不会丢摆放，重启后与退出前一致
+        self._last_saved_geo = (self.x(), self.y(),
+                                self.width(), self.height())
+        self._geo_timer = QTimer(self)
+        self._geo_timer.timeout.connect(self._autosave_geometry)
+        self._geo_timer.start(5000)
 
     # ---- UI ----
     def _build(self):
@@ -1473,6 +1520,8 @@ class DesktopClipboardWidget(QWidget):
         close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         close_btn.clicked.connect(self._close_to_config)
         head.addWidget(close_btn)
+        self._close_btn = close_btn
+        self._head_lay = head
         lay.addLayout(head)
 
         # 当前剪贴板内容（图标 + 文本）
@@ -1483,16 +1532,20 @@ class DesktopClipboardWidget(QWidget):
         cur_row.addWidget(self._cur_icon)
         self._cur_lbl = QLabel(tr("widget_empty"))
         self._cur_lbl.setObjectName("dwCur")
-        self._cur_lbl.setWordWrap(True)
+        self._cur_lbl.setWordWrap(False)
         # 内容适应组件尺寸，而非组件跟随内容变大
         self._cur_lbl.setSizePolicy(QSizePolicy.Policy.Ignored,
-                                    QSizePolicy.Policy.Ignored)
+                                    QSizePolicy.Policy.Maximum)
         self._cur_lbl.setMinimumHeight(0)
+        self._cur_full = ""
         cur_row.addWidget(self._cur_lbl, 1)
+        self._cur_lay = cur_row
         lay.addLayout(cur_row)
 
         self._hist_title = QLabel(tr("widget_history"))
         self._hist_title.setObjectName("dwHistTitle")
+        self._hist_title.setSizePolicy(QSizePolicy.Policy.Preferred,
+                                       QSizePolicy.Policy.Maximum)
         lay.addWidget(self._hist_title)
 
         self._hist_list = QListWidget()
@@ -1516,10 +1569,9 @@ class DesktopClipboardWidget(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # Qt6 Windows：半透明分层窗口首次合成可能缺失而不可见，
-        # 透明度变化才会强制 UpdateLayeredWindow；顺带形成淡入效果。
-        self.setWindowOpacity(1.0)
-        QTimer.singleShot(150, self._fade_to_idle)
+        # 直接设为常驻透明度：透明度变化即触发 DWM 合成，且无亮度跳变。
+        self.setWindowOpacity(self.IDLE_OPACITY)
+        QTimer.singleShot(0, self._sync_hist_visibility)
         # 兜底：延迟用原生 SetWindowPos 尺寸 nudge 强制 DWM 合成
         QTimer.singleShot(800, self._kick_render)
 
@@ -1534,9 +1586,12 @@ class DesktopClipboardWidget(QWidget):
             import ctypes
             g = self.geometry()
             self._kick_target = (g.x(), g.y(), g.width(), g.height())
+            # SetWindowPos 使用物理像素；Qt 几何为逻辑像素，需按 DPR 换算，
+            # 否则 DPI 感知进程下会把窗口“缩小+往左上跳”并被自动保存进配置。
+            dpr = self.devicePixelRatioF() or 1.0
             ctypes.windll.user32.SetWindowPos(int(self.winId()), 0,
-                                              g.x() + 1, g.y(),
-                                              g.width() + 1, g.height() + 1,
+                                              int(g.x() * dpr) + 1, int(g.y() * dpr),
+                                              int(g.width() * dpr) + 1, int(g.height() * dpr) + 1,
                                               0x0004)
             QTimer.singleShot(60, self._kick_restore)
         except Exception:
@@ -1549,8 +1604,10 @@ class DesktopClipboardWidget(QWidget):
             import ctypes
             x, y, w, h = getattr(self, "_kick_target", (0, 0, 0, 0))
             if w and h:
+                dpr = self.devicePixelRatioF() or 1.0
                 ctypes.windll.user32.SetWindowPos(int(self.winId()), 0,
-                                                  x, y, w, h, 0x0004)
+                                                  int(x * dpr), int(y * dpr),
+                                                  int(w * dpr), int(h * dpr), 0x0004)
         except Exception:
             pass
 
@@ -1602,13 +1659,15 @@ class DesktopClipboardWidget(QWidget):
             rest = self._entries[1:]
         if cur is None:
             self._cur_icon.clear()
+            self._cur_full = ""
             self._cur_lbl.setText(tr("widget_empty"))
             self._hist_list.clear()
             self._hist_entries = []
             return
         ico = self._icons.get(cur.get("type", "text"))
         self._cur_icon.setPixmap(ico.pixmap(QSize(20, 20)) if ico else QPixmap())
-        self._cur_lbl.setText(self._fmt(cur, 160))
+        self._cur_full = self._fmt(cur, 160)
+        self._elide_cur()
         self._hist_entries = rest
         self._hist_list.clear()
         for e in rest:
@@ -1618,13 +1677,73 @@ class DesktopClipboardWidget(QWidget):
                 item.setIcon(ico2)
             item.setToolTip(tr("widget_click_copy"))
             self._hist_list.addItem(item)
-        # 内容变化后用不可感知的透明度微抖强制 DWM 重合成
-        # （不动几何，避免位置漂移；hover 能唤醒即证明透明度变化有效）
+        QTimer.singleShot(0, self._sync_hist_visibility)
+
+    def _elide_cur(self):
+        """当前行文本按组件宽度省略，内容跟随组件尺寸显示。"""
+        txt = getattr(self, "_cur_full", "") or ""
+        if not txt:
+            return
+        w = self._cur_lbl.width()
+        if w <= 0:
+            w = max(40, self.width() - 70)
+        fm = self._cur_lbl.fontMetrics()
+        self._cur_lbl.setText(
+            fm.elidedText(txt, Qt.TextElideMode.ElideRight, w))
+
+    def _cache_geo_consts(self):
+        """缓存正常形态下的布局度量，作为分级收敛的稳定判据。"""
         try:
-            self.setWindowOpacity(min(1.0, self.IDLE_OPACITY + 0.01))
-            QTimer.singleShot(80, self._fade_to_idle)
+            cl = self._card.layout()
+            m = cl.contentsMargins()
+            self._g_base = m.top() + m.bottom()
+            self._g_sp = cl.spacing()
+            self._g_head = self._head_lay.sizeHint().height()
+            self._g_cur = self._cur_lay.sizeHint().height()
+            self._g_title = self._hist_title.sizeHint().height()
         except Exception:
             pass
+
+    def _sync_hist_visibility(self):
+        """按高度分级收敛，保证任何尺寸都不截断、退出前后形态一致：
+        历史不足一行→收起列表；历史标题放不下→隐藏标题；
+        连当前行都放不下→微缩模式（窄边距+16px 图标）。"""
+        try:
+            if not hasattr(self, "_g_base"):
+                self._cache_geo_consts()
+            sp = self._g_sp
+            hb, cb, tb = self._g_head, self._g_cur, self._g_title
+            # 用窗口高度：resizeEvent 期间子卡片几何可能尚未更新
+            H = self.height()
+            micro = H < (self._g_base + sp + hb + cb)
+            if micro != getattr(self, "_micro_mode", False):
+                self._micro_mode = micro
+                cl = self._card.layout()
+                if micro:
+                    cl.setContentsMargins(8, 5, 8, 5)
+                    cl.setSpacing(3)
+                    self._close_btn.setFixedSize(16, 16)
+                    self._cur_icon.setFixedSize(16, 16)
+                else:
+                    cl.setContentsMargins(12, 10, 12, 10)
+                    cl.setSpacing(5)
+                    self._close_btn.setFixedSize(20, 20)
+                    self._cur_icon.setFixedSize(20, 20)
+            show_title = H >= (self._g_base + sp * 2 + hb + cb + tb - 2)
+            self._hist_title.setVisible(show_title)
+            if show_title:
+                avail = H - (self._g_base + sp * 3 + hb + cb + tb)
+            else:
+                avail = H - (self._g_base + sp * 2 + hb + cb)
+            self._hist_list.setMaximumHeight(0 if avail < 24 else 16777215)
+            self._card.layout().activate()
+        except Exception:
+            pass
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._elide_cur()
+        self._sync_hist_visibility()
 
     def _fmt(self, entry, limit):
         etype = entry.get("type", "text")
@@ -1633,7 +1752,9 @@ class DesktopClipboardWidget(QWidget):
             src = entry.get("source_name", "")
             text += src if src else tr("type_image")
         elif etype == "file":
-            paths = entry.get("file_paths", [])
+            paths = entry.get("file_paths", []) or []
+            if isinstance(paths, str):
+                paths = [paths]
             name = os.path.basename(paths[0]) if paths else "?"
             n = entry.get("file_count", len(paths))
             text = (name + f" (+{n - 1})") if n > 1 else name
@@ -1699,16 +1820,28 @@ class DesktopClipboardWidget(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            zone = self._hit_zone(event.position().toPoint())
-            if zone:
-                self._resize_mode = zone
-                self._resize_origin = event.globalPosition().toPoint()
-                self._resize_geo = self.geometry()
-            else:
-                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            # 按下不立即进入拖拽/缩放：普通点击的手抖（几像素）曾把
+            # 组件意外拖动/缩小并写进配置，导致重启后跳位置、变小。
+            self._press_zone = self._hit_zone(event.position().toPoint())
+            self._press_pos = event.globalPosition().toPoint()
+            self._press_active = False
             event.accept()
 
+    def _activate_press(self):
+        self._press_active = True
+        if self._press_zone:
+            self._resize_mode = self._press_zone
+            self._resize_origin = self._press_pos
+            self._resize_geo = self.geometry()
+        else:
+            self._drag_pos = self._press_pos - self.frameGeometry().topLeft()
+
     def mouseMoveEvent(self, event):
+        if self._press_pos is not None and not self._press_active:
+            if ((event.globalPosition().toPoint() - self._press_pos)
+                    .manhattanLength() < 4):
+                return  # 视为纯点击：不拖拽、不缩放
+            self._activate_press()
         if self._resize_mode and self._resize_origin is not None:
             delta = event.globalPosition().toPoint() - self._resize_origin
             geo = self._resize_geo
@@ -1760,23 +1893,21 @@ class DesktopClipboardWidget(QWidget):
             self.unsetCursor()
 
     def mouseReleaseEvent(self, event):
-        was_resizing = self._resize_mode is not None
+        changed = bool(self._press_active)
         self._resize_mode = None
         self._resize_origin = None
         self._resize_geo = None
         self._drag_pos = None
+        self._press_pos = None
+        self._press_zone = None
+        self._press_active = False
         self.unsetCursor()
-        if was_resizing or event.button() == Qt.MouseButton.LeftButton:
-            try:
-                cfg = load_config()
-                cfg["widget_pos"] = [self.x(), self.y()]
-                cfg["widget_size"] = [self.width(), self.height()]
-                save_config(cfg)
-            except Exception:
-                pass
+        if changed:
+            self.save_geometry()
         event.accept()
 
     def _restore_geometry(self):
+        """原样恢复保存的几何（同版本内存什么就恢复什么，数学上保证一致）。"""
         cfg = load_config()
         screen = QApplication.primaryScreen().availableGeometry()
         size = cfg.get("widget_size")
@@ -1784,7 +1915,7 @@ class DesktopClipboardWidget(QWidget):
             w = max(self.MIN_W, min(self.MAX_W, int(size[0])))
             h = max(self.MIN_H, min(self.MAX_H, int(size[1])))
         else:
-            w, h = 300, 560
+            w, h = self.MIN_W, self.MIN_H
         self.resize(w, h)
         pos = cfg.get("widget_pos")
         if (isinstance(pos, (list, tuple)) and len(pos) == 2
@@ -1793,6 +1924,25 @@ class DesktopClipboardWidget(QWidget):
             self.move(int(pos[0]), int(pos[1]))
         else:
             self.move(screen.right() - w - 24, screen.top() + 90)
+
+    def save_geometry(self):
+        """保存当前位置与尺寸，退出前调用以保证重启后一模一样。"""
+        try:
+            cfg = load_config()
+            cfg["widget_pos"] = [self.x(), self.y()]
+            cfg["widget_size"] = [self.width(), self.height()]
+            save_config(cfg)
+            self._last_saved_geo = (self.x(), self.y(),
+                                    self.width(), self.height())
+        except Exception:
+            pass
+
+    def _autosave_geometry(self):
+        if not self.isVisible():
+            return
+        g = (self.x(), self.y(), self.width(), self.height())
+        if g != getattr(self, "_last_saved_geo", None):
+            self.save_geometry()
 
 
 # ===========================================================================
@@ -1859,6 +2009,9 @@ class YouBoardApp(QMainWindow):
             self.setWindowIcon(QIcon(LOGO_ICO))
 
         self._init_tray()  # 提前创建托盘图标，保证启动后及时显示
+        # 启动时按配置初始化隐私免记录模式
+        if self.monitor is not None:
+            self.monitor.privacy_mode = bool(load_config().get("privacy_mode", False))
         self._build_ui()
         self._apply_background()
         QTimer.singleShot(150, self._initial_refresh)
@@ -1866,6 +2019,11 @@ class YouBoardApp(QMainWindow):
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._poll_monitor)
         self._poll_timer.start(120)
+        # 文件失效即时检测：源文件删除后当场置灰，无需手动刷新
+        self._file_sig = None
+        self._file_check_timer = QTimer(self)
+        self._file_check_timer.timeout.connect(self._check_files_changed)
+        self._file_check_timer.start(2000)
         self._animate_dot()
         # 桌面小组件（可选功能，默认开启；延迟创建不影响启动速度）
         self._desk_widget = None
@@ -2314,7 +2472,6 @@ class YouBoardApp(QMainWindow):
 
         act_row = QHBoxLayout()
         copy_btn = QPushButton(tr("btn_copy"))
-        copy_btn.setProperty("cssClass", "accent")
         copy_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         copy_btn.clicked.connect(self._copy_selected)
         act_row.addWidget(copy_btn)
@@ -2331,6 +2488,11 @@ class YouBoardApp(QMainWindow):
             open_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             open_btn.clicked.connect(self._open_selected)
             act_row.addWidget(open_btn)
+        if etype == "file":
+            purge_btn = QPushButton(tr("btn_purge_missing"))
+            purge_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            purge_btn.clicked.connect(self._purge_missing_files)
+            act_row.addWidget(purge_btn)
         export_btn = QPushButton(tr("btn_export"))
         export_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         export_btn.clicked.connect(self._export_selected)
@@ -2584,22 +2746,29 @@ class YouBoardApp(QMainWindow):
                         f"{entry.get('width', '?')}x{entry.get('height', '?')}",
                         fmt_size(entry.get("file_size", 0))]
             else:
-                paths = entry.get("file_paths", [])
+                paths = self.store._norm_paths(entry)
                 sizes = entry.get("file_sizes", [])
                 total_sz = sum(s for s in sizes if s > 0) if sizes else 0
                 fp = "  |  ".join(os.path.basename(p) for p in paths[:6])
                 if len(paths) > 6:
                     fp += f"  …(+{len(paths) - 6})"
+                if self.store.file_entry_missing(entry):
+                    fp += f"  {tr('file_missing')}"
                 vals = [str(i + 1), time_str, status,
                         str(entry.get("file_count", len(paths))),
                         _extract_extensions(paths),
                         fmt_size(total_sz) if total_sz > 0 else "?", fp]
+            missing = (etype == "file") and self.store.file_entry_missing(entry)
             for col, val in enumerate(vals):
                 item = QTableWidgetItem(val)
                 if col in (0, 2):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if is_pin:
                     item.setBackground(pin_color)
+                if missing:
+                    item.setForeground(QColor(C['TEXT_MUTED']))
+                    if col == len(vals) - 1:
+                        item.setIcon(self._missing_icon())
                 table.setItem(i, col, item)
             iid_map[i] = entry["hash"]
         self._iid_to_hash[etype] = iid_map
@@ -2614,6 +2783,30 @@ class YouBoardApp(QMainWindow):
                 cl.setText(tr("count_total", total=total_all, pinned=pin_n))
         self._update_tab_badge(etype)
         self._update_header_stats()
+
+    def _purge_missing_files(self):
+        n = self.store.purge_missing_files()
+        self._set_status(tr("purge_done", n=n), "ok")
+        self._refresh_tab("file")
+        self._refresh_history_list()
+        self._update_desk_widget()
+
+    def _missing_icon(self):
+        if not hasattr(self, "_jinggao_icon"):
+            self._jinggao_icon = QIcon(_res_icon("jinggao.ico"))
+        return self._jinggao_icon
+
+    def _check_files_changed(self):
+        """定时检测文件失效状态，源文件被删除时当场刷新（无需手动 F5）。"""
+        try:
+            entries = self.store.get_by_type("file")
+            sig = tuple(self.store.file_entry_missing(e) for e in entries)
+        except Exception:
+            return
+        if getattr(self, "_file_sig", None) != sig:
+            self._file_sig = sig
+            self._refresh_tab("file")
+            self._update_desk_widget()
 
     def _update_tab_badge(self, etype):
         n = self.store.count(etype)
@@ -3489,8 +3682,10 @@ class YouBoardApp(QMainWindow):
 
     def closeEvent(self, event):
         """X = quit the app."""
+        self._save_window_geometry()
         self._unregister_hotkey()
         if hasattr(self, '_desk_widget') and self._desk_widget:
+            self._desk_widget.save_geometry()
             self._desk_widget.close()
         if self.monitor:
             self.monitor.stop()
@@ -3499,13 +3694,27 @@ class YouBoardApp(QMainWindow):
         event.accept()
 
     def _real_quit(self):
+        self._save_window_geometry()
         if hasattr(self, '_unregister_hotkey'):
             self._unregister_hotkey()
+        if hasattr(self, '_desk_widget') and self._desk_widget:
+            self._desk_widget.save_geometry()
         if self.monitor:
             self.monitor.stop()
         if hasattr(self, '_tray') and self._tray:
             self._tray.hide()
         QApplication.quit()
+
+    def _save_window_geometry(self):
+        """退出/重启前保存主窗口位置、大小与最大化状态，保证下次启动原样恢复。"""
+        try:
+            cfg = load_config()
+            geo = self.normalGeometry() if self.isMaximized() else self.geometry()
+            cfg["win_geometry"] = [geo.x(), geo.y(), geo.width(), geo.height()]
+            cfg["win_maximized"] = self.isMaximized()
+            save_config(cfg)
+        except Exception:
+            pass
 
     def _init_tray(self):
         """创建并显示系统托盘图标（幂等）。启动早期调用，保证图标及时出现。"""
@@ -3515,9 +3724,14 @@ class YouBoardApp(QMainWindow):
         tray_menu = QMenu()
         show_act = QAction(tr("tray_show"), self)
         show_act.triggered.connect(self._tray_show)
+        self._tray_privacy_act = QAction(tr("tray_privacy"), self)
+        self._tray_privacy_act.setCheckable(True)
+        self._tray_privacy_act.setChecked(bool(load_config().get("privacy_mode", False)))
+        self._tray_privacy_act.triggered.connect(self._toggle_privacy)
         quit_act = QAction(tr("tray_quit"), self)
         quit_act.triggered.connect(self._tray_quit)
         tray_menu.addAction(show_act)
+        tray_menu.addAction(self._tray_privacy_act)
         tray_menu.addSeparator()
         tray_menu.addAction(quit_act)
         self._tray.setContextMenu(tray_menu)
@@ -3533,6 +3747,24 @@ class YouBoardApp(QMainWindow):
     def _refresh_tray_icon(self):
         if getattr(self, "_tray", None) is not None:
             self._tray.setIcon(_build_tray_icon())
+
+    def set_privacy_mode(self, on, save=False):
+        """同步隐私免记录模式到监控线程、配置与托盘勾选状态。"""
+        on = bool(on)
+        if self.monitor is not None:
+            self.monitor.privacy_mode = on
+        if save:
+            try:
+                cfg = load_config()
+                cfg["privacy_mode"] = on
+                save_config(cfg)
+            except Exception:
+                pass
+        if getattr(self, "_tray_privacy_act", None) is not None:
+            self._tray_privacy_act.setChecked(on)
+
+    def _toggle_privacy(self, on):
+        self.set_privacy_mode(on, save=True)
 
     def _promote_tray_icon_registry(self):
         """Win11 默认把新托盘图标放进溢出区。扫描注册表找到当前 EXE 的
@@ -3931,58 +4163,52 @@ class SettingsDialog(QDialog):
             self._lang_btns[code] = btn
             lang_row.addWidget(btn)
         self._lay.addLayout(lang_row)
-        note = QLabel(tr("set_lang_note"))
-        note.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        self._lay.addWidget(note)
         self._paint_lang()
 
         # General card
         self._card(tr("set_general"))
         auto_row = QHBoxLayout()
-        auto_txt = QVBoxLayout()
         t1 = QLabel(tr("set_autostart"))
         t1.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
-        t2 = QLabel(tr("set_autostart_desc"))
-        t2.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        t2.setWordWrap(True)
-        auto_txt.addWidget(t1)
-        auto_txt.addWidget(t2)
-        auto_row.addLayout(auto_txt, 1)
+        auto_row.addWidget(t1, 1)
         self._auto_cb = QCheckBox()
         self._auto_cb.setChecked(get_autostart())
         auto_row.addWidget(self._auto_cb)
         self._lay.addLayout(auto_row)
+        self._add_sep()
 
         # Hotkey row
         hk_row = QHBoxLayout()
         hk_txt = QVBoxLayout()
         hk_title = QLabel(tr("set_hotkey_title"))
         hk_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
-        hk_desc = QLabel(tr("set_hotkey_desc"))
-        hk_desc.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        hk_desc.setWordWrap(True)
         hk_txt.addWidget(hk_title)
-        hk_txt.addWidget(hk_desc)
         hk_row.addLayout(hk_txt, 1)
         self._hotkey_edit = HotkeyCapture(cfg.get("hotkey", "alt+q"))
         hk_row.addWidget(self._hotkey_edit)
         self._lay.addLayout(hk_row)
+        self._add_sep()
 
         # Desktop widget row (on by default)
         widget_row = QHBoxLayout()
-        widget_txt = QVBoxLayout()
         wg_title = QLabel(tr("set_widget_title"))
         wg_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
-        wg_desc = QLabel(tr("set_widget_desc"))
-        wg_desc.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        wg_desc.setWordWrap(True)
-        widget_txt.addWidget(wg_title)
-        widget_txt.addWidget(wg_desc)
-        widget_row.addLayout(widget_txt, 1)
+        widget_row.addWidget(wg_title, 1)
         self._widget_cb = QCheckBox()
         self._widget_cb.setChecked(bool(cfg.get("desktop_widget", True)))
         widget_row.addWidget(self._widget_cb)
         self._lay.addLayout(widget_row)
+        self._add_sep()
+
+        # Privacy row (inside General)
+        privacy_row = QHBoxLayout()
+        pv_title = QLabel(tr("set_privacy_title"))
+        pv_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        privacy_row.addWidget(pv_title, 1)
+        self._privacy_cb = QCheckBox()
+        self._privacy_cb.setChecked(bool(cfg.get("privacy_mode", False)))
+        privacy_row.addWidget(self._privacy_cb)
+        self._lay.addLayout(privacy_row)
 
         # Theme card
         self._card(tr("set_theme"))
@@ -3999,9 +4225,6 @@ class SettingsDialog(QDialog):
             self._theme_btns[tname] = btn
             theme_row.addWidget(btn)
         self._lay.addLayout(theme_row)
-        note2 = QLabel(tr("set_theme_note"))
-        note2.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        self._lay.addWidget(note2)
         self._paint_theme()
 
         # Background card
@@ -4019,9 +4242,6 @@ class SettingsDialog(QDialog):
         clr_btn.clicked.connect(self._clear_bg)
         bg_row.addWidget(clr_btn)
         self._lay.addLayout(bg_row)
-        hint = QLabel(tr("set_bg_hint"))
-        hint.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        self._lay.addWidget(hint)
 
 
         # About card
@@ -4056,6 +4276,13 @@ class SettingsDialog(QDialog):
         lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px; font-weight: bold; "
                           f"letter-spacing: 1px; padding-top: 8px;")
         self._lay.addWidget(lbl)
+
+    def _add_sep(self):
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFixedHeight(1)
+        line.setStyleSheet(f"background: {C['BORDER']}; color: {C['BORDER']};")
+        self._lay.addWidget(line)
 
     def _pick_lang(self, code):
         self._lang_sel = code
@@ -4108,7 +4335,9 @@ class SettingsDialog(QDialog):
         cfg["bg_image"] = self._bg_path
         cfg["desktop_widget"] = self._widget_cb.isChecked()
         cfg["hotkey"] = self._hotkey_edit.get_hotkey() or "alt+q"
+        cfg["privacy_mode"] = self._privacy_cb.isChecked()
         save_config(cfg)
+        self.app.set_privacy_mode(self._privacy_cb.isChecked())
         self.accept()
         self.app.apply_settings(self._lang_sel, self._auto_cb.isChecked(),
                                 self._theme_sel, bg_changed)
