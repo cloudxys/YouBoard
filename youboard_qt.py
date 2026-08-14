@@ -7,7 +7,6 @@ PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系�
 
 import colorsys
 import ctypes
-import ctypes.wintypes
 import gc
 import locale
 import math
@@ -22,22 +21,29 @@ import time
 import webbrowser
 from datetime import datetime
 
+IS_WIN = (sys.platform == "win32")
+IS_MAC = (sys.platform == "darwin")
+if IS_WIN:
+    import ctypes.wintypes
+
 # ---------------------------------------------------------------------------
 # High DPI setup (must precede QApplication creation)
 # ---------------------------------------------------------------------------
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
+if IS_WIN:
     try:
-        ctypes.windll.user32.SetProcessDPIAware()
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+    APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.2.1"
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            APP_USER_MODEL_ID)
     except Exception:
         pass
-
-APP_USER_MODEL_ID = "YouBoard.ClipboardHistory.2.1"
-try:
-    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
-except Exception:
-    pass
 
 try:
     locale.setlocale(locale.LC_COLLATE, '')
@@ -75,7 +81,8 @@ except ImportError:
 try:
     import keyboard as _keyboard_lib
     HAS_KEYBOARD = True
-except ImportError:
+except Exception:
+    # keyboard 仅支持 Windows/Linux，macOS 上 import 会抛 OSError
     HAS_KEYBOARD = False
 
 from youboard_core import (
@@ -143,6 +150,8 @@ ICO_SETTINGS = _res_icon("shezhi.ico")
 
 def _force_square_corners(widget):
     """Win11 会给无边框窗口自动加圆角（四角留缝），用 DWM 强制直角贴合屏幕。"""
+    if not IS_WIN:
+        return
     try:
         hwnd = int(widget.winId())
         pref = ctypes.c_int(1)  # DWMWCP_DONOTROUND
@@ -150,6 +159,14 @@ def _force_square_corners(widget):
             hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))  # DWMWA_WINDOW_CORNER_PREFERENCE
     except Exception:
         pass
+
+
+def _open_path(path):
+    """跨平台打开文件/文件夹/图片（Windows 用 os.startfile，macOS 用 open）。"""
+    if IS_MAC:
+        subprocess.Popen(["open", os.path.abspath(path)])
+    else:
+        os.startfile(path)
 
 
 def _checkmark_png_path():
@@ -1054,6 +1071,115 @@ class _DownloadWorker(QThread):
 HOTKEY_ID = 0xB0AD
 
 
+class _MacHotkeyListener(threading.Thread):
+    """macOS 全局热键：Quartz CGEventTap 监听。
+
+    需要 PyObjC（python.org 版 Python 自带；打包时随 bundle 携带）。
+    首次使用需在「系统设置 → 隐私与安全性 → 辅助功能」中授予权限，
+    未授权时静默降级（全局热键不可用，不影响其他功能）。
+    """
+
+    _KEYCODE_MAP = {chr(ord("a") + i): i for i in range(26)}
+    _KEYCODE_MAP.update({"0": 29, "1": 18, "2": 19, "3": 20, "4": 21,
+                         "5": 23, "6": 22, "7": 26, "8": 28, "9": 25})
+    _KEYCODE_MAP.update({"f%d" % i: v for i, v in enumerate(
+        [122, 120, 99, 118, 96, 97, 98, 100, 101, 109, 103, 111], 1)})
+
+    def __init__(self, hotkey_str, callback):
+        super().__init__(daemon=True)
+        self._mods = set()
+        self._key = None
+        for p in hotkey_str.lower().replace(" ", "").split("+"):
+            if p in ("ctrl", "control"):
+                self._mods.add("ctrl")
+            elif p == "alt":
+                self._mods.add("alt")
+            elif p == "shift":
+                self._mods.add("shift")
+            elif p in ("win", "super"):
+                self._mods.add("win")
+            elif len(p) == 1 and (p.isalpha() or p.isdigit()):
+                self._key = p.lower()
+            elif p.startswith("f") and p[1:].isdigit():
+                self._key = p.lower()
+        self._keycode = self._KEYCODE_MAP.get(self._key)
+        self._callback = callback
+        self._tap = None
+        self._runloop = None
+
+    def run(self):
+        if self._keycode is None:
+            return
+        try:
+            from Quartz import (
+                CGEventTapCreate, CGEventTapEnable, CGEventGetFlags,
+                CGEventGetIntegerValueField, CGEventMaskBit,
+                kCGEventKeyDown, kCGKeyboardEventKeycode,
+                kCGHeadInsertEventTap, kCGHIDEventTap,
+                kCGEventTapOptionListenOnly, CFMachPortCreateRunLoopSource,
+                CFRunLoopGetCurrent, CFRunLoopAddSource, CFRunLoopRun,
+                CFRunLoopStop, kCFRunLoopCommonModes,
+                kCGEventFlagMaskCommand, kCGEventFlagMaskShift,
+                kCGEventFlagMaskAlternate, kCGEventFlagMaskControl,
+            )
+        except Exception:
+            return
+
+        want = self._mods
+        keycode = self._keycode
+
+        def _tap_callback(proxy, cg_type, event, refcon):
+            try:
+                flags = CGEventGetFlags(event)
+                kc = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+                got = set()
+                if flags & kCGEventFlagMaskCommand:
+                    got.add("win")
+                if flags & kCGEventFlagMaskControl:
+                    got.add("ctrl")
+                if flags & kCGEventFlagMaskAlternate:
+                    got.add("alt")
+                if flags & kCGEventFlagMaskShift:
+                    got.add("shift")
+                if kc == keycode and got == want:
+                    self._callback()
+            except Exception:
+                pass
+            return event
+
+        tap = CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap,
+                               kCGEventTapOptionListenOnly,
+                               CGEventMaskBit(kCGEventKeyDown),
+                               _tap_callback, None)
+        if not tap:
+            return
+        self._tap = tap
+        CGEventTapEnable(tap, True)
+        src = CFMachPortCreateRunLoopSource(None, tap, 0)
+        loop = CFRunLoopGetCurrent()
+        self._runloop = loop
+        CFRunLoopAddSource(loop, src, kCFRunLoopCommonModes)
+        CFRunLoopRun()
+        try:
+            CGEventTapEnable(tap, False)
+        except Exception:
+            pass
+
+    def stop(self):
+        if self._tap is not None:
+            try:
+                from Quartz import CGEventTapEnable
+                CGEventTapEnable(self._tap, False)
+            except Exception:
+                pass
+        if self._runloop is not None:
+            try:
+                from Quartz import CFRunLoopStop
+                CFRunLoopStop(self._runloop)
+            except Exception:
+                pass
+
+
 class _HotkeyWorker(threading.Thread):
     """Runs its own Win32 message loop, sets flag on WM_HOTKEY."""
 
@@ -1580,7 +1706,7 @@ class DesktopClipboardWidget(QWidget):
             self.setWindowOpacity(self.IDLE_OPACITY)
 
     def _kick_render(self):
-        if not self.isVisible():
+        if not IS_WIN or not self.isVisible():
             return
         try:
             import ctypes
@@ -1598,7 +1724,7 @@ class DesktopClipboardWidget(QWidget):
             pass
 
     def _kick_restore(self):
-        if not self.isVisible():
+        if not IS_WIN or not self.isVisible():
             return
         try:
             import ctypes
@@ -3186,7 +3312,7 @@ class YouBoardApp(QMainWindow):
     def _open_path_from_list(self, lw, idx):
         path = lw.item(idx.row()).text().strip()
         if os.path.exists(path):
-            os.startfile(path)
+            _open_path(path)
         else:
             QMessageBox.information(self, tr("dlg_info"), tr("msg_file_not_found", path=path))
 
@@ -3299,7 +3425,7 @@ class YouBoardApp(QMainWindow):
             if etype == "image":
                 img_path = self._image_full_path(entry)
                 if os.path.exists(img_path):
-                    os.startfile(img_path)
+                    _open_path(img_path)
                     self._set_status(tr("st_opened_viewer"), "ok")
                 else:
                     self._set_status(tr("st_image_missing"), "err")
@@ -3309,7 +3435,7 @@ class YouBoardApp(QMainWindow):
                     self._set_status(tr("st_path_missing"), "err")
                     return
                 if len(paths) == 1:
-                    os.startfile(paths[0])
+                    _open_path(paths[0])
                     self._set_status(tr("st_opened_file"), "ok")
                 else:
                     self._reveal_in_explorer(paths[0])
@@ -3324,7 +3450,12 @@ class YouBoardApp(QMainWindow):
 
     @staticmethod
     def _reveal_in_explorer(path):
-        subprocess.Popen(f'explorer /select,"{os.path.abspath(path)}"')
+        if IS_WIN:
+            subprocess.Popen(f'explorer /select,"{os.path.abspath(path)}"')
+        elif IS_MAC:
+            subprocess.Popen(["open", "-R", os.path.abspath(path)])
+        else:
+            subprocess.Popen(["xdg-open", os.path.abspath(path)])
 
     def _pin_selected(self):
         hashes = self._get_selected_hashes()
@@ -3845,6 +3976,11 @@ class YouBoardApp(QMainWindow):
         """Register global hotkey using keyboard library (reliable) or Win32 fallback."""
         cfg = load_config()
         hk = cfg.get("hotkey", "alt+q")
+        if IS_MAC:
+            self._hk_worker = _MacHotkeyListener(hk, self._on_hotkey_threadsafe)
+            self._hk_worker.start()
+            self._hotkey_registered = True
+            return
         if HAS_KEYBOARD:
             try:
                 # keyboard library uses same format: 'win+f8', 'ctrl+alt+q', etc.
@@ -4374,6 +4510,12 @@ class SettingsDialog(QDialog):
                 import webbrowser
                 webbrowser.open(html_url)
                 return
+            if IS_MAC:
+                # macOS 版暂不支持应用内替换可执行文件：直接打开 Releases 页面
+                import webbrowser
+                webbrowser.open(data.get(
+                    "html_url", "https://github.com/cloudxys/YouBoard/releases"))
+                return
             ret = QMessageBox.question(
                 self, tr("upd_new_title"),
                 tr("upd_new_msg", cur=APP_VERSION, new=tag, name=name),
@@ -4559,6 +4701,22 @@ def cli_search(store, keyword, entry_type=None):
 # ===========================================================================
 def _single_instance():
     """Prevent multiple GUI instances via a named Win32 mutex."""
+    if not IS_WIN:
+        # macOS：用文件锁保证单实例
+        import tempfile
+        import fcntl
+        lock_path = os.path.join(tempfile.gettempdir(),
+                                 "YouBoard_single_instance.lock")
+        try:
+            lock_file = open(lock_path, "w")
+        except OSError:
+            sys.exit(0)
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            sys.exit(0)
+        return lock_file
+
     mutex_name = "YouBoard_SingleInstance_Mutex"
     handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS

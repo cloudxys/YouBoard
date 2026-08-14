@@ -2,6 +2,9 @@
 build/
 dist/
 *.spec
+!YouBoard.spec
+!YouBoard_Mac.spec
+*.manifest.disabled
 
 # ---- Python ----
 __pycache__/
@@ -10,6 +13,7 @@ __pycache__/
 
 # ---- YouBoard 运行时数据（包含个人剪贴板历史，切勿提交到公开仓库！）----
 .youboard.json
+.youboard.json.bak
 .youboard_snapshots.json
 youboard_config.json
 images/
@@ -20,3 +24,7 @@ images/
 # ---- IDE / 工具 ----
 .qoder/
 .claude.json
+
+# ---- 私密素材（仅本地保留，禁止提交）----
+res/no use/
+res/*.psd
