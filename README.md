@@ -11,12 +11,14 @@
 - **网址智能识别** — 纯 URL 自动归入网址分类，混合内容双存不丢失
 - **系统托盘** — 原生 QSystemTrayIcon 托盘（自定义 ICO 图标），右键快速操作；Win11 下启动时自动写入注册表提升到可见托盘区，系统识别图标同步为 YouBoard.ico
 - **复制去重** — 应用内复制不产生重复记录
+- **历史加密落盘** — 剪贴板历史与快照以对称加密（Fernet）写入磁盘，防止被直接明文读取；密钥保存在数据目录
 - **图片预览实时缩放** — 图片跟随预览框大小等比缩放（放大/缩小），拖拽分割条即时响应
 - **历史快照** — 记录删除/清空操作，支持一键回滚，新条目淡入动画
 - **中英双语** — 设置中一键切换语言，检查更新等对话框完整适配
 - **开机自启动** — 设置中开关控制
 - **自动更新** — 设置 → 关于 → 检查更新，软件内多线程分段下载（8线程并行 Range 请求，类似 IDM 原理，跑满带宽），5秒速度检测自动切换最快源，进度条实时显示 MB/百分比，全球多镜像探测，下载完成自动替换重启
-- **快捷键** — Enter 复制、Del 删除、Space 置顶、Ctrl+A 全选、Ctrl+O 打开、F5 刷新
+- **可自定义动作快捷键** — 设置里可自定义复制 / 删除 / 置顶 / 切换分类等快捷键，点击「更改」弹出录制窗口
+- **快捷键** — Enter 复制、Del 删除、Space 置顶、Tab 下一个分类、Shift+Tab 上一个分类、Ctrl+A 全选、Ctrl+O 打开、F5 刷新
 - **环境灯带** — 全宽 RGB 灯带动效，呼吸流转 + 按键波纹 + 操作浪涌（QPainter 30fps）
 - **自定义背景** — 支持 PNG/JPG/BMP 静态 + GIF 动态背景，面板半透明通透显露
 - **桌面小组件** — 置顶小窗口实时显示当前剪贴板内容与最近 20 条历史（上下滚动），点击条目一键复制；支持拖拽移动与八向自由缩放（四边 + 四角，配套缩放光标反馈），平时半透明、悬停完全清晰，位置与尺寸自动记忆，设置中可开关
@@ -32,11 +34,15 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v2.3.0.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v2.4.0.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
 下载 `YouBoard.exe`，放到任意目录双击即可运行，无需安装。
+
+### macOS 版
+macOS 版由 GitHub Actions 在 macOS 构建机自动构建（Intel x86_64 / Apple Silicon arm64），
+产物为 `YouBoard.app` 与 `.dmg`。构建与使用说明见 [README_MAC.md](README_MAC.md)。
 
 👉 [前往 Releases 下载](https://github.com/cloudxys/YouBoard/releases)
 
@@ -50,7 +56,7 @@
 ### 环境准备
 
 ```bash
-pip install PyQt6 pillow pyperclip keyboard pyinstaller
+pip install PyQt6 pillow pyperclip keyboard cryptography pyinstaller
 ```
 
 ### 本地运行
@@ -71,7 +77,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v2.3.0.exe`
+输出：`YouBoard_Setup_v2.4.0.exe`
 
 ## 📁 项目结构
 
@@ -80,6 +86,8 @@ YouBoard/
 ├── youboard_qt.py       # 主程序（PyQt6 GUI 界面）
 ├── youboard_core.py     # 核心逻辑（监控、存储、Win32 API）
 ├── YouBoard.ico         # 应用图标
+├── YouBoard.icns        # macOS 应用图标
+├── LICENSE              # MIT 开源协议
 ├── res/                 # 标题栏按钮图标 + 播放控制图标
 │   ├── zuixiao.ico      # 最小化
 │   ├── zuida.ico        # 最大化
@@ -93,15 +101,30 @@ YouBoard/
 │   ├── sousuo.ico       # 搜索框图标
 │   ├── anse.ico         # 主题按钮：暗色
 │   └── liangse.ico      # 主题按钮：亮色
-├── version_info.txt     # EXE 版本信息（v2.2.0）
+├── version_info.txt     # EXE 版本信息（v2.4.0）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
-├── youboard_setup.iss   # Inno Setup 安装脚本（v2.2.0）
+├── YouBoard_Mac.spec    # macOS PyInstaller 配置
+├── build_mac.sh         # macOS 一键构建脚本
+├── README_MAC.md        # macOS 构建与使用说明
+├── .github/workflows/   # GitHub Actions 自动构建发布
+├── youboard_setup.iss   # Inno Setup 安装脚本（v2.4.0）
 ├── youboard_config.json # 用户配置（自动生成）
-└── .youboard.json       # 剪贴板历史数据（自动生成）
+├── .youboard.json       # 剪贴板历史数据（自动生成）
+└── youboard.key         # 历史加密密钥（自动生成，勿提交）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v2.4.0
+
+- 🔐 **历史加密落盘**
+  - 剪贴板历史与历史快照改用对称加密（Fernet）写入磁盘，文件不再是可直接阅读的明文
+  - 密钥保存在数据目录 `youboard.key`，旧版明文数据首次保存后自动转为密文，无需手动迁移
+- ⌨️ **可自定义动作快捷键**
+  - 设置 → 动作快捷键：复制 / 删除 / 置顶 / 下一个分类 / 上一个分类 均可自定义
+  - 点击「更改」弹出快捷键设置窗口，按下新组合即可生效；默认 Tab 下一个分类、Shift+Tab 上一个分类
+  - 原有 Enter 复制、Del 删除、Space 置顶、F5 刷新、Ctrl+A/Ctrl+O/Ctrl+E 保持不变
 
 ### YouBoard v2.3.0
 
@@ -276,4 +299,4 @@ YouBoard/
 
 ## 📄 License
 
-MIT
+本项目采用 [MIT License](LICENSE) 开源协议。

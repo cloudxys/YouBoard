@@ -85,6 +85,67 @@ _migrate_legacy_files()
 
 
 # ===========================================================================
+# 历史加密（对称加密落盘，防止剪贴板历史被直接明文读取）
+# 密钥保存在数据目录 youboard.key；丢失密钥后历史无法解密（隐私设计）。
+# ===========================================================================
+
+KEY_FILE = os.path.join(_BASE_DIR, "youboard.key")
+
+try:
+    from cryptography.fernet import Fernet
+    _HAS_FERNET = True
+except Exception:
+    _HAS_FERNET = False
+
+
+def _load_or_create_key():
+    """读取历史加密密钥；不存在则生成并保存到数据目录。"""
+    if not _HAS_FERNET:
+        return None
+    try:
+        if os.path.exists(KEY_FILE):
+            with open(KEY_FILE, "rb") as f:
+                key = f.read().strip()
+            if key:
+                return key
+    except Exception:
+        pass
+    try:
+        key = Fernet.generate_key()
+        with open(KEY_FILE, "wb") as f:
+            f.write(key)
+        try:
+            os.chmod(KEY_FILE, 0o600)
+        except Exception:
+            pass
+        return key
+    except Exception:
+        return None
+
+
+def _encrypt_data(raw):
+    """加密字节串；未启用加密或加密失败时原样返回。"""
+    if not _HAS_FERNET or not raw:
+        return raw
+    try:
+        return Fernet(_load_or_create_key()).encrypt(raw)
+    except Exception:
+        return raw
+
+
+def _decrypt_data(blob):
+    """解密字节串；旧版明文内容（非 gAAAA 开头）原样返回。"""
+    if not _HAS_FERNET or not blob:
+        return blob
+    if not blob.startswith(b"gAAAA"):
+        return blob
+    try:
+        return Fernet(_load_or_create_key()).decrypt(blob)
+    except Exception:
+        return blob
+
+
+# ===========================================================================
 # Config（语言等用户偏好，JSON 持久化）
 # ===========================================================================
 
@@ -825,9 +886,10 @@ class ClipboardStore:
         if not os.path.exists(self.path):
             return
         try:
-            with open(self.path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, IOError):
+            with open(self.path, "rb") as f:
+                raw = _decrypt_data(f.read())
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, IOError, OSError):
             return
 
         version = data.get("version", 1)
@@ -854,9 +916,10 @@ class ClipboardStore:
 
     def _save(self):
         try:
-            with open(self.path, "w", encoding="utf-8") as f:
-                json.dump({"version": 2, "categories": self.categories},
-                          f, ensure_ascii=False, indent=2)
+            raw = json.dumps({"version": 2, "categories": self.categories},
+                             ensure_ascii=False, indent=2).encode("utf-8")
+            with open(self.path, "wb") as f:
+                f.write(_encrypt_data(raw))
         except IOError:
             pass
 
@@ -867,15 +930,18 @@ class ClipboardStore:
             self._snapshots = []
             return
         try:
-            with open(self.snapshots_path, "r", encoding="utf-8") as f:
-                self._snapshots = json.load(f)
-        except (json.JSONDecodeError, IOError):
+            with open(self.snapshots_path, "rb") as f:
+                raw = _decrypt_data(f.read())
+            self._snapshots = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, IOError, OSError):
             self._snapshots = []
 
     def _save_snapshots(self):
         try:
-            with open(self.snapshots_path, "w", encoding="utf-8") as f:
-                json.dump(self._snapshots, f, ensure_ascii=False, indent=2)
+            raw = json.dumps(self._snapshots,
+                             ensure_ascii=False, indent=2).encode("utf-8")
+            with open(self.snapshots_path, "wb") as f:
+                f.write(_encrypt_data(raw))
         except IOError:
             pass
 

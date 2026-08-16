@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 
 echo "==> 安装/更新依赖（Python 3.10+）"
 python3 -m pip install --user --upgrade PyQt6 pillow pyperclip \
-    pyobjc-framework-Cocoa pyobjc-framework-Quartz pyinstaller
+    pyobjc-framework-Cocoa pyobjc-framework-Quartz cryptography pyinstaller
 
 echo "==> 清理旧构建产物"
 rm -rf build dist
@@ -23,7 +23,7 @@ echo "    数据目录：~/Library/Application Support/YouBoard"
 
 if command -v hdiutil >/dev/null 2>&1; then
     echo "==> 生成 DMG 镜像"
-    DMG="YouBoard_macOS_v2.3.0.dmg"
+    DMG="YouBoard_macOS_v2.4.0.dmg"
     rm -f "$DMG"
     hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov -format UDZO "$DMG"
     echo "==> DMG：$DMG"

@@ -2,7 +2,7 @@
 ; 功能：多盘检测选最大空闲盘根目录安装，数据保留更新，uninstall.exe，自定义图标
 
 #define MyAppName "YouBoard"
-#define MyAppVersion "2.3.0"
+#define MyAppVersion "2.4.0"
 #define MyAppPublisher "YouBoard"
 #define MyAppExeName "YouBoard.exe"
 #define MyAppURL "https://github.com/cloudxys/YouBoard"

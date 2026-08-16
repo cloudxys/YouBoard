@@ -96,7 +96,7 @@ from youboard_core import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.4.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -249,6 +249,8 @@ def build_qss(theme_name="dark", flush=False):
     return f"""
     QMainWindow, QDialog {{ background-color: {c['BG']}; }}
     QWidget {{ color: {c['TEXT']}; font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; font-size: 13px; }}
+    QToolTip {{ background: #f7f7f7; color: #1f2329; border: 1px solid {c['BORDER']};
+        padding: 4px 8px; border-radius: 4px; }}
     QTabWidget::pane {{ border: none; background: {c['PANEL_ALPHA']}; border-radius: {pane_radius}; }}
     QTabBar::tab {{ background: transparent; color: {c['TEXT_SEC']}; padding: 8px 18px; margin-right: 2px;
         border-top-left-radius: 6px; border-top-right-radius: 6px; font-weight: bold; }}
@@ -437,6 +439,17 @@ STRINGS = {
         "purge_done": "已清理 {n} 条失效记录",
         "set_hotkey_title": "全局快捷键",
         "set_hotkey_desc": "按下快捷键显示/隐藏 YouBoard（如 alt+q、ctrl+shift+v）",
+        "set_hotkeys_entry": "快捷键设置",
+        "set_hotkeys_title": "动作快捷键",
+        "hk_copy": "复制选中",
+        "hk_delete": "删除选中",
+        "hk_pin": "置顶 / 取消置顶",
+        "hk_next_tab": "下一个分类",
+        "hk_prev_tab": "上一个分类",
+        "hk_change": "更改",
+        "hk_dialog_title": "设置快捷键",
+        "hk_dialog_hint": "点击下方按钮后，按下新的快捷键组合（支持 Ctrl/Alt/Shift/Win + 字母、数字、F1-F12 及 Tab/Enter/Del/Space）",
+        "btn_ok": "确定",
         "set_widget_title": "桌面小组件",
         "set_widget_desc": "在桌面显示一个置顶小窗口，实时更新当前剪贴板内容与最近记录，点击条目即可复制（默认开启）",
         "widget_title": "剪贴板 · 实时",
@@ -577,6 +590,17 @@ STRINGS = {
         "purge_done": "Purged {n} missing entries",
         "set_hotkey_title": "HOTKEY",
         "set_hotkey_desc": "Press shortcut to show/hide YouBoard (e.g. alt+q, ctrl+shift+v)",
+        "set_hotkeys_entry": "Hotkey Settings",
+        "set_hotkeys_title": "Action Hotkeys",
+        "hk_copy": "Copy",
+        "hk_delete": "Delete",
+        "hk_pin": "Pin / Unpin",
+        "hk_next_tab": "Next tab",
+        "hk_prev_tab": "Previous tab",
+        "hk_change": "Change",
+        "hk_dialog_title": "Set Shortcut",
+        "hk_dialog_hint": "Click below, then press the new key combination (Ctrl/Alt/Shift/Win + letter, digit, F1-F12, Tab/Enter/Del/Space)",
+        "btn_ok": "OK",
         "set_widget_title": "Desktop Widget",
         "set_widget_desc": "Show a small always-on-top window with live clipboard content and recent history; click an item to copy it (on by default)",
         "widget_title": "Clipboard · Live",
@@ -2746,14 +2770,61 @@ class YouBoardApp(QMainWindow):
         root.addWidget(bar)
 
     def _bind_shortcuts(self):
-        QShortcut(QKeySequence("F5"), self, activated=self._refresh_all)
-        QShortcut(QKeySequence("Ctrl+A"), self, activated=self._select_all)
-        QShortcut(QKeySequence("Ctrl+O"), self, activated=self._open_selected)
-        QShortcut(QKeySequence("Ctrl+E"), self, activated=self._export_selected)
-        QShortcut(QKeySequence("Delete"), self, activated=self._delete_selected)
-        QShortcut(QKeySequence("Return"), self, activated=self._copy_selected)
-        QShortcut(QKeySequence("Space"), self, activated=self._toggle_pin_selected)
-        QShortcut(QKeySequence("Escape"), self, activated=self._focus_search)
+        """绑定主窗口快捷键（可自定义动作在设置 → 动作快捷键中修改）。"""
+        for sc in getattr(self, "_shortcuts", []):
+            try:
+                sc.setParent(None)
+            except Exception:
+                pass
+        self._shortcuts = []
+        cfg = load_config()
+
+        def _add(hk, slot):
+            seq = _hotkey_to_sequence(hk)
+            if seq is None:
+                return
+            sc = QShortcut(seq, self, activated=slot)
+            self._shortcuts.append(sc)
+
+        # 固定快捷键（不提供修改）
+        _add("f5", self._refresh_all)
+        _add("ctrl+a", self._select_all)
+        _add("ctrl+o", self._open_selected)
+        _add("ctrl+e", self._export_selected)
+        _add("escape", self._focus_search)
+        # 可自定义的动作快捷键
+        _add(cfg.get("hk_copy", _ACTION_HOTKEY_DEFAULTS["hk_copy"]),
+             self._copy_selected)
+        _add(cfg.get("hk_delete", _ACTION_HOTKEY_DEFAULTS["hk_delete"]),
+             self._delete_selected)
+        _add(cfg.get("hk_pin", _ACTION_HOTKEY_DEFAULTS["hk_pin"]),
+             self._toggle_pin_selected)
+        _add(cfg.get("hk_next_tab", _ACTION_HOTKEY_DEFAULTS["hk_next_tab"]),
+             self._next_tab)
+        _add(cfg.get("hk_prev_tab", _ACTION_HOTKEY_DEFAULTS["hk_prev_tab"]),
+             self._prev_tab)
+
+        # Tab 组合无法靠 QShortcut 触发（焦点导航优先），改用应用级过滤器
+        app = QApplication.instance()
+        if app is not None:
+            old = getattr(self, "_tab_filter", None)
+            if old is not None:
+                try:
+                    app.removeEventFilter(old)
+                except Exception:
+                    pass
+            self._tab_filter = _TabHotkeyFilter(self)
+            app.installEventFilter(self._tab_filter)
+
+    def _next_tab(self):
+        n = self._tabs.count()
+        if n:
+            self._tabs.setCurrentIndex((self._tabs.currentIndex() + 1) % n)
+
+    def _prev_tab(self):
+        n = self._tabs.count()
+        if n:
+            self._tabs.setCurrentIndex((self._tabs.currentIndex() - 1) % n)
 
     # ------------------------------------------------------------------
     # Refresh / Search / Sort
@@ -3766,6 +3837,8 @@ class YouBoardApp(QMainWindow):
         # Re-register hotkey if it changed (takes effect immediately)
         self._unregister_hotkey()
         self._register_hotkey()
+        # 重新绑定动作快捷键（设置中修改后立即生效）
+        self._bind_shortcuts()
         # Optional desktop widget — apply live
         self._apply_desktop_widget()
         if need_restart:
@@ -4087,6 +4160,125 @@ class YouBoardApp(QMainWindow):
 # ===========================================================================
 # Hotkey Capture Widget
 # ===========================================================================
+_ACTION_HOTKEY_DEFAULTS = {
+    "hk_copy": "enter",
+    "hk_delete": "delete",
+    "hk_pin": "space",
+    "hk_next_tab": "tab",
+    "hk_prev_tab": "shift+tab",
+}
+
+_HK_KEY_ALIAS = {
+    "enter": Qt.Key.Key_Return,
+    "return": Qt.Key.Key_Return,
+    "del": Qt.Key.Key_Delete,
+    "delete": Qt.Key.Key_Delete,
+    "space": Qt.Key.Key_Space,
+    "tab": Qt.Key.Key_Tab,
+    "esc": Qt.Key.Key_Escape,
+    "escape": Qt.Key.Key_Escape,
+    "backspace": Qt.Key.Key_Backspace,
+    "home": Qt.Key.Key_Home,
+    "end": Qt.Key.Key_End,
+    "up": Qt.Key.Key_Up,
+    "down": Qt.Key.Key_Down,
+    "left": Qt.Key.Key_Left,
+    "right": Qt.Key.Key_Right,
+}
+
+
+def _canon_hotkey(hk):
+    """统一别名，保证显示与存储一致：del→delete、return→enter。"""
+    out = []
+    for p in str(hk).lower().replace(" ", "").split("+"):
+        if p == "del":
+            p = "delete"
+        elif p == "return":
+            p = "enter"
+        out.append(p)
+    return "+".join(out)
+
+
+def _hotkey_to_sequence(hk):
+    """把 'ctrl+shift+tab' 这类字符串转成 QKeySequence；解析失败返回 None。"""
+    mods = 0
+    key = None
+    for p in str(hk).lower().replace(" ", "").split("+"):
+        if p == "ctrl":
+            mods |= int(Qt.KeyboardModifier.ControlModifier.value)
+        elif p == "alt":
+            mods |= int(Qt.KeyboardModifier.AltModifier.value)
+        elif p == "shift":
+            mods |= int(Qt.KeyboardModifier.ShiftModifier.value)
+        elif p == "win":
+            mods |= int(Qt.KeyboardModifier.MetaModifier.value)
+        elif p in _HK_KEY_ALIAS:
+            key = int(_HK_KEY_ALIAS[p].value)
+        elif len(p) == 1 and p.isalpha():
+            key = int(getattr(Qt.Key, "Key_" + p.upper()).value)
+        elif len(p) == 1 and p.isdigit():
+            key = int(getattr(Qt.Key, "Key_" + p).value)
+        elif p.startswith("f") and p[1:].isdigit():
+            key = int(getattr(Qt.Key, "Key_F" + p[1:]).value)
+    if key is None:
+        return None
+    return QKeySequence(mods | key)
+
+
+def _hotkey_display(hk):
+    return _canon_hotkey(hk).upper().replace("+", " + ")
+
+
+def _tab_event_hotkey(event):
+    """把按键事件转成 'tab' / 'shift+tab' / 'ctrl+tab' 这类规范字符串。"""
+    parts = []
+    m = event.modifiers()
+    if m & Qt.KeyboardModifier.ControlModifier:
+        parts.append("ctrl")
+    if m & Qt.KeyboardModifier.AltModifier:
+        parts.append("alt")
+    if m & Qt.KeyboardModifier.ShiftModifier:
+        parts.append("shift")
+    if m & Qt.KeyboardModifier.MetaModifier:
+        parts.append("win")
+    parts.append("tab")
+    return "+".join(parts)
+
+
+class _TabHotkeyFilter(QObject):
+    """让 Tab / Shift+Tab 等 Tab 组合能作为分类切换快捷键。
+
+    QShortcut 对裸 Tab 不生效（焦点导航会先消费按键），因此用应用级事件
+    过滤器在焦点导航之前接管。仅当主窗口处于活动状态、且组合与配置匹配时
+    才接管，避免影响设置弹窗等其它窗口里的 Tab 焦点切换。
+    """
+
+    def __init__(self, owner):
+        super().__init__(owner)
+        self._owner = owner
+
+    def eventFilter(self, obj, event):
+        if event.type() != QEvent.Type.KeyPress:
+            return False
+        if event.key() not in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+            return False
+        if not self._owner.isActiveWindow():
+            return False
+        cfg = load_config()
+        pressed = _tab_event_hotkey(event)
+        nxt = _canon_hotkey(cfg.get(
+            "hk_next_tab", _ACTION_HOTKEY_DEFAULTS["hk_next_tab"]))
+        prv = _canon_hotkey(cfg.get(
+            "hk_prev_tab", _ACTION_HOTKEY_DEFAULTS["hk_prev_tab"]))
+        if pressed == nxt:
+            self._owner._next_tab()
+            return True
+        if pressed == prv:
+            self._owner._prev_tab()
+            return True
+        return False
+
+
 class HotkeyCapture(QPushButton):
     """Click to record, then press a key combo to set the global hotkey."""
 
@@ -4112,6 +4304,16 @@ class HotkeyCapture(QPushButton):
         self._recording = True
         self._update_display()
         self.setFocus()
+
+    def event(self, e):
+        # Tab/Shift+Tab 默认被焦点导航消费，这里先拦下来交给录制逻辑，
+        # 让 Tab 也能作为快捷键被录入。
+        if (e.type() == QEvent.Type.KeyPress
+                and int(e.key()) in (int(Qt.Key.Key_Tab.value),
+                                     int(Qt.Key.Key_Backtab.value))):
+            self.keyPressEvent(e)
+            return True
+        return super().event(e)
 
     def keyPressEvent(self, event):
         if not self._recording:
@@ -4233,6 +4435,101 @@ class HotkeyCapture(QPushButton):
 # ===========================================================================
 # Settings Dialog
 # ===========================================================================
+class _HotkeyDialog(QDialog):
+    """独立的快捷键设置界面：全局显示/隐藏 + 各类动作快捷键。"""
+
+    def __init__(self, parent, values):
+        super().__init__(parent)
+        self.setWindowTitle(tr("set_hotkeys_title"))
+        self.setModal(True)
+        self.setMinimumWidth(440)
+        self._values = dict(values)
+        self._rows = {}
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {C['BG']}; }}
+            QLabel {{ background: transparent; color: {C['TEXT']}; }}
+            QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
+                border: 1px solid {C['BORDER']}; border-radius: 6px;
+                padding: 6px 14px; font-size: 12px; }}
+            QPushButton:hover {{ background: {C['SURFACE3']}; color: {C['TEXT']}; }}
+            QPushButton[cssClass="accent"] {{ background: {C['ACCENT']};
+                color: #fff; border: none; font-weight: bold; }}
+            QPushButton[cssClass="accent"]:hover {{ background: {C['ACCENT_HV']}; }}
+        """)
+
+        lay = QVBoxLayout(self)
+        self._add_row(lay, "hotkey", tr("set_hotkey_title"))
+        lay.addWidget(self._make_sep())
+        for key in ("hk_copy", "hk_delete", "hk_pin",
+                    "hk_next_tab", "hk_prev_tab"):
+            self._add_row(lay, key, tr(key))
+        lay.addStretch()
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        ok = QPushButton(tr("btn_ok"))
+        ok.setProperty("cssClass", "accent")
+        ok.clicked.connect(self.accept)
+        btns.addWidget(ok)
+        lay.addLayout(btns)
+
+    def _make_sep(self):
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFixedHeight(1)
+        line.setStyleSheet(f"background: {C['BORDER']};")
+        return line
+
+    def _add_row(self, lay, key, title):
+        row = QHBoxLayout()
+        lbl = QLabel(title)
+        lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        row.addWidget(lbl, 1)
+        cur = QLabel(_hotkey_display(self._values[key]))
+        cur.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px;")
+        row.addWidget(cur)
+        chg = QPushButton(tr("hk_change"))
+        chg.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        chg.clicked.connect(lambda _, k=key, c=cur: self._change(k, c))
+        row.addWidget(chg)
+        lay.addLayout(row)
+        self._rows[key] = cur
+
+    def _change(self, key, cur_lbl):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("hk_dialog_title"))
+        dlg.setModal(True)
+        dlg.setMinimumWidth(340)
+        l = QVBoxLayout(dlg)
+        hint = QLabel(tr("hk_dialog_hint"))
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px;")
+        l.addWidget(hint)
+        cap = HotkeyCapture(self._values.get(key, "alt+q"))
+        cap.setFixedWidth(220)
+        l.addWidget(cap, 0, Qt.AlignmentFlag.AlignHCenter)
+        b = QHBoxLayout()
+        b.addStretch()
+        c2 = QPushButton(tr("btn_cancel"))
+        c2.clicked.connect(dlg.reject)
+        b.addWidget(c2)
+        ok = QPushButton(tr("btn_ok"))
+        ok.setProperty("cssClass", "accent")
+        ok.clicked.connect(dlg.accept)
+        b.addWidget(ok)
+        l.addLayout(b)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            hk = _canon_hotkey(cap.get_hotkey() or self._values.get(key, "alt+q"))
+            self._values[key] = hk
+            cur_lbl.setText(_hotkey_display(hk))
+
+    def values(self):
+        return self._values
+
+
 class SettingsDialog(QDialog):
 
     def __init__(self, app):
@@ -4313,15 +4610,16 @@ class SettingsDialog(QDialog):
         self._lay.addLayout(auto_row)
         self._add_sep()
 
-        # Hotkey row
+        # Hotkeys row (opens independent hotkey settings dialog)
+        self._hotkey_values = self._init_hotkey_values(cfg)
         hk_row = QHBoxLayout()
-        hk_txt = QVBoxLayout()
-        hk_title = QLabel(tr("set_hotkey_title"))
+        hk_title = QLabel(tr("set_hotkeys_entry"))
         hk_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
-        hk_txt.addWidget(hk_title)
-        hk_row.addLayout(hk_txt, 1)
-        self._hotkey_edit = HotkeyCapture(cfg.get("hotkey", "alt+q"))
-        hk_row.addWidget(self._hotkey_edit)
+        hk_row.addWidget(hk_title, 1)
+        hk_open = QPushButton(tr("hk_change"))
+        hk_open.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        hk_open.clicked.connect(self._open_hotkeys)
+        hk_row.addWidget(hk_open)
         self._lay.addLayout(hk_row)
         self._add_sep()
 
@@ -4465,13 +4763,30 @@ class SettingsDialog(QDialog):
         self._bg_path = ""
         self._bg_lbl.setText(tr("set_bg_current"))
 
+    def _init_hotkey_values(self, cfg):
+        vals = {"hotkey": _canon_hotkey(cfg.get("hotkey", "alt+q"))}
+        for key in ("hk_copy", "hk_delete", "hk_pin",
+                    "hk_next_tab", "hk_prev_tab"):
+            vals[key] = _canon_hotkey(
+                cfg.get(key, _ACTION_HOTKEY_DEFAULTS[key]))
+        return vals
+
+    def _open_hotkeys(self):
+        """打开独立的动作快捷键设置界面。"""
+        dlg = _HotkeyDialog(self, self._hotkey_values)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._hotkey_values = dlg.values()
+
     def _save(self):
         cfg = load_config()
         bg_changed = cfg.get("bg_image", "") != self._bg_path
         cfg["bg_image"] = self._bg_path
         cfg["desktop_widget"] = self._widget_cb.isChecked()
-        cfg["hotkey"] = self._hotkey_edit.get_hotkey() or "alt+q"
+        cfg["hotkey"] = self._hotkey_values.get("hotkey", "alt+q")
         cfg["privacy_mode"] = self._privacy_cb.isChecked()
+        for k, v in self._hotkey_values.items():
+            if k != "hotkey":
+                cfg[k] = v
         save_config(cfg)
         self.app.set_privacy_mode(self._privacy_cb.isChecked())
         self.accept()
