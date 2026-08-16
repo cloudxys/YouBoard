@@ -2356,7 +2356,6 @@ class YouBoardApp(QMainWindow):
         settings_btn = QPushButton()
         settings_btn.setIcon(QIcon(ICO_SETTINGS))
         settings_btn.setIconSize(QSize(20, 20))
-        settings_btn.setToolTip(tr("settings_btn").replace("\u2699", "").strip())
         settings_btn.setFixedSize(30, 26)
         settings_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         settings_btn.setStyleSheet(
@@ -3866,6 +3865,14 @@ class YouBoardApp(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self)
         dlg.exec()
+        # 设置窗口关闭后静默刷新：保证期间复制的新内容立即显示（不弹状态提示）
+        try:
+            for etype in ("text", "image", "file", "url"):
+                self._refresh_tab(etype)
+            self._refresh_history_list()
+            self._update_desk_widget()
+        except Exception:
+            pass
 
     def _open_phone_transfer(self):
         dlg = PhoneTransferDialog(self)
@@ -5120,6 +5127,17 @@ class SettingsDialog(QDialog):
         save_btn.clicked.connect(self._save)
         footer.addWidget(save_btn)
         root.addLayout(footer)
+
+        # 设置窗口打开期间兜底刷新：即使主窗口轮询受阻，复制的新内容也会实时显示
+        self._live_refresh_timer = QTimer(self)
+        self._live_refresh_timer.timeout.connect(self._live_refresh)
+        self._live_refresh_timer.start(800)
+
+    def _live_refresh(self):
+        try:
+            self.app._poll_monitor()
+        except Exception:
+            pass
 
     def _card(self, title):
         lbl = QLabel(title)
