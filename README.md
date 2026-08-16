@@ -1,6 +1,6 @@
 # YouBoard - 剪贴板历史管理工具
 
-一款轻量级 Windows 剪贴板管理工具，自动记录复制历史，支持文本、图片、文件、网址四大分类，附带桌面实时小组件，随取随用。
+一款轻量级 Windows 剪贴板管理工具，自动记录复制历史，支持文本、图片、文件、网址四大分类，附带桌面实时小组件与手机传输，随取随用。
 
 ## ✨ 功能特性
 
@@ -22,8 +22,9 @@
 - **环境灯带** — 全宽 RGB 灯带动效，呼吸流转 + 按键波纹 + 操作浪涌（QPainter 30fps）
 - **自定义背景** — 支持 PNG/JPG/BMP 静态 + GIF 动态背景，面板半透明通透显露
 - **桌面小组件** — 置顶小窗口实时显示当前剪贴板内容与最近 20 条历史（上下滚动），点击条目一键复制；支持拖拽移动与八向自由缩放（四边 + 四角，配套缩放光标反馈），平时半透明、悬停完全清晰，位置与尺寸自动记忆，设置中可开关
+- **手机传输** — 局域网二维码秒连手机：手机浏览器直接查看 / 复制剪贴板历史（文本、图片、文件、网址），或把手机上的文字一键发回电脑；随机 token 鉴权、仅限局域网、关闭即断
 - **暗色/亮色主题** — 一键切换，毛玻璃半透明面板，设置更改后窗口状态保持；主题按钮使用自定义图标（res/anse.ico、res/liangse.ico）
-- **精简包体** — 便携版 EXE 约 28MB（≤30MB），不捆绑多媒体运行库，中英文完整适配
+- **精简包体** — 便携版 EXE 约 33MB（≤50MB），不捆绑多媒体运行库，中英文完整适配
 - **自定义标题栏** — 无边框窗口 + 自绘标题栏，流光动效，拖拽移动，双击最大化，图标按钮（res/ 目录 ICO），边缘拖拽缩放（四边光标反馈 + 右下角 grip）
 - **背景实时跟随** — 自定义背景图随窗口缩放实时等比重绘（30ms 响应）
 
@@ -34,7 +35,7 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v2.4.0.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v2.5.0.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -46,6 +47,27 @@ macOS 版由 GitHub Actions 在 macOS 构建机自动构建（Intel x86_64 / App
 
 👉 [前往 Releases 下载](https://github.com/cloudxys/YouBoard/releases)
 
+## 📱 手机传输
+
+把电脑剪贴板"搬到"手机浏览器，无需安装任何手机 App，也不经过云端。
+
+### 使用方法
+
+1. 电脑端：托盘右键 →「发送到手机…」，或 设置 → 手机传输 → 打开传输窗口
+2. 手机和电脑连接**同一个 Wi-Fi / 局域网**
+3. 用手机相机 / 微信扫窗口里的二维码，或在手机浏览器手动输入链接
+4. 手机页面自动展示最近 200 条剪贴板历史：
+   - **文本 / 网址**：点一下即可复制到手机
+   - **图片**：直接预览，长按保存
+   - **文件**：一键下载
+5. 反向传输：在页面底部输入文字点「发送」，内容自动写入电脑系统剪贴板并进入历史记录
+
+### 常见问题
+
+- **手机打不开页面？** 先确认手机和电脑在同一 Wi-Fi；若窗口出现「IP 地址」下拉框，请选择 `192.168.x.x` 开头的那个（多个网卡 / VPN 时自动列出全部候选）
+- **还是连不上？** 首次监听时 Windows 防火墙会弹窗，请选择「允许访问」；应用也会自动尝试添加防火墙放行规则
+- **安全吗？** 每次启动随机生成 token（链接自带、关闭即失效），服务只监听局域网、不暴露公网，传输窗口关闭或应用退出立即断开
+
 ## 🖥️ 系统要求
 
 - Windows 10 / 11（64 位）
@@ -56,7 +78,7 @@ macOS 版由 GitHub Actions 在 macOS 构建机自动构建（Intel x86_64 / App
 ### 环境准备
 
 ```bash
-pip install PyQt6 pillow pyperclip keyboard cryptography pyinstaller
+pip install PyQt6 pillow pyperclip keyboard cryptography pyinstaller qrcode
 ```
 
 ### 本地运行
@@ -68,16 +90,16 @@ python youboard_qt.py
 ### 打包 EXE
 
 ```bash
-pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data "YouBoard.ico;." --add-data "res;res" --version-file=version_info.txt --hidden-import=PyQt6 --hidden-import=PyQt6.QtWidgets --hidden-import=PyQt6.QtCore --hidden-import=PyQt6.QtGui --hidden-import=keyboard youboard_qt.py
+pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data "YouBoard.ico;." --add-data "res;res" --version-file=version_info.txt --hidden-import=PyQt6 --hidden-import=PyQt6.QtWidgets --hidden-import=PyQt6.QtCore --hidden-import=PyQt6.QtGui --hidden-import=keyboard --hidden-import=qrcode --hidden-import=qrcode.image.pil youboard_qt.py
 ```
 
-或直接双击 `YouBoard.bat` 一键打包。
+或直接双击 `YouBoard.bat` 一键打包（推荐直接用仓库里的 `YouBoard.spec`，已包含全部依赖与瘦身配置）。
 
 ### 生成安装包
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v2.4.0.exe`
+输出：`YouBoard_Setup_v2.5.0.exe`
 
 ## 📁 项目结构
 
@@ -85,15 +107,17 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 YouBoard/
 ├── youboard_qt.py       # 主程序（PyQt6 GUI 界面）
 ├── youboard_core.py     # 核心逻辑（监控、存储、Win32 API）
+├── youboard_phone.py    # 手机传输（局域网 HTTP 服务 + 二维码 + 手机网页）
 ├── YouBoard.ico         # 应用图标
 ├── YouBoard.icns        # macOS 应用图标
 ├── LICENSE              # MIT 开源协议
-├── res/                 # 标题栏按钮图标 + 播放控制图标
+├── res/                 # 标题栏按钮 + 分类 / 主题 / 提示图标
 │   ├── zuixiao.ico      # 最小化
 │   ├── zuida.ico        # 最大化
 │   ├── zuidahuifu.ico   # 恢复
 │   ├── guanbi.ico       # 关闭
 │   ├── shezhi.ico       # 设置按钮
+│   ├── jinggao.ico      # 警告
 │   ├── wenben.ico       # 分类：文本
 │   ├── tupian.ico       # 分类：图片
 │   ├── wenjian.ico      # 分类：文件
@@ -101,20 +125,31 @@ YouBoard/
 │   ├── sousuo.ico       # 搜索框图标
 │   ├── anse.ico         # 主题按钮：暗色
 │   └── liangse.ico      # 主题按钮：亮色
-├── version_info.txt     # EXE 版本信息（v2.4.0）
+├── version_info.txt     # EXE 版本信息（v2.5.0）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
 ├── YouBoard_Mac.spec    # macOS PyInstaller 配置
 ├── build_mac.sh         # macOS 一键构建脚本
 ├── README_MAC.md        # macOS 构建与使用说明
 ├── .github/workflows/   # GitHub Actions 自动构建发布
-├── youboard_setup.iss   # Inno Setup 安装脚本（v2.4.0）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v2.5.0）
 ├── youboard_config.json # 用户配置（自动生成）
 ├── .youboard.json       # 剪贴板历史数据（自动生成）
 └── youboard.key         # 历史加密密钥（自动生成，勿提交）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v2.5.0
+
+- 📱 **手机传输（全新功能）**
+  - 托盘菜单 / 设置页新增「发送到手机」，打开即弹二维码，手机相机或微信扫码秒连
+  - 手机浏览器直接查看剪贴板历史：文本一键复制、图片预览、文件下载、网址一键打开
+  - 反向传输：手机上输入文字一键发回电脑，自动写入系统剪贴板与历史记录
+  - 服务启动、网卡检测、二维码生成全部在后台线程完成，打开窗口零卡顿
+  - 自动枚举全部网卡并按私网优先级排序，多网卡 / VPN 时提供 IP 下拉选择，避免取到虚拟网卡地址导致手机无法访问
+  - 每次启动随机 token 鉴权，仅监听局域网，窗口关闭 / 应用退出即断开，不存云端；应用自动尝试放行 Windows 防火墙
+  - 无需安装手机 App，体积增量极小（约 +0.3MB），便携版 EXE 仍远低于 50MB
 
 ### YouBoard v2.4.0
 

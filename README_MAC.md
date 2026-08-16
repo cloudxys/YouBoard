@@ -22,13 +22,13 @@ chmod +x build_mac.sh
 ```
 
 脚本会：安装依赖（PyQt6 / Pillow / pyperclip / PyObjC / PyInstaller）→
-构建 `dist/YouBoard.app` → 生成 `YouBoard_macOS_v2.4.0.dmg`。
+构建 `dist/YouBoard.app` → 生成 `YouBoard_macOS_v2.5.0.dmg`。
 
 也可以手动执行：
 
 ```bash
 python3 -m pip install --user PyQt6 pillow pyperclip \
-    pyobjc-framework-Cocoa pyobjc-framework-Quartz pyinstaller
+    pyobjc-framework-Cocoa pyobjc-framework-Quartz pyinstaller qrcode
 python3 -m PyInstaller YouBoard_Mac.spec --noconfirm
 ```
 
@@ -54,6 +54,7 @@ python3 -m PyInstaller YouBoard_Mac.spec --noconfirm
 - 复制回剪贴板：文本 / 图片 / 文件均走 NSPasteboard（图片为 PNG，文件为
   file:// URL），粘贴到微信、浏览器、Finder 均正常
 - 桌面小组件：最小值 90×60，位置与尺寸自动记忆，退出重开保持原样
+- 手机传输：托盘 / 设置打开二维码，手机浏览器查看 / 复制剪贴板历史、反向发送文字，行为与 Windows 版一致（需在同一 Wi-Fi / 局域网）
 - 标题栏：无边框自绘标题栏、最小化 / 最大化 / 关闭按钮、拖拽移动、边缘缩放
 - 托盘：原生 QSystemTrayIcon，右键显示 / 隐私模式 / 退出
 - 系统要求里的全局快捷键：`win` 键对应 Mac 的 Command（⌘）

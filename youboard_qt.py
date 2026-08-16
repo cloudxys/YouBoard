@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-YouBoard v2.2.0 — 剪贴板历史管理器 / Clipboard History Manager
+YouBoard v2.5.0 — 剪贴板历史管理器 / Clipboard History Manager
 PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系统托盘。
 """
 
@@ -11,6 +11,7 @@ import gc
 import locale
 import math
 import os
+import queue
 import random
 import re
 import shutil
@@ -91,12 +92,16 @@ from youboard_core import (
     load_config, save_config, get_autostart, set_autostart,
     get_icon_path, get_app_icon,
 )
+from youboard_phone import (
+    PhoneTransferServer, get_lan_ip, get_lan_ips, make_qr_pil,
+    pick_free_port,
+)
 
 # ===========================================================================
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -432,6 +437,7 @@ STRINGS = {
         "tray_show": "显示 YouBoard",
         "tray_quit": "退出",
         "tray_privacy": "隐私模式（暂停记录）",
+        "tray_phone": "发送到手机…",
         "set_privacy_title": "隐私模式",
         "set_privacy_desc": "开启后暂停记录剪贴板内容，复制密码等敏感信息不入库（不影响已存历史）",
         "btn_purge_missing": "清理失效",
@@ -457,6 +463,26 @@ STRINGS = {
         "widget_history": "最近记录（点击可复制）",
         "widget_click_copy": "点击复制回剪贴板",
         "st_copied": "已复制回剪贴板",
+        "set_phone": "手机传输 / PHONE",
+        "set_phone_desc": "用手机扫码后，可在手机浏览器中查看 / 复制剪贴板历史，或把手机上的文字一键发回电脑（手机与电脑需在同一 Wi-Fi / 局域网）",
+        "set_phone_open": "打开传输窗口",
+        "phone_title": "发送到手机",
+        "phone_starting": "正在启动服务…",
+        "phone_generating": "正在生成二维码…",
+        "phone_ip_label": "IP 地址",
+        "phone_scan_hint": "用手机相机 / 微信扫码",
+        "phone_url_hint": "或在手机浏览器中打开：",
+        "phone_status_running": "服务运行中 · 端口 {port}",
+        "phone_status_clients": "已连接设备 {n} 台",
+        "phone_copy_url": "复制链接",
+        "phone_refresh": "刷新二维码",
+        "phone_close": "关闭",
+        "phone_same_lan": "请确保手机与电脑连接同一 Wi-Fi / 局域网",
+        "phone_firewall": "若手机仍无法访问：首次监听时 Windows 防火墙会弹窗，请选择「允许访问」；应用也会尝试自动放行",
+        "phone_copied": "链接已复制",
+        "phone_no_qr": "缺少 qrcode 组件，无法生成二维码",
+        "phone_start_failed": "传输服务启动失败：{err}",
+        "phone_received": "已收到来自手机的文字",
         "set_check_update": "检查更新",
         "upd_title": "检查更新",
         "upd_latest": "已是最新版本 v{v}",
@@ -583,6 +609,7 @@ STRINGS = {
         "tray_show": "Show YouBoard",
         "tray_quit": "Quit",
         "tray_privacy": "Privacy mode (pause recording)",
+        "tray_phone": "Send to Phone…",
         "set_privacy_title": "Privacy Mode",
         "set_privacy_desc": "When on, clipboard content is not recorded; sensitive copies (e.g. passwords) are ignored (existing history untouched)",
         "btn_purge_missing": "Purge Missing",
@@ -608,6 +635,26 @@ STRINGS = {
         "widget_history": "Recent (click to copy)",
         "widget_click_copy": "Click to copy back to clipboard",
         "st_copied": "Copied back to clipboard",
+        "set_phone": "Phone Transfer / PHONE",
+        "set_phone_desc": "Scan the QR code with your phone to browse / copy clipboard history in the browser, or send text from your phone to the PC (phone and PC must be on the same Wi-Fi / LAN)",
+        "set_phone_open": "Open Transfer Window",
+        "phone_title": "Send to Phone",
+        "phone_starting": "Starting server…",
+        "phone_generating": "Generating QR code…",
+        "phone_ip_label": "IP Address",
+        "phone_scan_hint": "Scan with phone camera / WeChat",
+        "phone_url_hint": "Or open in phone browser:",
+        "phone_status_running": "Server running · Port {port}",
+        "phone_status_clients": "{n} device(s) connected",
+        "phone_copy_url": "Copy link",
+        "phone_refresh": "Refresh QR",
+        "phone_close": "Close",
+        "phone_same_lan": "Make sure your phone and PC are on the same Wi-Fi / LAN",
+        "phone_firewall": "If your phone still can't access: when Windows Firewall prompts on first listen, choose \"Allow access\"; the app also tries to add a rule automatically",
+        "phone_copied": "Link copied",
+        "phone_no_qr": "qrcode component missing, cannot generate QR",
+        "phone_start_failed": "Failed to start transfer server: {err}",
+        "phone_received": "Received text from phone",
         "set_check_update": "Check Update",
         "upd_title": "检查更新 · Check Update",
         "upd_latest": "已是最新版本 v{v}\nAlready on the latest version v{v}",
@@ -3820,6 +3867,10 @@ class YouBoardApp(QMainWindow):
         dlg = SettingsDialog(self)
         dlg.exec()
 
+    def _open_phone_transfer(self):
+        dlg = PhoneTransferDialog(self)
+        dlg.exec()
+
     def apply_settings(self, lang, autostart, theme="dark", bg_changed=False):
         if autostart != get_autostart():
             if set_autostart(autostart):
@@ -3893,6 +3944,9 @@ class YouBoardApp(QMainWindow):
             self._desk_widget.close()
         if self.monitor:
             self.monitor.stop()
+        srv = getattr(self, "_phone_server", None)
+        if srv is not None:
+            srv.stop()
         if hasattr(self, '_tray') and self._tray:
             self._tray.hide()
         event.accept()
@@ -3905,6 +3959,9 @@ class YouBoardApp(QMainWindow):
             self._desk_widget.save_geometry()
         if self.monitor:
             self.monitor.stop()
+        srv = getattr(self, "_phone_server", None)
+        if srv is not None:
+            srv.stop()
         if hasattr(self, '_tray') and self._tray:
             self._tray.hide()
         QApplication.quit()
@@ -3932,10 +3989,13 @@ class YouBoardApp(QMainWindow):
         self._tray_privacy_act.setCheckable(True)
         self._tray_privacy_act.setChecked(bool(load_config().get("privacy_mode", False)))
         self._tray_privacy_act.triggered.connect(self._toggle_privacy)
+        phone_act = QAction(tr("tray_phone"), self)
+        phone_act.triggered.connect(self._open_phone_transfer)
         quit_act = QAction(tr("tray_quit"), self)
         quit_act.triggered.connect(self._tray_quit)
         tray_menu.addAction(show_act)
         tray_menu.addAction(self._tray_privacy_act)
+        tray_menu.addAction(phone_act)
         tray_menu.addSeparator()
         tray_menu.addAction(quit_act)
         self._tray.setContextMenu(tray_menu)
@@ -4530,6 +4590,352 @@ class _HotkeyDialog(QDialog):
         return self._values
 
 
+def _pil_to_qimage(pil_img):
+    """PIL → QImage。QImage 可在后台线程创建；copy 保证像素数据独立。"""
+    img = pil_img.convert("RGB")
+    data = img.tobytes()
+    qimg = QImage(data, img.width, img.height,
+                  img.width * 3, QImage.Format.Format_RGB888)
+    return qimg.copy()
+
+
+class PhoneQRWorker(QThread):
+    """后台收集局域网 IP 并生成二维码，避免阻塞界面。"""
+
+    sig_ips = pyqtSignal(list)
+    sig_qr = pyqtSignal(str, object)
+    sig_error = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._jobs = queue.Queue()
+        self._alive = True
+
+    def request(self, url):
+        self._jobs.put(url)
+
+    def stop(self):
+        self._alive = False
+        try:
+            self._jobs.get_nowait()
+        except queue.Empty:
+            pass
+
+    def run(self):
+        try:
+            ips = get_lan_ips()
+        except Exception:
+            ips = ["127.0.0.1"]
+        self.sig_ips.emit(ips)
+        while self._alive:
+            try:
+                url = self._jobs.get(timeout=0.4)
+            except queue.Empty:
+                continue
+            if not self._alive:
+                break
+            try:
+                pil = make_qr_pil(url)
+            except Exception:
+                pil = None
+            if pil is None:
+                self.sig_error.emit(tr("phone_no_qr"))
+            else:
+                self.sig_qr.emit(url, _pil_to_qimage(pil))
+
+
+class PhoneTransferDialog(QDialog):
+    """手机传输窗口：二维码 + 链接 + 状态；关闭即停止服务。
+
+    服务启动、IP 检测、二维码生成全部在后台线程完成，打开窗口不卡顿。
+    """
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self._inbox = queue.Queue()
+        self._ips = []
+        self._current_ip = None
+        self._qr_url = None
+        self._fw_done = False
+        self.setWindowTitle(tr("phone_title"))
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setFixedSize(420, 680)
+        if LOGO_ICO and os.path.exists(LOGO_ICO):
+            self.setWindowIcon(QIcon(LOGO_ICO))
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {C['BG']}; }}
+            QLabel {{ background: transparent; color: {C['TEXT']}; }}
+            QLabel#muted {{ color: {C['TEXT_MUTED']}; font-size: 11px; }}
+            QLabel#url {{ color: {C['ACCENT']}; font-size: 11px; font-family: Consolas; }}
+            QComboBox {{ background: {C['SURFACE2']}; color: {C['TEXT']};
+                border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 4px 8px; font-size: 12px; }}
+            QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
+                border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 6px 14px; font-size: 12px; }}
+            QPushButton:hover {{ background: {C['SURFACE3']}; color: {C['TEXT']}; }}
+            QPushButton[cssClass="accent"] {{ background: {C['ACCENT']}; color: #fff; border: none; font-weight: bold; }}
+            QPushButton[cssClass="accent"]:hover {{ background: {C['ACCENT_HV']}; }}
+        """)
+
+        # 服务：复用主窗口持有的实例；首次打开时创建（绑定在后台线程，不卡界面）
+        self._server = getattr(app, "_phone_server", None)
+        if self._server is None:
+            cfg = load_config()
+            try:
+                base_port = int(cfg.get("phone_port", 8765) or 8765)
+            except (ValueError, TypeError):
+                base_port = 8765
+            self._server = PhoneTransferServer(
+                app.store, on_receive_text=self._queue_text,
+                port=pick_free_port(base_port))
+            app._phone_server = self._server
+        self._server.start()
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(10)
+
+        title = QLabel(tr("phone_title"))
+        title.setStyleSheet(f"color: {C['TEXT']}; font-size: 16px; font-weight: bold;")
+        root.addWidget(title)
+
+        self._qr_lbl = QLabel(tr("phone_generating"))
+        self._qr_lbl.setFixedSize(300, 300)
+        self._qr_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._qr_lbl.setStyleSheet(
+            "background: #ffffff; border-radius: 12px; border: 1px solid #2a3a5f; "
+            "color: #6b7f9f; font-size: 13px;")
+        root.addWidget(self._qr_lbl, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        hint = QLabel(tr("phone_scan_hint"))
+        hint.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 13px; font-weight: bold;")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        root.addWidget(hint)
+
+        # 多网卡时显示 IP 选择器
+        ip_row = QHBoxLayout()
+        ip_tag = QLabel(tr("phone_ip_label"))
+        ip_tag.setObjectName("muted")
+        ip_row.addWidget(ip_tag)
+        self._ip_combo = QComboBox()
+        self._ip_combo.setVisible(False)
+        self._ip_combo.currentIndexChanged.connect(self._on_ip_changed)
+        ip_row.addWidget(self._ip_combo, 1)
+        root.addLayout(ip_row)
+
+        url_hint = QLabel(tr("phone_url_hint"))
+        url_hint.setObjectName("muted")
+        root.addWidget(url_hint)
+
+        self._url_lbl = QLabel("")
+        self._url_lbl.setObjectName("url")
+        self._url_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._url_lbl.setWordWrap(True)
+        root.addWidget(self._url_lbl)
+
+        self._status_lbl = QLabel()
+        self._status_lbl.setObjectName("muted")
+        root.addWidget(self._status_lbl)
+
+        note = QLabel(tr("phone_same_lan") + "\n" + tr("phone_firewall"))
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        btns = QHBoxLayout()
+        copy_btn = QPushButton(tr("phone_copy_url"))
+        copy_btn.clicked.connect(self._copy_url)
+        btns.addWidget(copy_btn)
+        refresh_btn = QPushButton(tr("phone_refresh"))
+        refresh_btn.clicked.connect(self._refresh)
+        btns.addWidget(refresh_btn)
+        close_btn = QPushButton(tr("phone_close"))
+        close_btn.setProperty("cssClass", "accent")
+        close_btn.clicked.connect(self.reject)
+        btns.addWidget(close_btn)
+        root.addLayout(btns)
+
+        # 接收手机发来的文字（跨线程安全：HTTP 线程入队，主线程定时取）
+        self._drain_timer = QTimer(self)
+        self._drain_timer.timeout.connect(self._drain_inbox)
+        self._drain_timer.start(300)
+        self._client_timer = QTimer(self)
+        self._client_timer.timeout.connect(self._update_status)
+        self._client_timer.start(2000)
+
+        # 后台二维码线程：IP 检测 + QR 生成
+        self._qr_worker = PhoneQRWorker(self)
+        self._qr_worker.sig_ips.connect(self._on_ips)
+        self._qr_worker.sig_qr.connect(self._on_qr)
+        self._qr_worker.sig_error.connect(self._on_qr_error)
+        self._qr_worker.start()
+        self._update_status()
+
+    # ---- 二维码 / IP ----
+
+    def _current_url(self):
+        ip = self._current_ip or get_lan_ip()
+        return f"http://{ip}:{self._server.port}/?t={self._server.token}"
+
+    def _schedule_qr(self):
+        self._qr_lbl.setPixmap(QPixmap())
+        self._qr_lbl.setText(tr("phone_generating"))
+        self._qr_url = None
+        self._qr_worker.request(self._current_url())
+
+    def _on_ips(self, ips):
+        self._ips = ips or ["127.0.0.1"]
+        if len(self._ips) > 1:
+            self._ip_combo.blockSignals(True)
+            self._ip_combo.clear()
+            for ip in self._ips:
+                self._ip_combo.addItem(ip)
+            self._ip_combo.setCurrentIndex(0)
+            self._ip_combo.blockSignals(False)
+            self._ip_combo.setVisible(True)
+        else:
+            self._ip_combo.setVisible(False)
+        self._current_ip = self._ips[0]
+        self._schedule_qr()
+
+    def _on_ip_changed(self, idx):
+        if 0 <= idx < len(self._ips):
+            self._current_ip = self._ips[idx]
+            self._schedule_qr()
+
+    def _on_qr(self, url, img):
+        if url != self._current_url():
+            return  # 过期结果（token 已更换），丢弃
+        pm = QPixmap.fromImage(img)
+        self._qr_lbl.setPixmap(pm.scaled(
+            280, 280, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+        self._url_lbl.setText(url)
+        self._qr_url = url
+
+    def _on_qr_error(self, msg):
+        self._qr_lbl.setText(msg)
+
+    def _update_status(self):
+        srv = self._server
+        if srv.running:
+            if not self._fw_done:
+                self._fw_done = True
+                self._try_firewall_rule()
+            status = tr("phone_status_running", port=srv.port)
+            clients = srv.client_count()
+            if clients:
+                status += " · " + tr("phone_status_clients", n=clients)
+            self._status_lbl.setText(status)
+        elif srv.last_error:
+            self._status_lbl.setText(tr("phone_start_failed",
+                                        err=srv.last_error))
+            self._qr_lbl.setText(tr("phone_start_failed",
+                                    err=srv.last_error))
+        else:
+            self._status_lbl.setText(tr("phone_starting"))
+
+    def _try_firewall_rule(self):
+        """尽力自动放行 Windows 防火墙（仅打包版；失败静默忽略）。"""
+        if not IS_WIN or not getattr(sys, "frozen", False):
+            return
+        try:
+            exe = os.path.abspath(sys.executable)
+            rule = "YouBoard Phone Transfer"
+            out = subprocess.run(
+                ["netsh", "advfirewall", "firewall", "show", "rule",
+                 "name=" + rule],
+                capture_output=True, text=True, timeout=6)
+            if rule in (out.stdout or ""):
+                return
+            subprocess.run(
+                ["netsh", "advfirewall", "firewall", "add", "rule",
+                 "name=" + rule, "dir=in", "action=allow",
+                 "program=" + exe, "enable=yes",
+                 "profile=private,domain"],
+                capture_output=True, text=True, timeout=6)
+        except Exception:
+            pass
+
+    def _refresh(self):
+        """刷新二维码：停掉旧服务并换新 token，旧链接立即失效。"""
+        self._qr_worker.stop()
+        self._qr_worker.wait(1500)
+        self._server.stop()
+        cfg = load_config()
+        try:
+            base_port = int(cfg.get("phone_port", 8765) or 8765)
+        except (ValueError, TypeError):
+            base_port = 8765
+        self._server = PhoneTransferServer(
+            self.app.store, on_receive_text=self._queue_text,
+            port=pick_free_port(base_port))
+        self.app._phone_server = self._server
+        self._server.start()
+        self._ips = []
+        self._current_ip = None
+        self._qr_url = None
+        self._fw_done = False
+        self._ip_combo.setVisible(False)
+        self._ip_combo.clear()
+        self._url_lbl.setText("")
+        self._qr_lbl.setText(tr("phone_generating"))
+        self._qr_lbl.setPixmap(QPixmap())
+        self._qr_worker = PhoneQRWorker(self)
+        self._qr_worker.sig_ips.connect(self._on_ips)
+        self._qr_worker.sig_qr.connect(self._on_qr)
+        self._qr_worker.sig_error.connect(self._on_qr_error)
+        self._qr_worker.start()
+        self._update_status()
+
+    def _copy_url(self):
+        try:
+            set_clipboard_text(self._qr_url or self._current_url())
+            self.app._set_status(tr("phone_copied"), "ok")
+        except Exception:
+            pass
+
+    # ---- 手机 → 电脑 ----
+
+    def _queue_text(self, text):
+        self._inbox.put(text)
+
+    def _drain_inbox(self):
+        while True:
+            try:
+                text = self._inbox.get_nowait()
+            except queue.Empty:
+                break
+            self._handle_phone_text(text)
+
+    def _handle_phone_text(self, text):
+        try:
+            self.app.store.mark_self_copy()
+            self.app.store.add_text(text)
+            try:
+                set_clipboard_text(text)
+            except Exception:
+                pass
+            self.app._refresh_all()
+            self.app._update_desk_widget()
+            self.app._set_status(tr("phone_received"), "ok")
+            tray = getattr(self.app, "_tray", None)
+            if tray is not None:
+                try:
+                    tray.showMessage("YouBoard", tr("phone_received"),
+                                     QSystemTrayIcon.MessageIcon.Information, 3000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self._qr_worker.stop()
+        self._qr_worker.wait(1500)
+        self._server.stop()
+        event.accept()
+
+
 class SettingsDialog(QDialog):
 
     def __init__(self, app):
@@ -4677,6 +5083,16 @@ class SettingsDialog(QDialog):
         bg_row.addWidget(clr_btn)
         self._lay.addLayout(bg_row)
 
+        # Phone transfer card
+        self._card(tr("set_phone"))
+        ph_desc = QLabel(tr("set_phone_desc"))
+        ph_desc.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        ph_desc.setWordWrap(True)
+        self._lay.addWidget(ph_desc)
+        ph_open = QPushButton(tr("set_phone_open"))
+        ph_open.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        ph_open.clicked.connect(lambda: PhoneTransferDialog(self.app).exec())
+        self._lay.addWidget(ph_open)
 
         # About card
         self._card(tr("set_about"))
