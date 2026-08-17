@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-YouBoard v2.5.0 — 剪贴板历史管理器 / Clipboard History Manager
+YouBoard v2.6.0 — 剪贴板历史管理器 / Clipboard History Manager
 PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系统托盘。
 """
 
@@ -21,6 +21,7 @@ import threading
 import time
 import webbrowser
 from datetime import datetime
+from html import escape as _html_escape
 
 IS_WIN = (sys.platform == "win32")
 IS_MAC = (sys.platform == "darwin")
@@ -62,16 +63,18 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QAbstractItemView, QSizePolicy,
     QGraphicsOpacityEffect, QSpacerItem, QGroupBox,
     QCheckBox, QTextEdit, QListWidget, QListWidgetItem,
-    QStyle, QProgressDialog,
+    QStyle, QProgressDialog, QStyledItemDelegate, QStyleOptionViewItem,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
-    QThread, QObject, QSize, QRect, QPoint, QEvent, QAbstractNativeEventFilter,
+    QThread, QObject, QSize, QRect, QRectF, QPoint, QEvent,
+    QAbstractNativeEventFilter, QUrl,
 )
 from PyQt6.QtGui import (
     QIcon, QPixmap, QImage, QPainter, QColor, QFont,
     QAction, QKeySequence, QShortcut, QBrush, QPen,
-    QLinearGradient, QPainterPath, QCursor, QMovie,
+    QLinearGradient, QPainterPath, QCursor, QMovie, QTextDocument,
+    QTextCharFormat, QTextCursor,
 )
 try:
     import PIL  # noqa: F401  # 轻量探测；PIL.Image 按需在调用点懒加载，降低常驻内存
@@ -88,6 +91,7 @@ except Exception:
 
 from youboard_core import (
     ClipboardStore, ClipboardMonitor, HISTORY_FILE, TIME_FORMAT,
+    IMAGES_DIR, FILE_CACHE_DIR,
     set_clipboard_text, set_clipboard_image, set_clipboard_files,
     load_config, save_config, get_autostart, set_autostart,
     get_icon_path, get_app_icon,
@@ -96,12 +100,16 @@ from youboard_phone import (
     PhoneTransferServer, get_lan_ip, get_lan_ips, make_qr_pil,
     pick_free_port,
 )
+from youboard_sync import (
+    SyncError, GistSyncClient, WebDAVSyncClient,
+    encrypt_bundle, decrypt_bundle, protect_secret, unprotect_secret,
+)
 
 # ===========================================================================
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -120,6 +128,75 @@ def _res_icon(name):
             return p
     here = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(here, "res", name)
+
+
+_HUICHE_PM = None
+
+
+def _huiche_pixmap(size=14):
+    """文本预览里内联显示的换行图标（res/huiche.png），只加载一次。"""
+    global _HUICHE_PM
+    if _HUICHE_PM is None:
+        p = _res_icon("huiche.png")
+        pm = QPixmap(p) if p and os.path.exists(p) else QPixmap()
+        if not pm.isNull():
+            pm = pm.scaled(size, size,
+                           Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation)
+        _HUICHE_PM = pm
+    return _HUICHE_PM
+
+
+def _text_preview_html(text, max_len=120):
+    """把文本预览转成 HTML：换行处内联 huiche 图标，制表符转空格。"""
+    html_src = _html_escape(text[:max_len])
+    html_src = html_src.replace(
+        "\n", '<img src="huiche" width="14" height="14" '
+              'style="vertical-align:middle; margin:0 2px;">')
+    html_src = html_src.replace("\t", "&nbsp;&nbsp;")
+    if len(text) > max_len:
+        html_src += "…"
+    return html_src
+
+
+class _InlineImageDelegate(QStyledItemDelegate):
+    """在单元格里渲染带内联图片的 HTML（文本预览的换行图标）。"""
+
+    HTML_ROLE = Qt.ItemDataRole.UserRole + 1
+
+    def paint(self, painter, option, index):
+        html = index.data(self.HTML_ROLE)
+        if not html:
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        opt.text = ""
+        opt.icon = QIcon()
+        widget = option.widget
+        style = widget.style() if widget is not None else QApplication.style()
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem,
+                          opt, painter, widget)
+        painter.save()
+        doc = QTextDocument()
+        doc.setDefaultFont(opt.font)
+        doc.setDocumentMargin(0)
+        doc.addResource(QTextDocument.ResourceType.ImageResource,
+                        QUrl("huiche"), _huiche_pixmap())
+        doc.setHtml(html)
+        # 文字颜色跟随主题（QTextDocument 默认黑字，不继承 QSS）
+        fmt = QTextCharFormat()
+        fmt.setForeground(QBrush(QColor(C['TEXT'])))
+        cursor = QTextCursor(doc)
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.mergeCharFormat(fmt)
+        doc.setTextWidth(100000.0)  # 保持单行，超宽交给视图裁剪
+        doc_h = doc.size().height()
+        y = option.rect.top() + max(0.0, (option.rect.height() - doc_h) / 2.0)
+        painter.translate(option.rect.left() + 3, y)
+        doc.drawContents(painter, QRectF(
+            0, 0, max(1.0, option.rect.width() - 6), option.rect.height()))
+        painter.restore()
 
 
 def _build_tray_icon():
@@ -436,10 +513,13 @@ STRINGS = {
         "cli_stopped": "已停止",
         "tray_show": "显示 YouBoard",
         "tray_quit": "退出",
-        "tray_privacy": "隐私模式（暂停记录）",
+        "tray_session": "临时会话（退出即清空）",
         "tray_phone": "发送到手机…",
-        "set_privacy_title": "隐私模式",
-        "set_privacy_desc": "开启后暂停记录剪贴板内容，复制密码等敏感信息不入库（不影响已存历史）",
+        "tray_phone_stop": "停止手机传输（端口 {port}）",
+        "set_session_title": "临时会话",
+        "set_session_desc": "开启后剪贴板内容照常记录（正常使用）；退出应用或关闭开关时，本次开启后产生的记录（历史、快照、图片与文件缓存）将全部清除",
+        "session_started": "临时会话已开启：本次运行记录退出即清空",
+        "session_cleared": "临时会话已关闭，本次运行记录已清除",
         "btn_purge_missing": "清理失效",
         "file_missing": "已失效",
         "purge_done": "已清理 {n} 条失效记录",
@@ -479,10 +559,34 @@ STRINGS = {
         "phone_close": "关闭",
         "phone_same_lan": "请确保手机与电脑连接同一 Wi-Fi / 局域网",
         "phone_firewall": "若手机仍无法访问：首次监听时 Windows 防火墙会弹窗，请选择「允许访问」；应用也会尝试自动放行",
+        "phone_still_running": "关闭本窗口后传输仍会继续运行，托盘菜单可随时停止",
+        "phone_hint_same_wifi": "对方设备请连接同一个 Wi-Fi，不要用访客网络 / 手机热点",
+        "phone_hint_vpn": "对方设备若开启 VPN / 梯子，请先关闭（本地局域网不走代理）",
+        "phone_stopped": "手机传输已停止",
         "phone_copied": "链接已复制",
         "phone_no_qr": "缺少 qrcode 组件，无法生成二维码",
         "phone_start_failed": "传输服务启动失败：{err}",
         "phone_received": "已收到来自手机的文字",
+        "set_sync": "云同步 / CLOUD SYNC",
+        "set_sync_desc": "把加密后的剪贴板历史同步到云端（GitHub Gist / WebDAV），换设备输入同一同步密码即可恢复",
+        "set_sync_backend": "后端",
+        "set_sync_off": "不使用",
+        "set_sync_gist_token": "GitHub Token（需 gist 权限）",
+        "set_sync_dav_url": "WebDAV 目录地址",
+        "set_sync_dav_user": "账号",
+        "set_sync_dav_pass": "密码",
+        "set_sync_pass": "同步密码（加密用，至少 4 位）",
+        "btn_sync_upload": "上传到云端",
+        "btn_sync_download": "从云端下载",
+        "btn_sync_clear": "清除云配置",
+        "sync_uploaded": "已上传到云端",
+        "sync_downloaded": "已从云端下载并合并",
+        "sync_syncing": "同步中…",
+        "sync_pass_hint": "请先填写同步密码（至少 4 位）",
+        "sync_last": "上次同步：{time}",
+        "sync_never": "尚未同步",
+        "sync_cleared": "云同步配置已清除",
+        "sync_gist_id": "已关联 Gist：{gid}",
         "set_check_update": "检查更新",
         "upd_title": "检查更新",
         "upd_latest": "已是最新版本 v{v}",
@@ -608,10 +712,13 @@ STRINGS = {
         "cli_stopped": "Stopped",
         "tray_show": "Show YouBoard",
         "tray_quit": "Quit",
-        "tray_privacy": "Privacy mode (pause recording)",
+        "tray_session": "Temporary Session (clear on exit)",
         "tray_phone": "Send to Phone…",
-        "set_privacy_title": "Privacy Mode",
-        "set_privacy_desc": "When on, clipboard content is not recorded; sensitive copies (e.g. passwords) are ignored (existing history untouched)",
+        "tray_phone_stop": "Stop Phone Transfer (port {port})",
+        "set_session_title": "Temporary Session",
+        "set_session_desc": "While on, clipboard content is recorded normally; when you quit the app or turn it off, everything recorded since enabling (history, snapshots, image & file cache) is wiped",
+        "session_started": "Temporary session on: this run's records will be cleared on exit",
+        "session_cleared": "Temporary session off, this run's records cleared",
         "btn_purge_missing": "Purge Missing",
         "file_missing": "missing",
         "purge_done": "Purged {n} missing entries",
@@ -651,10 +758,34 @@ STRINGS = {
         "phone_close": "Close",
         "phone_same_lan": "Make sure your phone and PC are on the same Wi-Fi / LAN",
         "phone_firewall": "If your phone still can't access: when Windows Firewall prompts on first listen, choose \"Allow access\"; the app also tries to add a rule automatically",
+        "phone_still_running": "Transfer keeps running after closing this window (stop it from the tray menu)",
+        "phone_hint_same_wifi": "The other device must join the same Wi-Fi — not a guest network or phone hotspot",
+        "phone_hint_vpn": "Turn off VPN / proxy on the other device (local LAN traffic should not go through a proxy)",
+        "phone_stopped": "Phone transfer stopped",
         "phone_copied": "Link copied",
         "phone_no_qr": "qrcode component missing, cannot generate QR",
         "phone_start_failed": "Failed to start transfer server: {err}",
         "phone_received": "Received text from phone",
+        "set_sync": "Cloud Sync / CLOUD SYNC",
+        "set_sync_desc": "Sync your encrypted clipboard history to the cloud (GitHub Gist / WebDAV); restore on another device with the same sync passphrase",
+        "set_sync_backend": "Backend",
+        "set_sync_off": "Off",
+        "set_sync_gist_token": "GitHub Token (gist scope)",
+        "set_sync_dav_url": "WebDAV directory URL",
+        "set_sync_dav_user": "Username",
+        "set_sync_dav_pass": "Password",
+        "set_sync_pass": "Sync passphrase (encryption, min 4 chars)",
+        "btn_sync_upload": "Upload",
+        "btn_sync_download": "Download",
+        "btn_sync_clear": "Clear config",
+        "sync_uploaded": "Uploaded to cloud",
+        "sync_downloaded": "Downloaded and merged",
+        "sync_syncing": "Syncing…",
+        "sync_pass_hint": "Enter a sync passphrase (min 4 chars) first",
+        "sync_last": "Last sync: {time}",
+        "sync_never": "Never synced",
+        "sync_cleared": "Cloud sync config cleared",
+        "sync_gist_id": "Linked Gist: {gid}",
         "set_check_update": "Check Update",
         "upd_title": "检查更新 · Check Update",
         "upd_latest": "已是最新版本 v{v}\nAlready on the latest version v{v}",
@@ -2206,9 +2337,15 @@ class YouBoardApp(QMainWindow):
             self.setWindowIcon(QIcon(LOGO_ICO))
 
         self._init_tray()  # 提前创建托盘图标，保证启动后及时显示
-        # 启动时按配置初始化隐私免记录模式
-        if self.monitor is not None:
-            self.monitor.privacy_mode = bool(load_config().get("privacy_mode", False))
+        # 启动时按配置初始化临时会话（合并原隐私模式：暂停记录 + 退出即清空）
+        self._session_active = False
+        self._session_baseline = None
+        _session_on = bool(load_config().get("temporary_session", False)
+                           or load_config().get("privacy_mode", False))
+        if _session_on:
+            self._start_session()
+        if getattr(self, "_tray_session_act", None) is not None:
+            self._tray_session_act.setChecked(_session_on)
         self._build_ui()
         self._apply_background()
         QTimer.singleShot(150, self._initial_refresh)
@@ -2750,6 +2887,11 @@ class YouBoardApp(QMainWindow):
 
         lay.addWidget(table, 1)
         self._tables[etype] = table
+        if etype == "text":
+            # 文本预览列：换行处渲染内联 huiche 图标
+            if not hasattr(self, "_text_preview_delegate"):
+                self._text_preview_delegate = _InlineImageDelegate(table)
+            table.setItemDelegateForColumn(3, self._text_preview_delegate)
 
     def _build_preview_panel(self, parent_split):
         pf = QFrame()
@@ -2976,6 +3118,7 @@ class YouBoardApp(QMainWindow):
             if etype == "text":
                 content = entry.get("content", "")
                 preview = content[:120].replace("\n", " ⏎ ").replace("\t", "  ")
+                preview_html = _text_preview_html(content, 120)
                 if len(content) > 120:
                     preview += "…"
                 vals = [str(i + 1), time_str, status, preview]
@@ -3004,6 +3147,8 @@ class YouBoardApp(QMainWindow):
             missing = (etype == "file") and self.store.file_entry_missing(entry)
             for col, val in enumerate(vals):
                 item = QTableWidgetItem(val)
+                if etype == "text" and col == 3:
+                    item.setData(_InlineImageDelegate.HTML_ROLE, preview_html)
                 if col in (0, 2):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if is_pin:
@@ -3945,6 +4090,7 @@ class YouBoardApp(QMainWindow):
     def closeEvent(self, event):
         """X = quit the app."""
         self._save_window_geometry()
+        self._end_session()  # 临时会话：退出即清空本次记录
         self._unregister_hotkey()
         if hasattr(self, '_desk_widget') and self._desk_widget:
             self._desk_widget.save_geometry()
@@ -3960,6 +4106,7 @@ class YouBoardApp(QMainWindow):
 
     def _real_quit(self):
         self._save_window_geometry()
+        self._end_session()  # 临时会话：退出即清空本次记录
         if hasattr(self, '_unregister_hotkey'):
             self._unregister_hotkey()
         if hasattr(self, '_desk_widget') and self._desk_widget:
@@ -3992,17 +4139,23 @@ class YouBoardApp(QMainWindow):
         tray_menu = QMenu()
         show_act = QAction(tr("tray_show"), self)
         show_act.triggered.connect(self._tray_show)
-        self._tray_privacy_act = QAction(tr("tray_privacy"), self)
-        self._tray_privacy_act.setCheckable(True)
-        self._tray_privacy_act.setChecked(bool(load_config().get("privacy_mode", False)))
-        self._tray_privacy_act.triggered.connect(self._toggle_privacy)
+        self._tray_session_act = QAction(tr("tray_session"), self)
+        self._tray_session_act.setCheckable(True)
+        self._tray_session_act.setChecked(
+            bool(load_config().get("temporary_session", False)
+                 or load_config().get("privacy_mode", False)))
+        self._tray_session_act.triggered.connect(self._toggle_session)
         phone_act = QAction(tr("tray_phone"), self)
         phone_act.triggered.connect(self._open_phone_transfer)
+        self._phone_stop_act = QAction(tr("tray_phone_stop", port=0), self)
+        self._phone_stop_act.setVisible(False)
+        self._phone_stop_act.triggered.connect(self._stop_phone_transfer)
         quit_act = QAction(tr("tray_quit"), self)
         quit_act.triggered.connect(self._tray_quit)
         tray_menu.addAction(show_act)
-        tray_menu.addAction(self._tray_privacy_act)
+        tray_menu.addAction(self._tray_session_act)
         tray_menu.addAction(phone_act)
+        tray_menu.addAction(self._phone_stop_act)
         tray_menu.addSeparator()
         tray_menu.addAction(quit_act)
         self._tray.setContextMenu(tray_menu)
@@ -4014,28 +4167,157 @@ class YouBoardApp(QMainWindow):
         # Win11：自提升托盘图标到可见区并更新系统识别的快照图标
         QTimer.singleShot(2500, self._promote_tray_icon_registry)
         QTimer.singleShot(3200, self._refresh_tray_icon)
+        self._refresh_phone_tray()
+
+    def _refresh_phone_tray(self):
+        """同步托盘「停止手机传输」入口与当前服务状态。"""
+        if not hasattr(self, "_phone_stop_act"):
+            return
+        srv = getattr(self, "_phone_server", None)
+        running = bool(srv is not None and srv.running)
+        self._phone_stop_act.setVisible(running)
+        if running:
+            self._phone_stop_act.setText(tr("tray_phone_stop", port=srv.port))
+
+    def _stop_phone_transfer(self):
+        """停止手机传输服务并刷新托盘状态。"""
+        srv = getattr(self, "_phone_server", None)
+        if srv is not None:
+            srv.stop()
+        self._refresh_phone_tray()
+        if getattr(self, "_tray", None) is not None:
+            try:
+                self._tray.showMessage("YouBoard", tr("phone_stopped"),
+                                       QSystemTrayIcon.MessageIcon.Information,
+                                       2500)
+            except Exception:
+                pass
 
     def _refresh_tray_icon(self):
         if getattr(self, "_tray", None) is not None:
             self._tray.setIcon(_build_tray_icon())
 
-    def set_privacy_mode(self, on, save=False):
-        """同步隐私免记录模式到监控线程、配置与托盘勾选状态。"""
+    # ---- 临时会话（合并原隐私模式：暂停记录 + 退出即清空本次记录）----
+
+    def _collect_session_baseline(self):
+        """记录当前历史 / 快照 / 图片 / 文件缓存的基线，用于区分"本次新增"。"""
+        base = {"hashes": set(), "snaps": set(), "images": set(), "cache": set()}
+        try:
+            for e in self.store.get_all():
+                base["hashes"].add(e["hash"])
+        except Exception:
+            pass
+        try:
+            base["snaps"] = {s.get("id") for s in self.store.get_snapshots()}
+        except Exception:
+            pass
+        try:
+            if os.path.isdir(IMAGES_DIR):
+                base["images"] = set(os.listdir(IMAGES_DIR))
+        except Exception:
+            pass
+        try:
+            if os.path.isdir(FILE_CACHE_DIR):
+                for root, _dirs, files in os.walk(FILE_CACHE_DIR):
+                    for f in files:
+                        base["cache"].add(os.path.relpath(
+                            os.path.join(root, f), FILE_CACHE_DIR))
+        except Exception:
+            pass
+        return base
+
+    def _start_session(self):
+        self._session_active = True
+        self._session_baseline = self._collect_session_baseline()
+
+    def _end_session(self):
+        """结束临时会话：清空本次运行产生的记录（退出应用 / 关闭开关时调用）。"""
+        if not getattr(self, "_session_active", False):
+            return
+        try:
+            self._clear_session_records()
+        except Exception:
+            pass
+        self._session_active = False
+        self._session_baseline = None
+
+    def _clear_session_records(self):
+        base = self._session_baseline
+        if not base:
+            return
+        # 历史条目
+        to_delete = []
+        try:
+            for e in self.store.get_all():
+                if e["hash"] not in base["hashes"]:
+                    to_delete.append(e["hash"])
+            if to_delete:
+                self.store.delete_many(to_delete)
+        except Exception:
+            pass
+        # 快照
+        try:
+            keep = {s.get("id") for s in self.store.get_snapshots()
+                    if s.get("id") in base["snaps"]}
+            self.store.prune_snapshots(keep)
+        except Exception:
+            pass
+        # 图片缓存
+        try:
+            if os.path.isdir(IMAGES_DIR):
+                for name in os.listdir(IMAGES_DIR):
+                    if name not in base["images"]:
+                        try:
+                            os.remove(os.path.join(IMAGES_DIR, name))
+                        except OSError:
+                            pass
+        except Exception:
+            pass
+        # 压缩包物化文件缓存
+        try:
+            if os.path.isdir(FILE_CACHE_DIR):
+                for root, dirs, files in os.walk(FILE_CACHE_DIR, topdown=False):
+                    for f in files:
+                        rel = os.path.relpath(os.path.join(root, f), FILE_CACHE_DIR)
+                        if rel not in base["cache"]:
+                            try:
+                                os.remove(os.path.join(root, f))
+                            except OSError:
+                                pass
+                    for d in dirs:
+                        try:
+                            os.rmdir(os.path.join(root, d))
+                        except OSError:
+                            pass
+        except Exception:
+            pass
+
+    def set_temporary_session(self, on, save=False):
+        """开关临时会话：开启=正常记录并标记会话；关闭=清空本次记录。"""
         on = bool(on)
-        if self.monitor is not None:
-            self.monitor.privacy_mode = on
+        if on:
+            self._start_session()
+        else:
+            self._end_session()
         if save:
             try:
                 cfg = load_config()
-                cfg["privacy_mode"] = on
+                cfg["temporary_session"] = on
                 save_config(cfg)
             except Exception:
                 pass
-        if getattr(self, "_tray_privacy_act", None) is not None:
-            self._tray_privacy_act.setChecked(on)
+        if getattr(self, "_tray_session_act", None) is not None:
+            self._tray_session_act.setChecked(on)
+        if getattr(self, "_tray", None) is not None:
+            try:
+                self._tray.showMessage(
+                    "YouBoard", tr("session_started") if on else tr("session_cleared"),
+                    QSystemTrayIcon.MessageIcon.Information, 2500)
+            except Exception:
+                pass
 
-    def _toggle_privacy(self, on):
-        self.set_privacy_mode(on, save=True)
+    def _toggle_session(self, on):
+        self.set_temporary_session(on, save=True)
 
     def _promote_tray_icon_registry(self):
         """Win11 默认把新托盘图标放进溢出区。扫描注册表找到当前 EXE 的
@@ -4651,6 +4933,46 @@ class PhoneQRWorker(QThread):
                 self.sig_qr.emit(url, _pil_to_qimage(pil))
 
 
+class SyncWorker(QThread):
+    """云同步后台线程：加密打包 + 上传 / 下载解密 + 合并，不阻塞界面。"""
+
+    sig_done = pyqtSignal(bool, str)
+
+    def __init__(self, action, client, passphrase, store, parent=None):
+        super().__init__(parent)
+        self.action = action          # "upload" | "download"
+        self.client = client
+        self.passphrase = passphrase
+        self.store = store
+        self.result_gid = None
+
+    def run(self):
+        try:
+            if self.action == "upload":
+                cats, snaps = self.store.export_history()
+                payload = {
+                    "version": 1,
+                    "ts": datetime.now().isoformat(),
+                    "categories": cats,
+                    "snapshots": snaps,
+                }
+                blob = encrypt_bundle(payload, self.passphrase)
+                gid = self.client.upload(blob)
+                if isinstance(self.client, GistSyncClient):
+                    self.result_gid = gid or None
+                self.sig_done.emit(True, tr("sync_uploaded"))
+            else:
+                blob = self.client.download()
+                payload = decrypt_bundle(blob, self.passphrase)
+                self.store.merge_history(payload.get("categories") or {},
+                                         payload.get("snapshots") or [])
+                self.sig_done.emit(True, tr("sync_downloaded"))
+        except SyncError as e:
+            self.sig_done.emit(False, str(e))
+        except Exception as e:
+            self.sig_done.emit(False, str(e))
+
+
 class PhoneTransferDialog(QDialog):
     """手机传输窗口：二维码 + 链接 + 状态；关闭即停止服务。
 
@@ -4665,9 +4987,10 @@ class PhoneTransferDialog(QDialog):
         self._current_ip = None
         self._qr_url = None
         self._fw_done = False
+        self._server_was_running = False
         self.setWindowTitle(tr("phone_title"))
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
-        self.setFixedSize(420, 680)
+        self.setFixedSize(420, 740)
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
         self.setStyleSheet(f"""
@@ -4696,6 +5019,7 @@ class PhoneTransferDialog(QDialog):
                 app.store, on_receive_text=self._queue_text,
                 port=pick_free_port(base_port))
             app._phone_server = self._server
+        self._server_was_running = self._server.running
         self._server.start()
 
         root = QVBoxLayout(self)
@@ -4744,7 +5068,13 @@ class PhoneTransferDialog(QDialog):
         self._status_lbl.setObjectName("muted")
         root.addWidget(self._status_lbl)
 
-        note = QLabel(tr("phone_same_lan") + "\n" + tr("phone_firewall"))
+        note = QLabel("\n".join([
+            tr("phone_same_lan"),
+            tr("phone_hint_same_wifi"),
+            tr("phone_hint_vpn"),
+            tr("phone_firewall"),
+            tr("phone_still_running"),
+        ]))
         note.setObjectName("muted")
         note.setWordWrap(True)
         root.addWidget(note)
@@ -4777,6 +5107,7 @@ class PhoneTransferDialog(QDialog):
         self._qr_worker.sig_error.connect(self._on_qr_error)
         self._qr_worker.start()
         self._update_status()
+        self.app._refresh_phone_tray()
 
     # ---- 二维码 / IP ----
 
@@ -4859,41 +5190,24 @@ class PhoneTransferDialog(QDialog):
                 ["netsh", "advfirewall", "firewall", "add", "rule",
                  "name=" + rule, "dir=in", "action=allow",
                  "program=" + exe, "enable=yes",
-                 "profile=private,domain"],
+                 "profile=any"],
                 capture_output=True, text=True, timeout=6)
         except Exception:
             pass
 
     def _refresh(self):
-        """刷新二维码：停掉旧服务并换新 token，旧链接立即失效。"""
-        self._qr_worker.stop()
-        self._qr_worker.wait(1500)
-        self._server.stop()
-        cfg = load_config()
-        try:
-            base_port = int(cfg.get("phone_port", 8765) or 8765)
-        except (ValueError, TypeError):
-            base_port = 8765
-        self._server = PhoneTransferServer(
-            self.app.store, on_receive_text=self._queue_text,
-            port=pick_free_port(base_port))
-        self.app._phone_server = self._server
-        self._server.start()
-        self._ips = []
-        self._current_ip = None
+        """刷新二维码：只更换 token（旧链接立即失效）+ 重新生成二维码，零卡顿。"""
+        srv = self._server
+        if not srv.running:
+            srv.start()  # 服务未运行时（如曾被托盘停止）重新启动
+        srv.rotate_token()
         self._qr_url = None
-        self._fw_done = False
-        self._ip_combo.setVisible(False)
-        self._ip_combo.clear()
         self._url_lbl.setText("")
         self._qr_lbl.setText(tr("phone_generating"))
         self._qr_lbl.setPixmap(QPixmap())
-        self._qr_worker = PhoneQRWorker(self)
-        self._qr_worker.sig_ips.connect(self._on_ips)
-        self._qr_worker.sig_qr.connect(self._on_qr)
-        self._qr_worker.sig_error.connect(self._on_qr_error)
-        self._qr_worker.start()
+        self._schedule_qr()
         self._update_status()
+        self.app._refresh_phone_tray()
 
     def _copy_url(self):
         try:
@@ -4939,7 +5253,18 @@ class PhoneTransferDialog(QDialog):
     def closeEvent(self, event):
         self._qr_worker.stop()
         self._qr_worker.wait(1500)
-        self._server.stop()
+        # 窗口关闭后服务保持运行，方便其他设备继续扫码连接；托盘可随时停止
+        if self._server.running:
+            try:
+                self.app._refresh_phone_tray()
+                if not self._server_was_running:
+                    tray = getattr(self.app, "_tray", None)
+                    if tray is not None:
+                        tray.showMessage("YouBoard", tr("phone_still_running"),
+                                         QSystemTrayIcon.MessageIcon.Information,
+                                         3500)
+            except Exception:
+                pass
         event.accept()
 
 
@@ -5047,15 +5372,20 @@ class SettingsDialog(QDialog):
         self._lay.addLayout(widget_row)
         self._add_sep()
 
-        # Privacy row (inside General)
-        privacy_row = QHBoxLayout()
-        pv_title = QLabel(tr("set_privacy_title"))
-        pv_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
-        privacy_row.addWidget(pv_title, 1)
-        self._privacy_cb = QCheckBox()
-        self._privacy_cb.setChecked(bool(cfg.get("privacy_mode", False)))
-        privacy_row.addWidget(self._privacy_cb)
-        self._lay.addLayout(privacy_row)
+        # Temporary session row (merged from privacy mode)
+        session_row = QHBoxLayout()
+        ss_title = QLabel(tr("set_session_title"))
+        ss_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        session_row.addWidget(ss_title, 1)
+        self._session_cb = QCheckBox()
+        self._session_cb.setChecked(bool(cfg.get("temporary_session", False)
+                                         or cfg.get("privacy_mode", False)))
+        session_row.addWidget(self._session_cb)
+        self._lay.addLayout(session_row)
+        ss_desc = QLabel(tr("set_session_desc"))
+        ss_desc.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
+        ss_desc.setWordWrap(True)
+        self._lay.addWidget(ss_desc)
 
         # Theme card
         self._card(tr("set_theme"))
@@ -5100,6 +5430,107 @@ class SettingsDialog(QDialog):
         ph_open.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         ph_open.clicked.connect(lambda: PhoneTransferDialog(self.app).exec())
         self._lay.addWidget(ph_open)
+
+        # Cloud sync card
+        self._card(tr("set_sync"))
+        sd = QLabel(tr("set_sync_desc"))
+        sd.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        sd.setWordWrap(True)
+        self._lay.addWidget(sd)
+        backend_row = QHBoxLayout()
+        bl = QLabel(tr("set_sync_backend"))
+        bl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        backend_row.addWidget(bl)
+        self._sync_backend_combo = QComboBox()
+        self._sync_backend_combo.addItem(tr("set_sync_off"), "")
+        self._sync_backend_combo.addItem("GitHub Gist", "gist")
+        self._sync_backend_combo.addItem("WebDAV", "webdav")
+        _sb = cfg.get("sync_backend", "")
+        for _i in range(self._sync_backend_combo.count()):
+            if self._sync_backend_combo.itemData(_i) == _sb:
+                self._sync_backend_combo.setCurrentIndex(_i)
+                break
+        self._sync_backend_combo.currentIndexChanged.connect(self._sync_toggle_fields)
+        backend_row.addWidget(self._sync_backend_combo, 1)
+        self._lay.addLayout(backend_row)
+
+        self._sync_gist_box = QWidget()
+        gist_lay = QVBoxLayout(self._sync_gist_box)
+        gist_lay.setContentsMargins(0, 0, 0, 0)
+        gist_lay.setSpacing(6)
+        gist_row = QHBoxLayout()
+        gl = QLabel(tr("set_sync_gist_token"))
+        gl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        gist_row.addWidget(gl, 1)
+        self._gist_token_edit = QLineEdit()
+        self._gist_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._gist_token_edit.setPlaceholderText("ghp_…")
+        gist_row.addWidget(self._gist_token_edit, 2)
+        gist_lay.addLayout(gist_row)
+        self._sync_gist_id_lbl = QLabel("")
+        self._sync_gist_id_lbl.setObjectName("muted")
+        gist_lay.addWidget(self._sync_gist_id_lbl)
+        self._lay.addWidget(self._sync_gist_box)
+
+        self._sync_dav_box = QWidget()
+        dav_lay = QVBoxLayout(self._sync_dav_box)
+        dav_lay.setContentsMargins(0, 0, 0, 0)
+        dav_lay.setSpacing(6)
+
+        def _dav_row(label, edit):
+            row = QHBoxLayout()
+            l = QLabel(label)
+            l.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+            row.addWidget(l, 1)
+            row.addWidget(edit, 2)
+            dav_lay.addLayout(row)
+
+        self._dav_url_edit = QLineEdit()
+        self._dav_url_edit.setPlaceholderText("https://dav.example.com/YouBoard/")
+        _dav_row(tr("set_sync_dav_url"), self._dav_url_edit)
+        self._dav_user_edit = QLineEdit()
+        _dav_row(tr("set_sync_dav_user"), self._dav_user_edit)
+        self._dav_pass_edit = QLineEdit()
+        self._dav_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        _dav_row(tr("set_sync_dav_pass"), self._dav_pass_edit)
+        self._lay.addWidget(self._sync_dav_box)
+
+        pass_row = QHBoxLayout()
+        pl = QLabel(tr("set_sync_pass"))
+        pl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        pass_row.addWidget(pl, 1)
+        self._sync_pass_edit = QLineEdit()
+        self._sync_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        pass_row.addWidget(self._sync_pass_edit, 2)
+        self._lay.addLayout(pass_row)
+
+        self._sync_btns = []
+        sync_btns = QHBoxLayout()
+        up = QPushButton(tr("btn_sync_upload"))
+        up.clicked.connect(lambda: self._do_sync("upload"))
+        sync_btns.addWidget(up)
+        down = QPushButton(tr("btn_sync_download"))
+        down.clicked.connect(lambda: self._do_sync("download"))
+        sync_btns.addWidget(down)
+        clr = QPushButton(tr("btn_sync_clear"))
+        clr.clicked.connect(self._clear_sync)
+        sync_btns.addWidget(clr)
+        self._sync_btns = [up, down, clr]
+        self._lay.addLayout(sync_btns)
+        self._sync_status_lbl = QLabel("")
+        self._sync_status_lbl.setObjectName("muted")
+        self._sync_status_lbl.setWordWrap(True)
+        self._lay.addWidget(self._sync_status_lbl)
+
+        # 载入已保存的云同步配置
+        self._gist_token_edit.setText(unprotect_secret(cfg.get("sync_gist_token", "")))
+        self._sync_gist_id = cfg.get("sync_gist_id", "")
+        self._dav_url_edit.setText(cfg.get("sync_webdav_url", ""))
+        self._dav_user_edit.setText(cfg.get("sync_webdav_user", ""))
+        self._dav_pass_edit.setText(unprotect_secret(cfg.get("sync_webdav_pass", "")))
+        self._sync_pass_edit.setText(unprotect_secret(cfg.get("sync_passphrase", "")))
+        self._sync_toggle_fields()
+        self._update_sync_status()
 
         # About card
         self._card(tr("set_about"))
@@ -5197,6 +5628,105 @@ class SettingsDialog(QDialog):
         self._bg_path = ""
         self._bg_lbl.setText(tr("set_bg_current"))
 
+    # ---- 云同步 ----
+
+    def _sync_toggle_fields(self):
+        backend = self._sync_backend_combo.currentData() or ""
+        self._sync_gist_box.setVisible(backend == "gist")
+        self._sync_dav_box.setVisible(backend == "webdav")
+        self._update_sync_status()
+
+    def _update_sync_status(self):
+        cfg = load_config()
+        parts = []
+        last = cfg.get("sync_last", "")
+        parts.append(tr("sync_last", time=last[:19]) if last else tr("sync_never"))
+        gid = self._sync_gist_id or cfg.get("sync_gist_id", "")
+        if gid:
+            parts.append(tr("sync_gist_id", gid=gid))
+        self._sync_status_lbl.setText(" · ".join(parts))
+        self._sync_gist_id_lbl.setText(
+            tr("sync_gist_id", gid=self._sync_gist_id) if self._sync_gist_id else "")
+
+    def _do_sync(self, action):
+        backend = self._sync_backend_combo.currentData() or ""
+        if not backend:
+            self._sync_status_lbl.setText(tr("set_sync_off"))
+            return
+        passphrase = self._sync_pass_edit.text()
+        if len(passphrase) < 4:
+            self._sync_status_lbl.setText(tr("sync_pass_hint"))
+            return
+        try:
+            if backend == "gist":
+                token = self._gist_token_edit.text().strip()
+                if not token:
+                    self._sync_status_lbl.setText(tr("set_sync_gist_token"))
+                    return
+                client = GistSyncClient(token, gist_id=self._sync_gist_id)
+            else:
+                client = WebDAVSyncClient(
+                    self._dav_url_edit.text().strip(),
+                    self._dav_user_edit.text().strip(),
+                    self._dav_pass_edit.text())
+        except SyncError as e:
+            self._sync_status_lbl.setText(str(e))
+            return
+        self._sync_status_lbl.setText(tr("sync_syncing"))
+        self._set_sync_enabled(False)
+        self._sync_worker = SyncWorker(action, client, passphrase,
+                                       self.app.store, self)
+        self._sync_worker.sig_done.connect(self._on_sync_done)
+        self._sync_worker.start()
+
+    def _set_sync_enabled(self, enabled):
+        for w in (self._sync_backend_combo, self._gist_token_edit,
+                  self._dav_url_edit, self._dav_user_edit,
+                  self._dav_pass_edit, self._sync_pass_edit):
+            w.setEnabled(enabled)
+        for b in self._sync_btns:
+            b.setEnabled(enabled)
+
+    def _on_sync_done(self, ok, msg):
+        self._set_sync_enabled(True)
+        self._sync_status_lbl.setText(msg)
+        worker = getattr(self, "_sync_worker", None)
+        if ok:
+            try:
+                cfg = load_config()
+                if worker is not None and worker.result_gid:
+                    self._sync_gist_id = worker.result_gid
+                    cfg["sync_gist_id"] = self._sync_gist_id
+                cfg["sync_last"] = datetime.now().isoformat()
+                save_config(cfg)
+                self._update_sync_status()
+                if worker is not None and worker.action == "download":
+                    self.app._refresh_all()
+                    self.app._update_desk_widget()
+            except Exception:
+                pass
+        self._sync_worker = None
+
+    def _clear_sync(self):
+        try:
+            cfg = load_config()
+            for k in ("sync_backend", "sync_gist_token", "sync_gist_id",
+                      "sync_webdav_url", "sync_webdav_user", "sync_webdav_pass",
+                      "sync_passphrase", "sync_last"):
+                cfg.pop(k, None)
+            save_config(cfg)
+        except Exception:
+            pass
+        self._sync_backend_combo.setCurrentIndex(0)
+        self._gist_token_edit.clear()
+        self._dav_url_edit.clear()
+        self._dav_user_edit.clear()
+        self._dav_pass_edit.clear()
+        self._sync_pass_edit.clear()
+        self._sync_gist_id = ""
+        self._sync_toggle_fields()
+        self._sync_status_lbl.setText(tr("sync_cleared"))
+
     def _init_hotkey_values(self, cfg):
         vals = {"hotkey": _canon_hotkey(cfg.get("hotkey", "alt+q"))}
         for key in ("hk_copy", "hk_delete", "hk_pin",
@@ -5217,12 +5747,20 @@ class SettingsDialog(QDialog):
         cfg["bg_image"] = self._bg_path
         cfg["desktop_widget"] = self._widget_cb.isChecked()
         cfg["hotkey"] = self._hotkey_values.get("hotkey", "alt+q")
-        cfg["privacy_mode"] = self._privacy_cb.isChecked()
+        cfg["temporary_session"] = self._session_cb.isChecked()
+        cfg["sync_backend"] = self._sync_backend_combo.currentData() or ""
+        cfg["sync_gist_token"] = protect_secret(self._gist_token_edit.text().strip())
+        cfg["sync_webdav_url"] = self._dav_url_edit.text().strip()
+        cfg["sync_webdav_user"] = self._dav_user_edit.text().strip()
+        cfg["sync_webdav_pass"] = protect_secret(self._dav_pass_edit.text())
+        cfg["sync_passphrase"] = protect_secret(self._sync_pass_edit.text())
+        if self._sync_gist_id and not cfg.get("sync_gist_id"):
+            cfg["sync_gist_id"] = self._sync_gist_id
         for k, v in self._hotkey_values.items():
             if k != "hotkey":
                 cfg[k] = v
         save_config(cfg)
-        self.app.set_privacy_mode(self._privacy_cb.isChecked())
+        self.app.set_temporary_session(self._session_cb.isChecked())
         self.accept()
         self.app.apply_settings(self._lang_sel, self._auto_cb.isChecked(),
                                 self._theme_sel, bg_changed)
