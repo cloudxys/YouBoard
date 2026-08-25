@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-YouBoard v2.6.0 — 剪贴板历史管理器 / Clipboard History Manager
+YouBoard v2.7.0 — 剪贴板历史管理器 / Clipboard History Manager
 PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系统托盘。
 """
 
@@ -109,7 +109,7 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.7.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -569,6 +569,7 @@ STRINGS = {
         "phone_received": "已收到来自手机的文字",
         "set_sync": "云同步 / CLOUD SYNC",
         "set_sync_desc": "把加密后的剪贴板历史同步到云端（GitHub Gist / WebDAV），换设备输入同一同步密码即可恢复",
+        "set_sync_open": "打开同步窗口",
         "set_sync_backend": "后端",
         "set_sync_off": "不使用",
         "set_sync_gist_token": "GitHub Token（需 gist 权限）",
@@ -768,6 +769,7 @@ STRINGS = {
         "phone_received": "Received text from phone",
         "set_sync": "Cloud Sync / CLOUD SYNC",
         "set_sync_desc": "Sync your encrypted clipboard history to the cloud (GitHub Gist / WebDAV); restore on another device with the same sync passphrase",
+        "set_sync_open": "Open Sync Window",
         "set_sync_backend": "Backend",
         "set_sync_off": "Off",
         "set_sync_gist_token": "GitHub Token (gist scope)",
@@ -2476,7 +2478,7 @@ class YouBoardApp(QMainWindow):
         tag_lbl = QLabel("CLIPBOARD HISTORY")
         tag_lbl.setStyleSheet(
             f"color: {C['TEXT_MUTED']}; font-size: 9px; letter-spacing: 2px; "
-            f"background: rgba(128,128,128,20); border-radius: 3px; padding: 1px 6px;")
+            f"background: transparent;")
         sub_row.addWidget(tag_lbl)
         sub_row.addStretch()
         brand_box.addLayout(sub_row)
@@ -4376,6 +4378,12 @@ class YouBoardApp(QMainWindow):
         # Fade-in animation
         self._fade_in()
         self.show()
+        # 开机自启动时任务栏偶发显示默认占位图标：onefile 程序启动阶段
+        # 解压/初始化较慢，任务栏可能在图标就绪前就抓取了占位图标；
+        # 这里在窗口显示后（立即 + 延迟）重新注册 AppUserModelID 并重设图标，
+        # 让 shell 有机会重新解析为正确的 YouBoard 图标。
+        QTimer.singleShot(0, self._refresh_taskbar_icon)
+        QTimer.singleShot(1500, self._refresh_taskbar_icon)
         # Add native resize borders to frameless window (WS_THICKFRAME)
         try:
             import ctypes
@@ -4387,6 +4395,21 @@ class YouBoardApp(QMainWindow):
             style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
             ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE,
                                                 style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+        except Exception:
+            pass
+
+    def _refresh_taskbar_icon(self):
+        """重新注册进程 AppUserModelID 并重设窗口/应用图标，强制任务栏刷新图标。"""
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                APP_USER_MODEL_ID)
+        except Exception:
+            pass
+        try:
+            self.setWindowIcon(QIcon(LOGO_ICO))
+            app = QApplication.instance()
+            if app is not None:
+                app.setWindowIcon(QIcon(LOGO_ICO))
         except Exception:
             pass
 
@@ -5316,6 +5339,9 @@ class SettingsDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll = scroll
+        scroll.verticalScrollBar().valueChanged.connect(
+            self._refresh_button_cursors)
         inner = QWidget()
         self._lay = QVBoxLayout(inner)
         self._lay.setContentsMargins(16, 12, 16, 12)
@@ -5431,106 +5457,16 @@ class SettingsDialog(QDialog):
         ph_open.clicked.connect(lambda: PhoneTransferDialog(self.app).exec())
         self._lay.addWidget(ph_open)
 
-        # Cloud sync card
+        # Cloud sync card（简洁入口：详细配置在独立窗口中）
         self._card(tr("set_sync"))
         sd = QLabel(tr("set_sync_desc"))
         sd.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
         sd.setWordWrap(True)
         self._lay.addWidget(sd)
-        backend_row = QHBoxLayout()
-        bl = QLabel(tr("set_sync_backend"))
-        bl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
-        backend_row.addWidget(bl)
-        self._sync_backend_combo = QComboBox()
-        self._sync_backend_combo.addItem(tr("set_sync_off"), "")
-        self._sync_backend_combo.addItem("GitHub Gist", "gist")
-        self._sync_backend_combo.addItem("WebDAV", "webdav")
-        _sb = cfg.get("sync_backend", "")
-        for _i in range(self._sync_backend_combo.count()):
-            if self._sync_backend_combo.itemData(_i) == _sb:
-                self._sync_backend_combo.setCurrentIndex(_i)
-                break
-        self._sync_backend_combo.currentIndexChanged.connect(self._sync_toggle_fields)
-        backend_row.addWidget(self._sync_backend_combo, 1)
-        self._lay.addLayout(backend_row)
-
-        self._sync_gist_box = QWidget()
-        gist_lay = QVBoxLayout(self._sync_gist_box)
-        gist_lay.setContentsMargins(0, 0, 0, 0)
-        gist_lay.setSpacing(6)
-        gist_row = QHBoxLayout()
-        gl = QLabel(tr("set_sync_gist_token"))
-        gl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
-        gist_row.addWidget(gl, 1)
-        self._gist_token_edit = QLineEdit()
-        self._gist_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._gist_token_edit.setPlaceholderText("ghp_…")
-        gist_row.addWidget(self._gist_token_edit, 2)
-        gist_lay.addLayout(gist_row)
-        self._sync_gist_id_lbl = QLabel("")
-        self._sync_gist_id_lbl.setObjectName("muted")
-        gist_lay.addWidget(self._sync_gist_id_lbl)
-        self._lay.addWidget(self._sync_gist_box)
-
-        self._sync_dav_box = QWidget()
-        dav_lay = QVBoxLayout(self._sync_dav_box)
-        dav_lay.setContentsMargins(0, 0, 0, 0)
-        dav_lay.setSpacing(6)
-
-        def _dav_row(label, edit):
-            row = QHBoxLayout()
-            l = QLabel(label)
-            l.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
-            row.addWidget(l, 1)
-            row.addWidget(edit, 2)
-            dav_lay.addLayout(row)
-
-        self._dav_url_edit = QLineEdit()
-        self._dav_url_edit.setPlaceholderText("https://dav.example.com/YouBoard/")
-        _dav_row(tr("set_sync_dav_url"), self._dav_url_edit)
-        self._dav_user_edit = QLineEdit()
-        _dav_row(tr("set_sync_dav_user"), self._dav_user_edit)
-        self._dav_pass_edit = QLineEdit()
-        self._dav_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        _dav_row(tr("set_sync_dav_pass"), self._dav_pass_edit)
-        self._lay.addWidget(self._sync_dav_box)
-
-        pass_row = QHBoxLayout()
-        pl = QLabel(tr("set_sync_pass"))
-        pl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
-        pass_row.addWidget(pl, 1)
-        self._sync_pass_edit = QLineEdit()
-        self._sync_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        pass_row.addWidget(self._sync_pass_edit, 2)
-        self._lay.addLayout(pass_row)
-
-        self._sync_btns = []
-        sync_btns = QHBoxLayout()
-        up = QPushButton(tr("btn_sync_upload"))
-        up.clicked.connect(lambda: self._do_sync("upload"))
-        sync_btns.addWidget(up)
-        down = QPushButton(tr("btn_sync_download"))
-        down.clicked.connect(lambda: self._do_sync("download"))
-        sync_btns.addWidget(down)
-        clr = QPushButton(tr("btn_sync_clear"))
-        clr.clicked.connect(self._clear_sync)
-        sync_btns.addWidget(clr)
-        self._sync_btns = [up, down, clr]
-        self._lay.addLayout(sync_btns)
-        self._sync_status_lbl = QLabel("")
-        self._sync_status_lbl.setObjectName("muted")
-        self._sync_status_lbl.setWordWrap(True)
-        self._lay.addWidget(self._sync_status_lbl)
-
-        # 载入已保存的云同步配置
-        self._gist_token_edit.setText(unprotect_secret(cfg.get("sync_gist_token", "")))
-        self._sync_gist_id = cfg.get("sync_gist_id", "")
-        self._dav_url_edit.setText(cfg.get("sync_webdav_url", ""))
-        self._dav_user_edit.setText(cfg.get("sync_webdav_user", ""))
-        self._dav_pass_edit.setText(unprotect_secret(cfg.get("sync_webdav_pass", "")))
-        self._sync_pass_edit.setText(unprotect_secret(cfg.get("sync_passphrase", "")))
-        self._sync_toggle_fields()
-        self._update_sync_status()
+        sync_open = QPushButton(tr("set_sync_open"))
+        sync_open.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        sync_open.clicked.connect(lambda: CloudSyncDialog(self.app).exec())
+        self._lay.addWidget(sync_open)
 
         # About card
         self._card(tr("set_about"))
@@ -5563,6 +5499,30 @@ class SettingsDialog(QDialog):
         self._live_refresh_timer = QTimer(self)
         self._live_refresh_timer.timeout.connect(self._live_refresh)
         self._live_refresh_timer.start(800)
+        # 兜底光标刷新：修复 Qt 滚动区按钮手型光标在部分进入方向下不生效的问题
+        self._cursor_timer = QTimer(self)
+        self._cursor_timer.timeout.connect(self._force_cursor_refresh)
+        self._cursor_timer.start(120)
+
+    def _refresh_button_cursors(self):
+        """滚动区按钮手型光标刷新：修复 Qt 滚动区在鼠标静止时
+        滚动内容不更新子控件光标的问题（只重新设置原本就是手型的按钮）。"""
+        for btn in self.findChildren(QPushButton):
+            if btn.cursor().shape() != Qt.CursorShape.ArrowCursor:
+                btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+    def _force_cursor_refresh(self):
+        """鼠标下的控件若是手型按钮，强制重设光标（任何进入方向都立即生效）。"""
+        try:
+            w = QApplication.widgetAt(QCursor.pos())
+            if w is not None and w.cursor().shape() != Qt.CursorShape.ArrowCursor:
+                w.setCursor(w.cursor())
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._refresh_button_cursors()
 
     def _live_refresh(self):
         try:
@@ -5628,105 +5588,6 @@ class SettingsDialog(QDialog):
         self._bg_path = ""
         self._bg_lbl.setText(tr("set_bg_current"))
 
-    # ---- 云同步 ----
-
-    def _sync_toggle_fields(self):
-        backend = self._sync_backend_combo.currentData() or ""
-        self._sync_gist_box.setVisible(backend == "gist")
-        self._sync_dav_box.setVisible(backend == "webdav")
-        self._update_sync_status()
-
-    def _update_sync_status(self):
-        cfg = load_config()
-        parts = []
-        last = cfg.get("sync_last", "")
-        parts.append(tr("sync_last", time=last[:19]) if last else tr("sync_never"))
-        gid = self._sync_gist_id or cfg.get("sync_gist_id", "")
-        if gid:
-            parts.append(tr("sync_gist_id", gid=gid))
-        self._sync_status_lbl.setText(" · ".join(parts))
-        self._sync_gist_id_lbl.setText(
-            tr("sync_gist_id", gid=self._sync_gist_id) if self._sync_gist_id else "")
-
-    def _do_sync(self, action):
-        backend = self._sync_backend_combo.currentData() or ""
-        if not backend:
-            self._sync_status_lbl.setText(tr("set_sync_off"))
-            return
-        passphrase = self._sync_pass_edit.text()
-        if len(passphrase) < 4:
-            self._sync_status_lbl.setText(tr("sync_pass_hint"))
-            return
-        try:
-            if backend == "gist":
-                token = self._gist_token_edit.text().strip()
-                if not token:
-                    self._sync_status_lbl.setText(tr("set_sync_gist_token"))
-                    return
-                client = GistSyncClient(token, gist_id=self._sync_gist_id)
-            else:
-                client = WebDAVSyncClient(
-                    self._dav_url_edit.text().strip(),
-                    self._dav_user_edit.text().strip(),
-                    self._dav_pass_edit.text())
-        except SyncError as e:
-            self._sync_status_lbl.setText(str(e))
-            return
-        self._sync_status_lbl.setText(tr("sync_syncing"))
-        self._set_sync_enabled(False)
-        self._sync_worker = SyncWorker(action, client, passphrase,
-                                       self.app.store, self)
-        self._sync_worker.sig_done.connect(self._on_sync_done)
-        self._sync_worker.start()
-
-    def _set_sync_enabled(self, enabled):
-        for w in (self._sync_backend_combo, self._gist_token_edit,
-                  self._dav_url_edit, self._dav_user_edit,
-                  self._dav_pass_edit, self._sync_pass_edit):
-            w.setEnabled(enabled)
-        for b in self._sync_btns:
-            b.setEnabled(enabled)
-
-    def _on_sync_done(self, ok, msg):
-        self._set_sync_enabled(True)
-        self._sync_status_lbl.setText(msg)
-        worker = getattr(self, "_sync_worker", None)
-        if ok:
-            try:
-                cfg = load_config()
-                if worker is not None and worker.result_gid:
-                    self._sync_gist_id = worker.result_gid
-                    cfg["sync_gist_id"] = self._sync_gist_id
-                cfg["sync_last"] = datetime.now().isoformat()
-                save_config(cfg)
-                self._update_sync_status()
-                if worker is not None and worker.action == "download":
-                    self.app._refresh_all()
-                    self.app._update_desk_widget()
-            except Exception:
-                pass
-        self._sync_worker = None
-
-    def _clear_sync(self):
-        try:
-            cfg = load_config()
-            for k in ("sync_backend", "sync_gist_token", "sync_gist_id",
-                      "sync_webdav_url", "sync_webdav_user", "sync_webdav_pass",
-                      "sync_passphrase", "sync_last"):
-                cfg.pop(k, None)
-            save_config(cfg)
-        except Exception:
-            pass
-        self._sync_backend_combo.setCurrentIndex(0)
-        self._gist_token_edit.clear()
-        self._dav_url_edit.clear()
-        self._dav_user_edit.clear()
-        self._dav_pass_edit.clear()
-        self._sync_pass_edit.clear()
-        self._sync_gist_id = ""
-        self._sync_toggle_fields()
-        self._sync_status_lbl.setText(tr("sync_cleared"))
-
     def _init_hotkey_values(self, cfg):
         vals = {"hotkey": _canon_hotkey(cfg.get("hotkey", "alt+q"))}
         for key in ("hk_copy", "hk_delete", "hk_pin",
@@ -5748,14 +5609,6 @@ class SettingsDialog(QDialog):
         cfg["desktop_widget"] = self._widget_cb.isChecked()
         cfg["hotkey"] = self._hotkey_values.get("hotkey", "alt+q")
         cfg["temporary_session"] = self._session_cb.isChecked()
-        cfg["sync_backend"] = self._sync_backend_combo.currentData() or ""
-        cfg["sync_gist_token"] = protect_secret(self._gist_token_edit.text().strip())
-        cfg["sync_webdav_url"] = self._dav_url_edit.text().strip()
-        cfg["sync_webdav_user"] = self._dav_user_edit.text().strip()
-        cfg["sync_webdav_pass"] = protect_secret(self._dav_pass_edit.text())
-        cfg["sync_passphrase"] = protect_secret(self._sync_pass_edit.text())
-        if self._sync_gist_id and not cfg.get("sync_gist_id"):
-            cfg["sync_gist_id"] = self._sync_gist_id
         for k, v in self._hotkey_values.items():
             if k != "hotkey":
                 cfg[k] = v
@@ -5918,6 +5771,285 @@ del "%~f0"
             self.app._real_quit()
         except Exception as e:
             QMessageBox.warning(self, "更新失败", f"替换失败: {e}")
+
+
+class CloudSyncDialog(QDialog):
+    """云同步独立窗口：Gist / WebDAV 配置 + 手动上传下载（不占用设置页空间）。"""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self._sync_worker = None
+        self.setWindowTitle(tr("set_sync"))
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        self.setFixedSize(500, 590)
+        if LOGO_ICO and os.path.exists(LOGO_ICO):
+            self.setWindowIcon(QIcon(LOGO_ICO))
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {C['BG']}; }}
+            QLabel {{ background: transparent; color: {C['TEXT']}; }}
+            QLabel#muted {{ color: {C['TEXT_MUTED']}; font-size: 11px; }}
+            QComboBox, QLineEdit {{ background: {C['SURFACE2']}; color: {C['TEXT']};
+                border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 5px 8px; font-size: 12px; }}
+            QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
+                border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 6px 14px; font-size: 12px; }}
+            QPushButton:hover {{ background: {C['SURFACE3']}; color: {C['TEXT']}; }}
+            QPushButton[cssClass="accent"] {{ background: {C['ACCENT']}; color: #fff; border: none; font-weight: bold; }}
+            QPushButton[cssClass="accent"]:hover {{ background: {C['ACCENT_HV']}; }}
+        """)
+
+        cfg = load_config()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(10)
+
+        title = QLabel(tr("set_sync"))
+        title.setStyleSheet(f"color: {C['TEXT']}; font-size: 16px; font-weight: bold;")
+        root.addWidget(title)
+        desc = QLabel(tr("set_sync_desc"))
+        desc.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        desc.setWordWrap(True)
+        root.addWidget(desc)
+
+        backend_row = QHBoxLayout()
+        bl = QLabel(tr("set_sync_backend"))
+        bl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        backend_row.addWidget(bl)
+        self._sync_backend_combo = QComboBox()
+        self._sync_backend_combo.addItem(tr("set_sync_off"), "")
+        self._sync_backend_combo.addItem("GitHub Gist", "gist")
+        self._sync_backend_combo.addItem("WebDAV", "webdav")
+        _sb = cfg.get("sync_backend", "")
+        for _i in range(self._sync_backend_combo.count()):
+            if self._sync_backend_combo.itemData(_i) == _sb:
+                self._sync_backend_combo.setCurrentIndex(_i)
+                break
+        self._sync_backend_combo.currentIndexChanged.connect(self._sync_toggle_fields)
+        backend_row.addWidget(self._sync_backend_combo, 1)
+        root.addLayout(backend_row)
+
+        self._sync_gist_box = QWidget()
+        gist_lay = QVBoxLayout(self._sync_gist_box)
+        gist_lay.setContentsMargins(0, 0, 0, 0)
+        gist_lay.setSpacing(6)
+        gist_row = QHBoxLayout()
+        gl = QLabel(tr("set_sync_gist_token"))
+        gl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        gist_row.addWidget(gl, 1)
+        self._gist_token_edit = QLineEdit()
+        self._gist_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._gist_token_edit.setPlaceholderText("ghp_…")
+        gist_row.addWidget(self._gist_token_edit, 2)
+        gist_lay.addLayout(gist_row)
+        self._sync_gist_id_lbl = QLabel("")
+        self._sync_gist_id_lbl.setObjectName("muted")
+        gist_lay.addWidget(self._sync_gist_id_lbl)
+        root.addWidget(self._sync_gist_box)
+
+        self._sync_dav_box = QWidget()
+        dav_lay = QVBoxLayout(self._sync_dav_box)
+        dav_lay.setContentsMargins(0, 0, 0, 0)
+        dav_lay.setSpacing(6)
+
+        def _dav_row(label, edit):
+            row = QHBoxLayout()
+            l = QLabel(label)
+            l.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+            row.addWidget(l, 1)
+            row.addWidget(edit, 2)
+            dav_lay.addLayout(row)
+
+        self._dav_url_edit = QLineEdit()
+        self._dav_url_edit.setPlaceholderText("https://dav.example.com/YouBoard/")
+        _dav_row(tr("set_sync_dav_url"), self._dav_url_edit)
+        self._dav_user_edit = QLineEdit()
+        _dav_row(tr("set_sync_dav_user"), self._dav_user_edit)
+        self._dav_pass_edit = QLineEdit()
+        self._dav_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        _dav_row(tr("set_sync_dav_pass"), self._dav_pass_edit)
+        root.addWidget(self._sync_dav_box)
+
+        pass_row = QHBoxLayout()
+        pl = QLabel(tr("set_sync_pass"))
+        pl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        pass_row.addWidget(pl, 1)
+        self._sync_pass_edit = QLineEdit()
+        self._sync_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        pass_row.addWidget(self._sync_pass_edit, 2)
+        root.addLayout(pass_row)
+
+        sync_btns = QHBoxLayout()
+        up = QPushButton(tr("btn_sync_upload"))
+        up.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        up.clicked.connect(lambda: self._do_sync("upload"))
+        sync_btns.addWidget(up)
+        down = QPushButton(tr("btn_sync_download"))
+        down.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        down.clicked.connect(lambda: self._do_sync("download"))
+        sync_btns.addWidget(down)
+        clr = QPushButton(tr("btn_sync_clear"))
+        clr.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        clr.clicked.connect(self._clear_sync)
+        sync_btns.addWidget(clr)
+        self._sync_btns = [up, down, clr]
+        root.addLayout(sync_btns)
+
+        self._sync_status_lbl = QLabel("")
+        self._sync_status_lbl.setObjectName("muted")
+        self._sync_status_lbl.setWordWrap(True)
+        root.addWidget(self._sync_status_lbl)
+
+        footer = QHBoxLayout()
+        footer.addStretch()
+        close_btn = QPushButton(tr("phone_close"))
+        close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        close_btn.setProperty("cssClass", "accent")
+        close_btn.clicked.connect(self.accept)
+        footer.addWidget(close_btn)
+        root.addLayout(footer)
+
+        # 载入已保存的云同步配置
+        self._gist_token_edit.setText(unprotect_secret(cfg.get("sync_gist_token", "")))
+        self._sync_gist_id = cfg.get("sync_gist_id", "")
+        self._dav_url_edit.setText(cfg.get("sync_webdav_url", ""))
+        self._dav_user_edit.setText(cfg.get("sync_webdav_user", ""))
+        self._dav_pass_edit.setText(unprotect_secret(cfg.get("sync_webdav_pass", "")))
+        self._sync_pass_edit.setText(unprotect_secret(cfg.get("sync_passphrase", "")))
+        self._sync_toggle_fields()
+        self._update_sync_status()
+        # 兜底光标刷新：保证按钮手型光标在任何进入方向都立即生效
+        self._cursor_timer = QTimer(self)
+        self._cursor_timer.timeout.connect(self._force_cursor_refresh)
+        self._cursor_timer.start(120)
+
+    def _force_cursor_refresh(self):
+        """鼠标下的控件若是手型按钮，强制重设光标（任何进入方向都立即生效）。"""
+        try:
+            w = QApplication.widgetAt(QCursor.pos())
+            if w is not None and w.cursor().shape() != Qt.CursorShape.ArrowCursor:
+                w.setCursor(w.cursor())
+        except Exception:
+            pass
+
+    # ---- 配置 ----
+
+    def _save_config(self):
+        cfg = load_config()
+        cfg["sync_backend"] = self._sync_backend_combo.currentData() or ""
+        cfg["sync_gist_token"] = protect_secret(self._gist_token_edit.text().strip())
+        cfg["sync_webdav_url"] = self._dav_url_edit.text().strip()
+        cfg["sync_webdav_user"] = self._dav_user_edit.text().strip()
+        cfg["sync_webdav_pass"] = protect_secret(self._dav_pass_edit.text())
+        cfg["sync_passphrase"] = protect_secret(self._sync_pass_edit.text())
+        if self._sync_gist_id:
+            cfg["sync_gist_id"] = self._sync_gist_id
+        save_config(cfg)
+
+    def closeEvent(self, event):
+        try:
+            self._save_config()
+        except Exception:
+            pass
+        event.accept()
+
+    # ---- 交互 ----
+
+    def _sync_toggle_fields(self):
+        backend = self._sync_backend_combo.currentData() or ""
+        self._sync_gist_box.setVisible(backend == "gist")
+        self._sync_dav_box.setVisible(backend == "webdav")
+        self._update_sync_status()
+
+    def _update_sync_status(self):
+        cfg = load_config()
+        parts = []
+        last = cfg.get("sync_last", "")
+        parts.append(tr("sync_last", time=last[:19]) if last else tr("sync_never"))
+        gid = self._sync_gist_id or cfg.get("sync_gist_id", "")
+        if gid:
+            parts.append(tr("sync_gist_id", gid=gid))
+        self._sync_status_lbl.setText(" · ".join(parts))
+        self._sync_gist_id_lbl.setText(
+            tr("sync_gist_id", gid=self._sync_gist_id) if self._sync_gist_id else "")
+
+    def _do_sync(self, action):
+        backend = self._sync_backend_combo.currentData() or ""
+        if not backend:
+            self._sync_status_lbl.setText(tr("set_sync_off"))
+            return
+        passphrase = self._sync_pass_edit.text()
+        if len(passphrase) < 4:
+            self._sync_status_lbl.setText(tr("sync_pass_hint"))
+            return
+        try:
+            if backend == "gist":
+                token = self._gist_token_edit.text().strip()
+                if not token:
+                    self._sync_status_lbl.setText(tr("set_sync_gist_token"))
+                    return
+                client = GistSyncClient(token, gist_id=self._sync_gist_id)
+            else:
+                client = WebDAVSyncClient(
+                    self._dav_url_edit.text().strip(),
+                    self._dav_user_edit.text().strip(),
+                    self._dav_pass_edit.text())
+        except SyncError as e:
+            self._sync_status_lbl.setText(str(e))
+            return
+        self._sync_status_lbl.setText(tr("sync_syncing"))
+        self._set_sync_enabled(False)
+        self._sync_worker = SyncWorker(action, client, passphrase,
+                                       self.app.store, self)
+        self._sync_worker.sig_done.connect(self._on_sync_done)
+        self._sync_worker.start()
+
+    def _set_sync_enabled(self, enabled):
+        for w in (self._sync_backend_combo, self._gist_token_edit,
+                  self._dav_url_edit, self._dav_user_edit,
+                  self._dav_pass_edit, self._sync_pass_edit):
+            w.setEnabled(enabled)
+        for b in self._sync_btns:
+            b.setEnabled(enabled)
+
+    def _on_sync_done(self, ok, msg):
+        self._set_sync_enabled(True)
+        self._sync_status_lbl.setText(msg)
+        worker = getattr(self, "_sync_worker", None)
+        if ok:
+            try:
+                cfg = load_config()
+                if worker is not None and worker.result_gid:
+                    self._sync_gist_id = worker.result_gid
+                    cfg["sync_gist_id"] = self._sync_gist_id
+                cfg["sync_last"] = datetime.now().isoformat()
+                save_config(cfg)
+                self._update_sync_status()
+                if worker is not None and worker.action == "download":
+                    self.app._refresh_all()
+                    self.app._update_desk_widget()
+            except Exception:
+                pass
+        self._sync_worker = None
+
+    def _clear_sync(self):
+        try:
+            cfg = load_config()
+            for k in ("sync_backend", "sync_gist_token", "sync_gist_id",
+                      "sync_webdav_url", "sync_webdav_user", "sync_webdav_pass",
+                      "sync_passphrase", "sync_last"):
+                cfg.pop(k, None)
+            save_config(cfg)
+        except Exception:
+            pass
+        self._sync_backend_combo.setCurrentIndex(0)
+        self._gist_token_edit.clear()
+        self._dav_url_edit.clear()
+        self._dav_user_edit.clear()
+        self._dav_pass_edit.clear()
+        self._sync_pass_edit.clear()
+        self._sync_gist_id = ""
+        self._sync_toggle_fields()
+        self._sync_status_lbl.setText(tr("sync_cleared"))
 
 
 # ===========================================================================

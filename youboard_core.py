@@ -978,6 +978,18 @@ class ClipboardStore:
         self._snapshots = []
         self._save_snapshots()
 
+    def prune_snapshots(self, keep_ids):
+        """仅保留指定 id 的快照（临时会话清场用）；返回删除数量。"""
+        keep = set(keep_ids or ())
+        with self._lock:
+            self._ensure_snapshots()
+            before = len(self._snapshots)
+            kept = [s for s in self._snapshots if s.get("id") in keep]
+            if len(kept) != before:
+                self._snapshots = kept
+                self._save_snapshots()
+            return before - len(kept)
+
     # ---- hashing ----
 
     @staticmethod
@@ -1177,6 +1189,47 @@ class ClipboardStore:
 
     def get_recent(self, n=20):
         return self.get_all()[:n]
+
+    def export_history(self):
+        """导出完整历史（分类 + 快照）的深拷贝，供云同步打包。"""
+        with self._lock:
+            return (copy.deepcopy(self.categories),
+                    copy.deepcopy(self._ensure_snapshots()))
+
+    def merge_history(self, categories, snapshots=None):
+        """合并云端历史：条目按 hash 去重（保留时间较新者），快照按 id 去重。"""
+        with self._lock:
+            for cat_name in ("text", "image", "file", "url"):
+                incoming = (categories or {}).get(cat_name, {}) or {}
+                if not isinstance(incoming, dict):
+                    incoming = {}
+                local_cat = self.categories[cat_name]
+                merged = {"pinned": [], "entries": []}
+                for lst in ("pinned", "entries"):
+                    seen = {}
+                    for e in list(local_cat.get(lst, [])) + list(incoming.get(lst, []) or []):
+                        h = e.get("hash")
+                        if not h:
+                            continue
+                        cur = seen.get(h)
+                        if cur is None or (e.get("timestamp", "") or "") >= (cur.get("timestamp", "") or ""):
+                            seen[h] = e
+                    merged[lst] = sorted(seen.values(),
+                                         key=lambda x: x.get("timestamp", "") or "",
+                                         reverse=True)
+                self.categories[cat_name] = merged
+            if snapshots:
+                self._ensure_snapshots()
+                by_id = {s.get("id"): s for s in self._snapshots if s.get("id")}
+                for s in snapshots:
+                    if s.get("id"):
+                        by_id[s["id"]] = s
+                self._snapshots = sorted(by_id.values(),
+                                         key=lambda x: x.get("time", "") or "",
+                                         reverse=True)
+            self._save()
+            self._save_snapshots()
+        return True
 
     # ---- counts ----
 

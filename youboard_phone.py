@@ -33,7 +33,7 @@ except Exception:
 
 from youboard_core import IMAGES_DIR
 
-PHONE_MODULE_VERSION = "2.5.0"
+PHONE_MODULE_VERSION = "2.6.0"
 DEFAULT_PORT = 8765
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _IMG_RE = re.compile(r"^/api/img/([0-9a-f]{64})\.png$", re.I)
@@ -219,6 +219,12 @@ class PhoneTransferServer:
     def client_count(self):
         with self._clients_lock:
             return len(self._clients)
+
+    def rotate_token(self):
+        """更换访问 token 并清空已连接设备记录（旧二维码立即失效，服务不中断）。"""
+        self.token = secrets.token_hex(12)
+        with self._clients_lock:
+            self._clients.clear()
 
     def is_pinned(self, entry_hash):
         try:

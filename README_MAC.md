@@ -22,7 +22,7 @@ chmod +x build_mac.sh
 ```
 
 脚本会：安装依赖（PyQt6 / Pillow / pyperclip / PyObjC / PyInstaller）→
-构建 `dist/YouBoard.app` → 生成 `YouBoard_macOS_v2.6.0.dmg`。
+构建 `dist/YouBoard.app` → 生成 `YouBoard_macOS_v2.7.0.dmg`。
 
 也可以手动执行：
 

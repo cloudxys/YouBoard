@@ -37,7 +37,7 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v2.6.0.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v2.7.0.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -76,7 +76,7 @@ macOS 版由 GitHub Actions 在 macOS 构建机自动构建（Intel x86_64 / App
 
 把剪贴板历史加密备份到云端，换设备也能恢复：
 
-1. 设置 → 云同步 → 选择后端（GitHub Gist / WebDAV）
+1. 设置 → 云同步 →「打开同步窗口」，选择后端（GitHub Gist / WebDAV）
 2. 填入对应凭据（Gist 用带 `gist` 权限的 Token；WebDAV 填目录地址 + 账号密码，如坚果云需用应用密码）
 3. 设置「同步密码」（至少 4 位）——历史数据会先用这个密码端到端加密，云端只保存密文
 4. 点「上传到云端」备份；新设备上点「从云端下载」即可合并恢复
@@ -114,7 +114,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v2.6.0.exe`
+输出：`YouBoard_Setup_v2.7.0.exe`
 
 ## 📁 项目结构
 
@@ -143,20 +143,29 @@ YouBoard/
 │   ├── sousuo.ico       # 搜索框图标
 │   ├── anse.ico         # 主题按钮：暗色
 │   └── liangse.ico      # 主题按钮：亮色
-├── version_info.txt     # EXE 版本信息（v2.6.0）
+├── version_info.txt     # EXE 版本信息（v2.7.0）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
 ├── YouBoard_Mac.spec    # macOS PyInstaller 配置
 ├── build_mac.sh         # macOS 一键构建脚本
 ├── README_MAC.md        # macOS 构建与使用说明
 ├── .github/workflows/   # GitHub Actions 自动构建发布
-├── youboard_setup.iss   # Inno Setup 安装脚本（v2.6.0）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v2.7.0）
 ├── youboard_config.json # 用户配置（自动生成）
 ├── .youboard.json       # 剪贴板历史数据（自动生成）
 └── youboard.key         # 历史加密密钥（自动生成，勿提交）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v2.7.0
+
+- 🪟 **设置页精简**
+  - 云同步从设置页内嵌改为独立窗口：设置 → 云同步 →「打开同步窗口」，与手机传输入口保持一致，设置页不再被长表单占据
+  - 左上角副标题「CLIPBOARD HISTORY」的灰色底纹移除，仅保留文字
+- 🖱️ **任务栏图标修复**
+  - 修复开机自启动时任务栏偶发显示系统默认占位图标的问题（onefile 程序启动阶段解压/初始化较慢，任务栏提前抓取了占位图标）
+  - 窗口显示后自动重新注册 AppUserModelID 并刷新窗口图标，让任务栏解析为正确的 YouBoard 图标
 
 ### YouBoard v2.6.0
 
