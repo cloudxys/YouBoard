@@ -23,7 +23,7 @@ echo "    数据目录：~/Library/Application Support/YouBoard"
 
 if command -v hdiutil >/dev/null 2>&1; then
 echo "==> 生成 DMG 镜像"
-    DMG="YouBoard_macOS_v2.5.0.dmg"
+    DMG="YouBoard_macOS_v2.7.0.dmg"
     rm -f "$DMG"
     hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov -format UDZO "$DMG"
     echo "==> DMG：$DMG"
