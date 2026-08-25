@@ -23,7 +23,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install PyQt6 pillow pyperclip keyboard pyinstaller
+        run: pip install PyQt6 pillow pyperclip keyboard cryptography pyinstaller qrcode
 
       - name: Build portable EXE
         run: python -m PyInstaller YouBoard.spec --noconfirm
@@ -33,9 +33,9 @@ jobs:
         run: |
           choco install innosetup -y --no-progress
           iscc youboard_setup.iss
-          $issOut = Join-Path (Split-Path $PWD -Parent) "logo\YouBoard_Setup_v2.3.0.exe"
+          $issOut = Join-Path (Split-Path $PWD -Parent) "logo\YouBoard_Setup_v2.7.0.exe"
           if (Test-Path -LiteralPath $issOut) {
-            Copy-Item -LiteralPath $issOut -Destination "YouBoard_Setup_v2.3.0.exe" -Force
+            Copy-Item -LiteralPath $issOut -Destination "YouBoard_Setup_v2.7.0.exe" -Force
           }
 
       - name: Upload artifacts
@@ -44,7 +44,7 @@ jobs:
           name: YouBoard-Windows
           path: |
             dist/YouBoard.exe
-            YouBoard_Setup_v2.3.0.exe
+            YouBoard_Setup_v2.7.0.exe
 
   macos:
     name: macOS (${{ matrix.arch }})
@@ -52,6 +52,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - runner: macos-13
+            arch: x86_64
           - runner: macos-14
             arch: arm64
     runs-on: ${{ matrix.runner }}
@@ -68,7 +70,8 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip
           pip install PyQt6 pillow pyperclip \
-            pyobjc-framework-Cocoa pyobjc-framework-Quartz pyinstaller
+            pyobjc-framework-Cocoa pyobjc-framework-Quartz \
+            cryptography pyinstaller qrcode
 
       - name: Build .app bundle
         run: python3 -m PyInstaller YouBoard_Mac.spec --noconfirm
@@ -76,7 +79,7 @@ jobs:
       - name: Package DMG and ZIP
         run: |
           APP="dist/YouBoard.app"
-          BASE="YouBoard_macOS_${{ matrix.arch }}_v2.3.0"
+          BASE="YouBoard_macOS_${{ matrix.arch }}_v2.7.0"
           hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
             -format UDZO "dist/${BASE}.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/${BASE}.zip"
@@ -86,8 +89,8 @@ jobs:
         with:
           name: YouBoard-macOS-${{ matrix.arch }}
           path: |
-            dist/YouBoard_macOS_${{ matrix.arch }}_v2.3.0.dmg
-            dist/YouBoard_macOS_${{ matrix.arch }}_v2.3.0.zip
+            dist/YouBoard_macOS_${{ matrix.arch }}_v2.7.0.dmg
+            dist/YouBoard_macOS_${{ matrix.arch }}_v2.7.0.zip
 
   release:
     name: Publish GitHub Release
@@ -95,6 +98,9 @@ jobs:
     needs: [windows, macos]
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
