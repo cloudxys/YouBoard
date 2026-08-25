@@ -140,4 +140,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" artifacts/*/* --generate-notes
+          # 若上次残留了同名 Release，先删除，避免“already exists”
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && gh release delete "$GITHUB_REF_NAME" --yes || true
+          # 上传所有产物文件（跳过目录，避免 dist 目录被当作文件上传失败）
+          mapfile -t files < <(find artifacts -type f)
+          gh release create "$GITHUB_REF_NAME" "${files[@]}" --generate-notes
