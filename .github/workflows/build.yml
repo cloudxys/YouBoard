@@ -47,16 +47,8 @@ jobs:
             YouBoard_Setup_v2.7.0.exe
 
   macos:
-    name: macOS (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: macos-13
-            arch: x86_64
-          - runner: macos-14
-            arch: arm64
-    runs-on: ${{ matrix.runner }}
+    name: macOS (arm64)
+    runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -79,7 +71,7 @@ jobs:
       - name: Package DMG and ZIP
         run: |
           APP="dist/YouBoard.app"
-          BASE="YouBoard_macOS_${{ matrix.arch }}_v2.7.0"
+          BASE="YouBoard_macOS_arm64_v2.7.0"
           hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
             -format UDZO "dist/${BASE}.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/${BASE}.zip"
@@ -87,10 +79,48 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: YouBoard-macOS-${{ matrix.arch }}
+          name: YouBoard-macOS-arm64
           path: |
-            dist/YouBoard_macOS_${{ matrix.arch }}_v2.7.0.dmg
-            dist/YouBoard_macOS_${{ matrix.arch }}_v2.7.0.zip
+            dist/YouBoard_macOS_arm64_v2.7.0.dmg
+            dist/YouBoard_macOS_arm64_v2.7.0.zip
+
+  macos-intel:
+    name: macOS (x86_64)
+    runs-on: macos-13
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install PyQt6 pillow pyperclip \
+            pyobjc-framework-Cocoa pyobjc-framework-Quartz \
+            cryptography pyinstaller qrcode
+
+      - name: Build .app bundle
+        run: python3 -m PyInstaller YouBoard_Mac.spec --noconfirm
+
+      - name: Package DMG and ZIP
+        run: |
+          APP="dist/YouBoard.app"
+          BASE="YouBoard_macOS_x86_64_v2.7.0"
+          hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
+            -format UDZO "dist/${BASE}.dmg"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/${BASE}.zip"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: YouBoard-macOS-x86_64
+          path: |
+            dist/YouBoard_macOS_x86_64_v2.7.0.dmg
+            dist/YouBoard_macOS_x86_64_v2.7.0.zip
 
   release:
     name: Publish GitHub Release
