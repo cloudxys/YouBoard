@@ -33,9 +33,9 @@ jobs:
         run: |
           choco install innosetup -y --no-progress
           iscc youboard_setup.iss
-          $issOut = Join-Path (Split-Path $PWD -Parent) "logo\YouBoard_Setup_v2.7.0.exe"
+          $issOut = Join-Path (Split-Path $PWD -Parent) "logo\YouBoard_Setup_v2.8.0.exe"
           if (Test-Path -LiteralPath $issOut) {
-            Copy-Item -LiteralPath $issOut -Destination "YouBoard_Setup_v2.7.0.exe" -Force
+            Copy-Item -LiteralPath $issOut -Destination "YouBoard_Setup_v2.8.0.exe" -Force
           }
 
       - name: Upload artifacts
@@ -44,7 +44,7 @@ jobs:
           name: YouBoard-Windows
           path: |
             dist/YouBoard.exe
-            YouBoard_Setup_v2.7.0.exe
+            YouBoard_Setup_v2.8.0.exe
 
   macos:
     name: macOS (arm64)
@@ -71,7 +71,7 @@ jobs:
       - name: Package DMG and ZIP
         run: |
           APP="dist/YouBoard.app"
-          BASE="YouBoard_macOS_arm64_v2.7.0"
+          BASE="YouBoard_macOS_arm64_v2.8.0"
           hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
             -format UDZO "dist/${BASE}.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/${BASE}.zip"
@@ -81,8 +81,8 @@ jobs:
         with:
           name: YouBoard-macOS-arm64
           path: |
-            dist/YouBoard_macOS_arm64_v2.7.0.dmg
-            dist/YouBoard_macOS_arm64_v2.7.0.zip
+            dist/YouBoard_macOS_arm64_v2.8.0.dmg
+            dist/YouBoard_macOS_arm64_v2.8.0.zip
 
   macos-intel:
     name: macOS (x86_64)
@@ -109,7 +109,7 @@ jobs:
       - name: Package DMG and ZIP
         run: |
           APP="dist/YouBoard.app"
-          BASE="YouBoard_macOS_x86_64_v2.7.0"
+          BASE="YouBoard_macOS_x86_64_v2.8.0"
           hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
             -format UDZO "dist/${BASE}.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/${BASE}.zip"
@@ -119,13 +119,13 @@ jobs:
         with:
           name: YouBoard-macOS-x86_64
           path: |
-            dist/YouBoard_macOS_x86_64_v2.7.0.dmg
-            dist/YouBoard_macOS_x86_64_v2.7.0.zip
+            dist/YouBoard_macOS_x86_64_v2.8.0.dmg
+            dist/YouBoard_macOS_x86_64_v2.8.0.zip
 
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [windows, macos]
+    needs: [windows, macos, macos-intel]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

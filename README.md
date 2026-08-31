@@ -116,7 +116,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v2.7.0.exe`
+输出：`YouBoard_Setup_v2.8.0.exe`
 
 ## 📁 项目结构
 
