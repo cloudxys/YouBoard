@@ -33,9 +33,9 @@ jobs:
         run: |
           choco install innosetup -y --no-progress
           iscc youboard_setup.iss
-          $issOut = Join-Path (Split-Path $PWD -Parent) "logo\YouBoard_Setup_v2.7.0.exe"
+          $issOut = Join-Path (Split-Path $PWD -Parent) "logo\YouBoard_Setup_v2.8.0.exe"
           if (Test-Path -LiteralPath $issOut) {
-            Copy-Item -LiteralPath $issOut -Destination "YouBoard_Setup_v2.7.0.exe" -Force
+            Copy-Item -LiteralPath $issOut -Destination "YouBoard_Setup_v2.8.0.exe" -Force
           }
 
       - name: Upload artifacts
@@ -44,7 +44,7 @@ jobs:
           name: YouBoard-Windows
           path: |
             dist/YouBoard.exe
-            YouBoard_Setup_v2.7.0.exe
+            YouBoard_Setup_v2.8.0.exe
 
   macos:
     name: macOS (${{ matrix.arch }})
@@ -79,7 +79,7 @@ jobs:
       - name: Package DMG and ZIP
         run: |
           APP="dist/YouBoard.app"
-          BASE="YouBoard_macOS_${{ matrix.arch }}_v2.7.0"
+          BASE="YouBoard_macOS_${{ matrix.arch }}_v2.8.0"
           hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
             -format UDZO "dist/${BASE}.dmg"
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/${BASE}.zip"
@@ -89,8 +89,8 @@ jobs:
         with:
           name: YouBoard-macOS-${{ matrix.arch }}
           path: |
-            dist/YouBoard_macOS_${{ matrix.arch }}_v2.7.0.dmg
-            dist/YouBoard_macOS_${{ matrix.arch }}_v2.7.0.zip
+            dist/YouBoard_macOS_${{ matrix.arch }}_v2.8.0.dmg
+            dist/YouBoard_macOS_${{ matrix.arch }}_v2.8.0.zip
 
   release:
     name: Publish GitHub Release

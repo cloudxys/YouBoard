@@ -304,7 +304,7 @@ class PhoneTransferServer:
     def auth_ok(self, token):
         return bool(token) and hmac.compare_digest(token, self.token)
 
-    def history_json(self, limit=200, etype=None):
+    def history_json(self, limit=None, etype=None):
         all_entries = []
         for key in ("text", "image", "file", "url"):
             if etype and etype != "all" and etype != key:
@@ -319,8 +319,17 @@ class PhoneTransferServer:
             return pair[1].get("timestamp", "")
         all_entries.sort(key=_sort_key, reverse=True)
 
+        # 无上限（limit 为空 / 0 / None 时返回全部），与电脑端一致
+        if limit is None or (str(limit).isdigit() and int(limit) <= 0):
+            selected = all_entries
+        else:
+            try:
+                selected = all_entries[: int(limit)]
+            except (ValueError, TypeError):
+                selected = all_entries
+
         out = []
-        for key, e in all_entries[: max(1, min(int(limit or 200), 500))]:
+        for key, e in selected:
             try:
                 out.append(_entry_to_public(e, self, key))
             except Exception:
@@ -523,7 +532,7 @@ function fallbackCopy(txt){
   }catch(e){ toast(T.copyFail); }
 }
 function poll(){
-  api('/api/history?limit=200')
+  api('/api/history?limit=0')
     .then(function(d){
       if(!d || !d.ok) throw new Error('bad');
       ENTRIES = d.entries || [];
@@ -683,12 +692,12 @@ class _PhoneHandler(BaseHTTPRequestHandler):
 
         if path == "/api/history":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            limit = qs.get("limit", ["200"])[0]
+            limit = qs.get("limit", ["0"])[0]
             etype = qs.get("type", ["all"])[0]
             try:
-                limit_i = int(limit)
+                limit_i = int(limit) if str(limit).isdigit() else 0
             except (ValueError, TypeError):
-                limit_i = 200
+                limit_i = 0
             entries = srv.history_json(limit=limit_i, etype=etype)
             self._send_json({"ok": True, "clients": srv.client_count(),
                              "count": len(entries), "entries": entries})
