@@ -1,7 +1,7 @@
 @echo off
 title YouBoard - PyInstaller Build
 echo ============================================
-echo   YouBoard v2.7.0 打包脚本 (PyQt6)
+echo   YouBoard v2.9.0 打包脚本 (PyQt6)
 echo ============================================
 echo.
 

@@ -16,7 +16,7 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pyperclip
 
@@ -63,6 +63,9 @@ MAX_ENTRIES = None          # 无上限：不限制历史记录条数
 POLL_INTERVAL = 0.5
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 URL_PATTERN = re.compile(r'https?://\S+|www\.\S+')
+# 缓存回收保护时间：刚写入的文件先保留，避免与并发新增记录竞争
+CACHE_GC_MIN_AGE = 300
+_IMAGE_CACHE_NAME = re.compile(r"^(?:thumb_)?[0-9a-f]{64}\.png$", re.I)
 
 # 旧版数据文件名（品牌更名前的历史遗留），首次启动自动迁移
 _LEGACY_FILES = {
@@ -145,6 +148,30 @@ def _decrypt_data(blob):
         return blob
 
 
+def _atomic_write(path, data):
+    """Write bytes to a temporary file, then atomically replace the target."""
+    tmp_path = path + ".tmp"
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        for attempt in range(3):
+            try:
+                os.replace(tmp_path, path)
+                break
+            except PermissionError:
+                if attempt == 2:
+                    raise
+                time.sleep(0.06)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
 # ===========================================================================
 # Config（语言等用户偏好，JSON 持久化）
 # ===========================================================================
@@ -160,8 +187,8 @@ def load_config():
 
 def save_config(cfg):
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        raw = json.dumps(cfg, ensure_ascii=False, indent=2).encode("utf-8")
+        _atomic_write(CONFIG_FILE, raw)
         return True
     except (IOError, OSError):
         return False
@@ -918,9 +945,8 @@ class ClipboardStore:
         try:
             raw = json.dumps({"version": 2, "categories": self.categories},
                              ensure_ascii=False, indent=2).encode("utf-8")
-            with open(self.path, "wb") as f:
-                f.write(_encrypt_data(raw))
-        except IOError:
+            _atomic_write(self.path, _encrypt_data(raw))
+        except (IOError, OSError):
             pass
 
     # ---- snapshots ----
@@ -940,9 +966,8 @@ class ClipboardStore:
         try:
             raw = json.dumps(self._snapshots,
                              ensure_ascii=False, indent=2).encode("utf-8")
-            with open(self.snapshots_path, "wb") as f:
-                f.write(_encrypt_data(raw))
-        except IOError:
+            _atomic_write(self.snapshots_path, _encrypt_data(raw))
+        except (IOError, OSError):
             pass
 
     def _ensure_snapshots(self):
@@ -1031,13 +1056,20 @@ class ClipboardStore:
 
         save_path = os.path.join(images_dir, f"{image_hash}.png")
         if not os.path.exists(save_path):
-            pil_image.save(save_path, "PNG")
+            # 中等压缩：相近的 PNG 体积，明显低于默认高压缩级别的编码耗时
+            pil_image.save(save_path, "PNG", compress_level=3, optimize=False)
 
         thumb_path = os.path.join(images_dir, f"thumb_{image_hash}.png")
         if not os.path.exists(thumb_path):
             from PIL import Image
-            thumb = pil_image.copy()
-            thumb.thumbnail((320, 320), Image.LANCZOS)
+            src_w, src_h = pil_image.size
+            scale = min(1.0, 320.0 / max(1, src_w), 320.0 / max(1, src_h))
+            if scale < 1.0:
+                thumb = pil_image.resize(
+                    (max(1, int(src_w * scale)), max(1, int(src_h * scale))),
+                    Image.LANCZOS)
+            else:
+                thumb = pil_image.copy()
             thumb.save(thumb_path, "PNG")
 
         fmt = pil_image.format or "PNG"
@@ -1335,6 +1367,192 @@ class ClipboardStore:
                 if n:
                     self._save()
         return n
+
+    @staticmethod
+    def _cache_path_in_dir(path, base_dir):
+        """判断一个记录路径是否位于指定缓存目录内。"""
+        try:
+            normalized = os.path.normcase(os.path.abspath(path))
+            normalized_dir = os.path.normcase(os.path.abspath(base_dir))
+            return (normalized == normalized_dir or
+                    normalized.startswith(normalized_dir + os.sep))
+        except (OSError, ValueError):
+            return False
+
+    @staticmethod
+    def _collect_entry_cache_refs(entry, image_refs, cache_refs):
+        """收集单个条目引用的图片文件和物化文件缓存。"""
+        filename = entry.get("filename", "") if isinstance(entry, dict) else ""
+        if filename:
+            name = os.path.basename(str(filename))
+            if name:
+                image_refs.add(name)
+                image_refs.add("thumb_" + name)
+        if isinstance(entry, dict) and entry.get("type") == "file":
+            for path in ClipboardStore._norm_paths(entry):
+                if ClipboardStore._cache_path_in_dir(path, FILE_CACHE_DIR):
+                    cache_refs.add(os.path.normcase(os.path.abspath(path)))
+
+    @staticmethod
+    def _collect_state_cache_refs(state, image_refs, cache_refs):
+        """收集分类状态（历史或快照）中的全部缓存引用。"""
+        if not isinstance(state, dict):
+            return
+        for cat in state.values():
+            if not isinstance(cat, dict):
+                continue
+            for list_name in ("pinned", "entries"):
+                for entry in cat.get(list_name, []) or []:
+                    ClipboardStore._collect_entry_cache_refs(
+                        entry, image_refs, cache_refs)
+
+    def garbage_collect(self):
+        """删除不再被当前历史或快照引用的图片与物化文件缓存。
+
+        回收在后台线程执行；删除时持有存储锁，并跳过最近写入的文件，
+        避免与正在捕获的剪贴板内容发生竞争。
+        """
+        removed_files = 0
+        removed_bytes = 0
+        now = time.time()
+        with self._lock:
+            image_refs = set()
+            cache_refs = set()
+            self._collect_state_cache_refs(self.categories, image_refs, cache_refs)
+            for snap in self._ensure_snapshots():
+                self._collect_state_cache_refs(
+                    snap.get("state", {}), image_refs, cache_refs)
+            # 用户选择的背景图可能也落在 images/，同样不能被回收
+            try:
+                cfg = load_config()
+                bg_paths = [cfg.get("bg_image", "")]
+                bg_paths.extend(cfg.get("bg_history", []) or [])
+                for bg_path in bg_paths:
+                    if bg_path and self._cache_path_in_dir(bg_path, IMAGES_DIR):
+                        image_refs.add(os.path.basename(str(bg_path)))
+                        image_refs.add("thumb_" + os.path.basename(
+                            str(bg_path)))
+            except (OSError, ValueError, TypeError):
+                pass
+
+            if os.path.isdir(IMAGES_DIR):
+                try:
+                    image_names = os.listdir(IMAGES_DIR)
+                except OSError:
+                    image_names = []
+                for name in image_names:
+                    if name in image_refs or not _IMAGE_CACHE_NAME.match(name):
+                        continue
+                    path = os.path.join(IMAGES_DIR, name)
+                    try:
+                        if not os.path.isfile(path):
+                            continue
+                        size = os.path.getsize(path)
+                        if now - os.path.getmtime(path) < CACHE_GC_MIN_AGE:
+                            continue
+                        os.remove(path)
+                    except OSError:
+                        continue
+                    removed_files += 1
+                    removed_bytes += size
+
+            if os.path.isdir(FILE_CACHE_DIR):
+                for root, dirs, files in os.walk(FILE_CACHE_DIR, topdown=False):
+                    for name in files:
+                        path = os.path.join(root, name)
+                        key = os.path.normcase(os.path.abspath(path))
+                        if key in cache_refs:
+                            continue
+                        try:
+                            size = os.path.getsize(path)
+                            if now - os.path.getmtime(path) < CACHE_GC_MIN_AGE:
+                                continue
+                            os.remove(path)
+                        except OSError:
+                            continue
+                        removed_files += 1
+                        removed_bytes += size
+                    for name in dirs:
+                        try:
+                            os.rmdir(os.path.join(root, name))
+                        except OSError:
+                            pass
+        return removed_files, removed_bytes
+
+    @staticmethod
+    def _parse_time(value):
+        """解析历史时间或保留策略时间，统一转成本地无时区时间。"""
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+
+    def _prune_state_before(self, state, cutoff):
+        """删除状态中早于 cut-off 的非置顶记录，返回删除数量。"""
+        removed = 0
+        if not isinstance(state, dict):
+            return 0
+        for cat in state.values():
+            if not isinstance(cat, dict):
+                continue
+            kept = []
+            for entry in cat.get("entries", []) or []:
+                stamp = self._parse_time(entry.get("timestamp", ""))
+                if stamp is not None and stamp < cutoff:
+                    removed += 1
+                else:
+                    kept.append(entry)
+            cat["entries"] = kept
+        return removed
+
+    def apply_retention(self):
+        """按配置的保留策略清理历史；返回当前历史中删除的记录数。"""
+        policy = load_config().get("history_retention") or {}
+        mode = policy.get("mode", "forever")
+        if mode not in ("age", "expire"):
+            return 0
+
+        now = datetime.now()
+        if mode == "age":
+            try:
+                hours = float(policy.get("hours", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+            if hours <= 0:
+                return 0
+            cutoff = now - timedelta(hours=hours)
+            with self._lock:
+                removed = self._prune_state_before(self.categories, cutoff)
+                snap_removed = 0
+                for snap in self._ensure_snapshots():
+                    snap_removed += self._prune_state_before(
+                        snap.get("state", {}), cutoff)
+                if removed:
+                    self._save()
+                if snap_removed:
+                    self._save_snapshots()
+            return removed
+
+        expire_at = self._parse_time(policy.get("expire_at", ""))
+        if expire_at is None or now < expire_at:
+            return 0
+        with self._lock:
+            removed = sum(
+                len(cat.get("pinned", [])) + len(cat.get("entries", []))
+                for cat in self.categories.values())
+            self._init_empty()
+            self._snapshots = []
+            self._save()
+            self._save_snapshots()
+        cfg = load_config()
+        cfg["history_retention"] = {"mode": "forever"}
+        save_config(cfg)
+        return removed
 
     # ---- search ----
 

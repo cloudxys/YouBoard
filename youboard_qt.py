@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-YouBoard v2.8.0 — 剪贴板历史管理器 / Clipboard History Manager
+YouBoard v2.9.0 — 剪贴板历史管理器 / Clipboard History Manager
 PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系统托盘。
 """
 
-import colorsys
 import ctypes
 import gc
 import locale
@@ -63,17 +62,18 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QAbstractItemView, QSizePolicy,
     QGraphicsOpacityEffect, QSpacerItem, QGroupBox,
     QCheckBox, QTextEdit, QListView, QListWidget, QListWidgetItem,
-    QStyle, QProgressDialog, QStyledItemDelegate, QStyleOptionViewItem,
+    QStyle, QProgressDialog, QProgressBar, QStyledItemDelegate,
+    QStyleOptionViewItem, QGridLayout, QSpinBox, QDateTimeEdit, QSizeGrip,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
     QThread, QObject, QSize, QRect, QRectF, QPoint, QEvent,
-    QAbstractNativeEventFilter, QUrl,
+    QAbstractNativeEventFilter, QUrl, QDateTime,
 )
 from PyQt6.QtGui import (
     QIcon, QPixmap, QImage, QPainter, QColor, QFont,
     QAction, QActionGroup, QKeySequence, QShortcut, QBrush, QPen,
-    QPalette, QLinearGradient, QPainterPath, QCursor, QMovie, QTextDocument,
+    QPalette, QPainterPath, QCursor, QMovie, QTextDocument,
     QTextCharFormat, QTextCursor,
 )
 try:
@@ -109,7 +109,7 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "2.8.0"
+APP_VERSION = "2.9.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -277,27 +277,29 @@ def _checkmark_png_path():
 # Theme colors
 # ===========================================================================
 THEME_DARK = {
-    "BG": "#1e2128", "SURFACE": "#262a33", "SURFACE2": "#2f343f",
-    "SURFACE3": "#3a404c", "ROW_ALT": "#282c36", "BORDER": "#414855",
-    "BORDER_LT": "#525b6b", "TEXT": "#eef0f5", "TEXT_SEC": "#b3b9c6",
-    "TEXT_MUTED": "#7d8598", "ACCENT": "#4f9df8", "ACCENT_HV": "#6cb0ff",
-    "ACCENT_DIM": "#2c3d57", "TEAL": "#3fd0b6", "AMBER": "#f2b54d",
-    "PIN_BG": "#2a2517", "DANGER": "#f16a5c", "SUCCESS": "#45d18c",
-    "FLASH_BG": "#1e3a2c",
-    "PANEL_ALPHA": "rgba(40, 45, 56, 165)", "PANEL_ALPHA2": "rgba(48, 54, 66, 150)",
-    "HEADER_ALPHA": "rgba(32, 36, 45, 135)",
+    "BG": "#15171b", "SURFACE": "#1d1f24", "SURFACE2": "#26292f",
+    "SURFACE3": "#30343b", "ROW_ALT": "#1b1d21", "INPUT_BG": "#111316",
+    "BORDER": "#2c3037", "BORDER_LT": "#3b414a",
+    "TEXT": "#f1f3f5", "TEXT_SEC": "#aeb5bd", "TEXT_MUTED": "#737b86",
+    "ACCENT": "#36bdf7", "ACCENT_HV": "#62cdff", "ACCENT_DIM": "#153849",
+    "TEAL": "#43d6c2", "AMBER": "#f4b84d", "PIN_BG": "#3a3118",
+    "DANGER": "#f0645b", "SUCCESS": "#43d17a", "FLASH_BG": "#143a2d",
+    "PANEL_ALPHA": "rgba(29, 31, 36, 252)",
+    "PANEL_ALPHA2": "rgba(38, 41, 47, 250)",
+    "HEADER_ALPHA": "rgba(19, 20, 23, 250)",
 }
 
 THEME_LIGHT = {
-    "BG": "#f5f6fa", "SURFACE": "#ffffff", "SURFACE2": "#eef0f5",
-    "SURFACE3": "#e2e5ec", "ROW_ALT": "#f0f2f7", "BORDER": "#d4d8e0",
-    "BORDER_LT": "#c0c5d0", "TEXT": "#1a1d26", "TEXT_SEC": "#4a5062",
-    "TEXT_MUTED": "#8b92a5", "ACCENT": "#2b7de9", "ACCENT_HV": "#1a6ad4",
-    "ACCENT_DIM": "#dbeafe", "TEAL": "#0d9488", "AMBER": "#d97706",
-    "PIN_BG": "#fef3c7", "DANGER": "#dc2626", "SUCCESS": "#16a34a",
-    "FLASH_BG": "#d1fae5",
-    "PANEL_ALPHA": "rgba(255, 255, 255, 115)", "PANEL_ALPHA2": "rgba(240, 242, 248, 105)",
-    "HEADER_ALPHA": "rgba(250, 251, 254, 85)",
+    "BG": "#f3f4f6", "SURFACE": "#ffffff", "SURFACE2": "#eceef1",
+    "SURFACE3": "#dfe3e8", "ROW_ALT": "#f7f8fa", "INPUT_BG": "#f7f8fa",
+    "BORDER": "#d7dbe0", "BORDER_LT": "#bcc3cc",
+    "TEXT": "#17191d", "TEXT_SEC": "#4b515a", "TEXT_MUTED": "#7d848e",
+    "ACCENT": "#0b83d8", "ACCENT_HV": "#0a6fb8", "ACCENT_DIM": "#d9edfb",
+    "TEAL": "#0f9f8f", "AMBER": "#b45309", "PIN_BG": "#fff3c4",
+    "DANGER": "#d92d20", "SUCCESS": "#178a45", "FLASH_BG": "#d8f5e4",
+    "PANEL_ALPHA": "rgba(255, 255, 255, 252)",
+    "PANEL_ALPHA2": "rgba(248, 249, 251, 250)",
+    "HEADER_ALPHA": "rgba(255, 255, 255, 252)",
 }
 
 C = {}
@@ -634,55 +636,60 @@ def build_qss(theme_name="dark", flush=False):
     """
     apply_theme(theme_name)
     c = C
-    pane_radius = "0" if flush else "8px"
+    pane_radius = "0" if flush else "10px"
     flush_rules = ""
-    if flush:
-        flush_rules = ("QLineEdit#searchEdit { border-top-left-radius: 0; border-bottom-left-radius: 0; }"
-                       "QTabBar::tab:first:selected { border-top-left-radius: 0; }")
     return f"""
     QMainWindow, QDialog {{ background-color: {c['BG']}; }}
     QWidget {{ color: {c['TEXT']}; font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; font-size: 13px; }}
-    QToolTip {{ background: #f7f7f7; color: #1f2329; border: 1px solid {c['BORDER']};
-        padding: 4px 8px; border-radius: 4px; }}
-    QTabWidget::pane {{ border: none; background: {c['PANEL_ALPHA']}; border-radius: {pane_radius}; }}
-    QTabBar::tab {{ background: transparent; color: {c['TEXT_SEC']}; padding: 8px 18px; margin-right: 2px;
-        border-top-left-radius: 6px; border-top-right-radius: 6px; font-weight: bold; }}
-    QTabBar::tab:selected {{ background: {c['PANEL_ALPHA']}; color: {c['ACCENT']}; }}
-    QTabBar::tab:hover:!selected {{ color: {c['TEXT']}; background: {c['SURFACE3']}; }}
-    QTableWidget {{ background: transparent; alternate-background-color: rgba(128,128,128,18);
-        border: none; gridline-color: rgba(128,128,128,30);
+    QToolTip {{ background: {c['SURFACE']}; color: {c['TEXT']};
+        border: 1px solid {c['BORDER_LT']}; padding: 6px 9px; border-radius: 6px; }}
+    QTabWidget {{ background: {c['SURFACE']}; }}
+    QTabWidget::tab-bar {{ left: 0; background: {c['SURFACE']}; }}
+    QTabWidget::pane {{ border: 1px solid {c['BORDER_LT']};
+        background: {c['SURFACE']}; border-radius: {pane_radius}; }}
+    QTabBar {{ background: {c['SURFACE']}; qproperty-drawBase: 0; }}
+    QTabBar::tab {{ background: transparent; color: {c['TEXT_MUTED']}; padding: 10px 18px;
+        margin: 0 3px; border: none; border-bottom: 2px solid transparent; font-weight: 600; }}
+    QTabBar::tab:selected {{ color: {c['TEXT']}; border-bottom-color: {c['ACCENT']}; }}
+    QTabBar::tab:hover:!selected {{ color: {c['TEXT_SEC']}; }}
+    QTableWidget {{ background: transparent; alternate-background-color: {c['ROW_ALT']};
+        border: none; gridline-color: transparent;
         selection-background-color: {c['ACCENT_DIM']}; selection-color: {c['TEXT']}; }}
-    QTableWidget::item {{ padding: 6px 8px; border-bottom: 1px solid rgba(128,128,128,25); }}
-    QHeaderView::section {{ background: rgba(128,128,128,22); color: {c['TEXT_MUTED']}; padding: 6px 8px;
-        border: none; border-bottom: 2px solid {c['BORDER']}; font-weight: bold; font-size: 11px; }}
-    QPushButton {{ background: {c['SURFACE2']}; color: {c['TEXT_SEC']}; border: 1px solid {c['BORDER']};
-        border-radius: 6px; padding: 6px 14px; font-size: 12px; }}
+    QTableWidget::item {{ padding: 8px 10px; border-bottom: 1px solid {c['BORDER']}; }}
+    QHeaderView::section {{ background: transparent; color: {c['TEXT_MUTED']};
+        padding: 7px 10px; border: none; border-bottom: 1px solid {c['BORDER']};
+        font-weight: 600; font-size: 11px; }}
+    QPushButton {{ background: {c['SURFACE2']}; color: {c['TEXT_SEC']}; border: 1px solid transparent;
+        border-radius: 8px; padding: 7px 14px; font-size: 12px; font-weight: 600; }}
     QPushButton:hover {{ background: {c['SURFACE3']}; color: {c['TEXT']}; border-color: {c['BORDER_LT']}; }}
-    QPushButton[cssClass="accent"] {{ background: {c['ACCENT']}; color: #fff; border: none; font-weight: bold; }}
+    QPushButton:pressed {{ background: {c['BORDER']}; color: {c['TEXT']}; }}
+    QPushButton[cssClass="accent"] {{ background: {c['ACCENT']}; color: #ffffff;
+        border: none; font-weight: 700; }}
     QPushButton[cssClass="accent"]:hover {{ background: {c['ACCENT_HV']}; }}
     QPushButton[cssClass="danger"] {{ color: {c['DANGER']}; border-color: {c['DANGER']}; }}
-    QPushButton[cssClass="danger"]:hover {{ background: {c['DANGER']}; color: #fff; }}
-    QLineEdit {{ background: {c['SURFACE2']}; color: {c['TEXT']}; border: 1px solid {c['BORDER']};
-        border-radius: 6px; padding: 6px 10px; font-size: 12px; }}
+    QPushButton[cssClass="danger"]:hover {{ background: {c['DANGER']}; color: #ffffff; }}
+    QLineEdit {{ background: {c['INPUT_BG']}; color: {c['TEXT']}; border: 1px solid {c['BORDER']};
+        border-radius: 8px; padding: 8px 11px; font-size: 12px; }}
     QLineEdit:focus {{ border-color: {c['ACCENT']}; }}
-    QComboBox {{ background: {c['SURFACE2']}; color: {c['TEXT_SEC']}; border: 1px solid {c['BORDER']};
-        border-radius: 6px; padding: 4px 10px; font-size: 11px; }}
+    QComboBox, QSpinBox, QDateTimeEdit {{ background: {c['INPUT_BG']}; color: {c['TEXT_SEC']};
+        border: 1px solid {c['BORDER']}; border-radius: 8px; padding: 6px 10px; font-size: 12px; }}
+    QComboBox:focus, QSpinBox:focus, QDateTimeEdit:focus {{ border-color: {c['ACCENT']}; }}
     QComboBox::drop-down {{ border: none; width: 20px; }}
-    QComboBox QAbstractItemView {{ background: {c['PANEL_ALPHA']}; color: {c['TEXT']};
-        selection-background-color: {c['ACCENT_DIM']}; border: 1px solid {c['BORDER']};
-        border-radius: 8px; }}
+    QComboBox QAbstractItemView {{ background: {c['SURFACE']}; color: {c['TEXT']};
+        selection-background-color: {c['ACCENT_DIM']}; border: 1px solid {c['BORDER_LT']};
+        border-radius: 8px; padding: 4px; outline: none; }}
     QSplitter::handle {{ background: {c['BORDER']}; width: 2px; height: 2px; }}
-    QLabel {{ background: transparent; }}
-    QTextEdit {{ background: transparent; color: {c['TEXT']}; border: none;
+    QLabel {{ background: transparent; color: {c['TEXT']}; }}
+    QTextEdit, QPlainTextEdit {{ background: transparent; color: {c['TEXT']}; border: none;
         font-family: "Consolas","Microsoft YaHei UI",monospace; font-size: 12px; }}
     QListWidget {{ background: transparent; border: none; font-size: 11px; outline: none; }}
-    QListWidget::item {{ padding: 7px 10px; margin: 1px 2px; border-radius: 6px;
+    QListWidget::item {{ padding: 8px 10px; margin: 1px 2px; border-radius: 7px;
         color: {c['TEXT_SEC']}; background: transparent; }}
     QListWidget::item:selected {{ background: {c['ACCENT_DIM']}; color: {c['TEXT']}; }}
     QListWidget::item:hover:!selected {{ background: {c['SURFACE3']}; color: {c['TEXT']}; }}
-    QMenu {{ background: {c['SURFACE2']}; color: {c['TEXT']}; border: 1px solid {c['BORDER']};
-        border-radius: 8px; padding: 4px; }}
-    QMenu::item {{ padding: 6px 24px; border-radius: 4px; }}
+    QMenu {{ background: {c['SURFACE']}; color: {c['TEXT']}; border: 1px solid {c['BORDER_LT']};
+        border-radius: 9px; padding: 5px; }}
+    QMenu::item {{ padding: 7px 24px; border-radius: 6px; }}
     QMenu::item:selected {{ background: {c['ACCENT_DIM']}; color: {c['ACCENT']}; }}
     QMenu::separator {{ height: 1px; background: {c['BORDER']}; margin: 4px 8px; }}
     QScrollBar:vertical {{ background: transparent; width: 8px; margin: 0; }}
@@ -694,16 +701,16 @@ def build_qss(theme_name="dark", flush=False):
     QScrollBar::handle:horizontal {{ background: {c['BORDER_LT']}; border-radius: 4px; min-width: 30px; }}
     QCheckBox {{ color: {c['TEXT']}; spacing: 8px; }}
     QCheckBox::indicator {{ width: 18px; height: 18px; border: 2px solid {c['BORDER_LT']};
-        border-radius: 4px; background: {c['SURFACE2']}; }}
+        border-radius: 5px; background: {c['INPUT_BG']}; }}
     QCheckBox::indicator:checked {{ background: {c['ACCENT']}; border-color: {c['ACCENT']}; }}
-    QGroupBox {{ background: {c['PANEL_ALPHA2']}; border: 1px solid {c['BORDER']}; border-radius: 8px;
+    QGroupBox {{ background: {c['PANEL_ALPHA2']}; border: 1px solid {c['BORDER']}; border-radius: 10px;
         margin-top: 12px; padding-top: 16px; font-weight: bold; font-size: 11px; color: {c['TEXT_MUTED']}; }}
     QGroupBox::title {{ subcontrol-origin: margin; left: 14px; padding: 0 6px; }}
     QScrollArea {{ background: transparent; border: none; }}
     QFrame[cssClass="glass"] {{ background: {c['PANEL_ALPHA']}; border: 1px solid {c['BORDER']};
-        border-radius: 10px; }}
+        border-radius: 12px; }}
     QFrame[cssClass="glass2"] {{ background: {c['PANEL_ALPHA2']}; border: 1px solid {c['BORDER']};
-        border-radius: 8px; }}
+        border-radius: 10px; }}
     {flush_rules}
     """
 
@@ -836,6 +843,25 @@ STRINGS = {
         "tray_phone_stop": "停止手机传输（端口 {port}）",
         "set_session_title": "临时会话",
         "set_session_desc": "开启后剪贴板内容照常记录（正常使用）；退出应用或关闭开关时，本次开启后产生的记录（历史、快照、图片与文件缓存）将全部清除",
+        "set_retention": "历史保留 / RETENTION",
+        "set_retention_open": "设置",
+        "ret_title": "历史保留策略",
+        "ret_sub": "让旧记录自动清理，或指定一个时间自动清空",
+        "ret_forever": "永久",
+        "ret_1d": "1 天",
+        "ret_3d": "3 天",
+        "ret_7d": "7 天",
+        "ret_custom": "自定义",
+        "ret_once": "定时清空",
+        "ret_keep": "保留",
+        "ret_unit_hours": "小时",
+        "ret_unit_days": "天",
+        "ret_clear_at": "清空时间",
+        "ret_note": "按时间清理不会删除置顶记录；定时清空会在指定时间清除全部历史和快照。",
+        "ret_summary_forever": "永久保留",
+        "ret_summary_hours": "保留最近 {n} 小时",
+        "ret_summary_days": "保留最近 {n} 天",
+        "ret_summary_expire": "{time} 自动清空",
         "session_started": "临时会话已开启：本次运行记录退出即清空",
         "session_cleared": "临时会话已关闭，本次运行记录已清除",
         "btn_purge_missing": "清理失效",
@@ -909,8 +935,32 @@ STRINGS = {
         "set_check_update": "检查更新",
         "upd_title": "检查更新",
         "upd_latest": "已是最新版本 v{v}",
+        "upd_latest_title": "已是最新版本",
+        "upd_latest_meta": "YouBoard v{v} 已是最新版本，无需更新",
         "upd_new_title": "发现新版本",
         "upd_new_msg": "当前版本: v{cur}\n最新版本: v{new} ({name})\n\n是否立即更新？（将下载并替换当前程序）",
+        "upd_found_meta": "当前 v{cur}  →  最新 v{new}",
+        "upd_ready_hint": "点击「立即更新」开始下载",
+        "upd_download": "正在下载（{pct}%）",
+        "upd_download_detail": "已下载 {done} MB / {total} MB",
+        "upd_connecting": "正在连接更新服务器…",
+        "upd_prepare": "下载完成，正在准备安装…",
+        "upd_whats_new": "本次更新",
+        "upd_new_contributors": "新贡献者",
+        "upd_no_notes": "本次更新以稳定性与体验优化为主。",
+        "upd_update_now": "立即更新",
+        "upd_later": "稍后",
+        "upd_cancel": "取消下载",
+        "upd_cancelling": "正在取消…",
+        "upd_retry": "重试",
+        "upd_close": "关闭",
+        "upd_error_title": "更新失败",
+        "upd_download_failed": "下载失败：{err}",
+        "upd_replace_failed": "替换失败：{err}",
+        "upd_preparing_status": "正在准备更新 {pct}%",
+        "upd_replacing_status": "正在替换文件 {pct}%",
+        "upd_finishing_status": "即将完成 {pct}%",
+        "upd_restarting": "更新完成，正在启动新版本…",
         "upd_failed": "检查失败: {e}",
         "upd_network_err": "无法连接到更新服务器，请检查网络后重试",
         "upd_rate_limit": "请求过于频繁，请稍后再试（GitHub 限流）",
@@ -1041,6 +1091,25 @@ STRINGS = {
         "tray_phone_stop": "Stop Phone Transfer (port {port})",
         "set_session_title": "Temporary Session",
         "set_session_desc": "While on, clipboard content is recorded normally; when you quit the app or turn it off, everything recorded since enabling (history, snapshots, image & file cache) is wiped",
+        "set_retention": "History Retention / RETENTION",
+        "set_retention_open": "Configure",
+        "ret_title": "History retention",
+        "ret_sub": "Automatically remove old records or clear history at a chosen time",
+        "ret_forever": "Forever",
+        "ret_1d": "1 day",
+        "ret_3d": "3 days",
+        "ret_7d": "7 days",
+        "ret_custom": "Custom",
+        "ret_once": "Scheduled clear",
+        "ret_keep": "Keep",
+        "ret_unit_hours": "hours",
+        "ret_unit_days": "days",
+        "ret_clear_at": "Clear at",
+        "ret_note": "Age-based cleanup keeps pinned records. Scheduled clear removes all history and snapshots.",
+        "ret_summary_forever": "Kept forever",
+        "ret_summary_hours": "Keep the last {n} hours",
+        "ret_summary_days": "Keep the last {n} days",
+        "ret_summary_expire": "Clear at {time}",
         "session_started": "Temporary session on: this run's records will be cleared on exit",
         "session_cleared": "Temporary session off, this run's records cleared",
         "btn_purge_missing": "Purge Missing",
@@ -1114,8 +1183,32 @@ STRINGS = {
         "set_check_update": "Check Update",
         "upd_title": "检查更新 · Check Update",
         "upd_latest": "已是最新版本 v{v}\nAlready on the latest version v{v}",
-        "upd_new_title": "发现新版本 · New Version",
+        "upd_latest_title": "You're up to date",
+        "upd_latest_meta": "YouBoard v{v} is the latest version.",
+        "upd_new_title": "New version available",
         "upd_new_msg": "当前版本: v{cur}\n最新版本: v{new} ({name})\n是否立即更新？（将下载并替换当前程序）\n\nCurrent: v{cur} → Latest: v{new} ({name})\nUpdate now? (Will download and replace the program)",
+        "upd_found_meta": "Current v{cur}  →  Latest v{new}",
+        "upd_ready_hint": "Choose Update now to start downloading",
+        "upd_download": "Downloading ({pct}%)",
+        "upd_download_detail": "{done} MB / {total} MB downloaded",
+        "upd_connecting": "Connecting to the update server…",
+        "upd_prepare": "Download complete. Preparing to install…",
+        "upd_whats_new": "What's new",
+        "upd_new_contributors": "New contributors",
+        "upd_no_notes": "This update focuses on stability and experience improvements.",
+        "upd_update_now": "Update now",
+        "upd_later": "Later",
+        "upd_cancel": "Cancel download",
+        "upd_cancelling": "Cancelling…",
+        "upd_retry": "Retry",
+        "upd_close": "Close",
+        "upd_error_title": "Update failed",
+        "upd_download_failed": "Download failed: {err}",
+        "upd_replace_failed": "Replace failed: {err}",
+        "upd_preparing_status": "Preparing update {pct}%",
+        "upd_replacing_status": "Replacing files {pct}%",
+        "upd_finishing_status": "Finishing {pct}%",
+        "upd_restarting": "Update complete. Starting the new version…",
         "upd_failed": "检查失败: {e}\nCheck failed: {e}",
         "upd_network_err": "Cannot connect to update server. Please check your network and try again.\n无法连接到更新服务器，请检查网络后重试",
         "upd_rate_limit": "Too many requests. Please try again later (GitHub rate limit).\n请求过于频繁，请稍后再试（GitHub 限流）",
@@ -1216,7 +1309,7 @@ class AmbientLightBar(QWidget):
     """Breathing hue drift + key ripple pulses + action surge light bar."""
 
     SEG_W = 9
-    HEIGHT = 4
+    HEIGHT = 2
 
     def __init__(self, parent=None, theme="dark"):
         super().__init__(parent)
@@ -1294,49 +1387,18 @@ class AmbientLightBar(QWidget):
         self.update()
 
     def paintEvent(self, event):
-        """Draw colored rectangles for each segment."""
+        """Draw a restrained single-accent ambient line."""
         w = self.width()
         if w < 20:
             return
-        n = max(8, (w + self.SEG_W - 1) // self.SEG_W)
         t = time.perf_counter() - self._t0
-        # Breathing: ~4.2s period
         breath = 0.5 + 0.5 * math.sin(t * 2.0 * math.pi / 4.2)
-        if self._theme == "light":
-            base_l, base_s = 0.52 + 0.13 * breath, 0.82
-        else:
-            base_l, base_s = 0.13 + 0.11 * breath, 0.62
-        # Hue drifts along x-axis
-        drift = t * 9.0
-        surge_rgb = None
-        if self._surge > 0.0:
-            surge_rgb = colorsys.hls_to_rgb(self._surge_hue / 360.0, 0.55, 0.9)
         p = QPainter(self)
         p.setPen(Qt.PenStyle.NoPen)
-        for i in range(n):
-            x = i / (n - 1) if n > 1 else 0.5
-            hue = (drift + x * 46.0) % 360.0
-            r, g, b = colorsys.hls_to_rgb(hue / 360.0, base_l, base_s)
-            # Pulse rings with gaussian falloff
-            for px, phue, pt0, pstr in self._pulses:
-                age = t - pt0
-                ring = age * 1.5
-                d = abs(x - px)
-                glow = math.exp(-((d - ring) ** 2) / 0.0162) * (1.0 - age / 1.15) * pstr
-                if glow > 0.02:
-                    pr, pg, pb = colorsys.hls_to_rgb(phue / 360.0, 0.58, 0.95)
-                    r += pr * glow * 0.85
-                    g += pg * glow * 0.85
-                    b += pb * glow * 0.85
-            # Surge overlay
-            if surge_rgb:
-                k = self._surge * 0.8
-                r += surge_rgb[0] * k
-                g += surge_rgb[1] * k
-                b += surge_rgb[2] * k
-            p.setBrush(QColor(min(255, int(r * 255)), min(255, int(g * 255)),
-                              min(255, int(b * 255))))
-            p.drawRect(i * self.SEG_W, 0, self.SEG_W + 1, self.HEIGHT)
+        p.fillRect(self.rect(), QColor(C['BG']))
+        accent = QColor(C['ACCENT'])
+        accent.setAlpha(min(150, int(34 + breath * 42 + self._surge * 74)))
+        p.fillRect(self.rect(), accent)
         p.end()
 
 
@@ -1344,27 +1406,78 @@ class AmbientLightBar(QWidget):
 # ImageLoader — background thread for loading preview images
 # ===========================================================================
 class ImageLoader(QThread):
-    finished = pyqtSignal(int, str, object)
+    loaded = pyqtSignal(int, str, object)
 
     def __init__(self, path, gen, parent=None):
         super().__init__(parent)
+        self.setObjectName("YouBoardImageLoader")
         self.path = path
         self.gen = gen
+        self._cancelled = threading.Event()
+
+    def cancel(self):
+        self._cancelled.set()
 
     def run(self):
         try:
+            if self._cancelled.is_set():
+                return
             from PIL import Image as PILImage
             img = PILImage.open(self.path)
             img.load()
+            if self._cancelled.is_set():
+                return
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
+            if self._cancelled.is_set():
+                return
             if max(img.size) > PREVIEW_MAX:
                 ratio = PREVIEW_MAX / max(img.size)
                 img = img.resize((max(1, int(img.width * ratio)),
                                   max(1, int(img.height * ratio))), PILImage.LANCZOS)
-            self.finished.emit(self.gen, self.path, img)
+            if self._cancelled.is_set():
+                return
+            self.loaded.emit(self.gen, self.path, img)
         except Exception:
             pass
+
+
+class _FileStatusWorker(QThread):
+    """后台检查文件条目是否失效，避免 UI 线程批量访问磁盘。"""
+    done = pyqtSignal(object)
+
+    def __init__(self, entries, parent=None):
+        super().__init__(parent)
+        self.setObjectName("YouBoardFileStatus")
+        self._entries = list(entries)
+
+    def run(self):
+        result = {}
+        for entry in self._entries:
+            try:
+                result[entry.get("hash", "")] = \
+                    ClipboardStore.file_entry_missing(entry)
+            except Exception:
+                result[entry.get("hash", "")] = False
+        self.done.emit(result)
+
+
+class _CacheCleanupWorker(QThread):
+    """后台回收不再被历史或快照引用的图片与文件缓存。"""
+    done = pyqtSignal(int, int, int)
+
+    def __init__(self, store, parent=None):
+        super().__init__(parent)
+        self.setObjectName("YouBoardCacheCleanup")
+        self._store = store
+
+    def run(self):
+        try:
+            removed_entries = self._store.apply_retention()
+            removed, freed = self._store.garbage_collect()
+        except Exception:
+            removed_entries, removed, freed = 0, 0, 0
+        self.done.emit(removed_entries, removed, freed)
 
 
 # ===========================================================================
@@ -1590,6 +1703,817 @@ class _DownloadWorker(QThread):
                 return False, "下载不完整"
         except Exception as e:
             return False, str(e)
+
+
+def _plain_markdown_text(text):
+    """Strip the small amount of Markdown GitHub uses in release notes."""
+    if not text:
+        return ""
+    s = str(text)
+    s = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", s)
+    s = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", s)
+    s = re.sub(r"`([^`]*)`", r"\1", s)
+    s = re.sub(r"(\*\*|__)(.*?)\1", r"\2", s)
+    s = re.sub(r"(\*|_)(.*?)\1", r"\2", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = (s.replace("&amp;", "&").replace("&lt;", "<")
+         .replace("&gt;", ">").replace("&quot;", '"')
+         .replace("&#39;", "'"))
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _release_notes_sections(body):
+    """Turn GitHub release Markdown into a compact list of
+    ``(section_title, [bullet, ...])`` tuples."""
+    sections = []
+    current = None
+    for raw_line in (body or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        heading = re.match(r"^#{1,4}\s+(.+?)\s*#*$", line)
+        if heading:
+            title = _plain_markdown_text(heading.group(1))
+            low = title.lower()
+            if "full changelog" in low:
+                current = None
+                continue
+            if "what's changed" in low or "whats changed" in low:
+                title = tr("upd_whats_new")
+            elif "new contributor" in low:
+                title = tr("upd_new_contributors")
+            current = [title, []]
+            sections.append(current)
+            continue
+        bullet = re.match(r"^(?:[-*+]|\d+[.)])\s+(.+)$", line)
+        if bullet:
+            item = _plain_markdown_text(bullet.group(1))
+            if not item or "full changelog" in item.lower():
+                continue
+            if current is None:
+                current = [tr("upd_whats_new"), []]
+                sections.append(current)
+            if len(current[1]) < 8:
+                current[1].append(item)
+            continue
+        if not sections:
+            text = _plain_markdown_text(line)
+            if text and "full changelog" not in text.lower():
+                sections.append([tr("upd_whats_new"), [text[:240]]])
+    result = [(title, items) for title, items in sections if items]
+    if not result:
+        result = [(tr("upd_whats_new"), [tr("upd_no_notes")])]
+    return result[:8]
+
+
+class _UpdateNotesView(QScrollArea):
+    """Readable release-notes column used inside the update card."""
+
+    def __init__(self, sections, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setMinimumHeight(110)
+        self.setMaximumHeight(300)
+        self.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }"
+            "QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }"
+            f"QScrollBar::handle:vertical {{ background: {C['BORDER_LT']};"
+            " border-radius: 3px;"
+            " min-height: 24px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }")
+
+        content = QWidget()
+        content.setObjectName("updNotesContent")
+        content.setAutoFillBackground(False)
+        content.setStyleSheet("background: transparent;")
+        self.viewport().setAutoFillBackground(False)
+        self.viewport().setStyleSheet("background: transparent;")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setSpacing(7)
+        for title, items in sections:
+            heading = QLabel(title)
+            heading.setObjectName("updSectionTitle")
+            heading.setWordWrap(True)
+            layout.addWidget(heading)
+            for item in items:
+                bullet = QLabel("•  " + item)
+                bullet.setObjectName("updBullet")
+                bullet.setWordWrap(True)
+                bullet.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextSelectableByMouse)
+                layout.addWidget(bullet)
+            layout.addSpacing(4)
+        layout.addStretch()
+        self.setWidget(content)
+
+
+class _UpdateDialog(QDialog):
+    """Modal update card: release notes + in-app download progress."""
+
+    def __init__(self, owner, app, current_version, new_version,
+                 release_name, sections, urls, tmp_exe):
+        super().__init__(owner)
+        self._app = app
+        self._host = app if app is not None and app.isVisible() else owner
+        self._new_version = str(new_version)
+        self._release_name = str(release_name or "")
+        self._urls = list(urls)
+        self._tmp_exe = tmp_exe
+        self._worker = None
+        self._downloaded_path = ""
+        self._state = "ready"
+        self._cancelling = False
+
+        self.setWindowTitle(tr("upd_new_title"))
+        self.setWindowFlags(
+            Qt.WindowType.Dialog |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setModal(True)
+        self.resize(900, 700)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 24, 24, 24)
+        outer.addStretch(1)
+        card = QFrame()
+        card.setObjectName("updateCard")
+        card.setFixedWidth(600)
+        self._card = card
+        outer.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        outer.addStretch(1)
+
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(30, 26, 30, 22)
+        lay.setSpacing(10)
+
+        icon_row = QHBoxLayout()
+        icon_row.addStretch()
+        self._icon = QLabel()
+        self._icon.setObjectName("updIcon")
+        self._icon.setFixedSize(92, 92)
+        self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if LOGO_ICO and os.path.exists(LOGO_ICO):
+            self._icon.setPixmap(QIcon(LOGO_ICO).pixmap(58, 58))
+        badge = QLabel("✓", self._icon)
+        badge.setObjectName("updBadge")
+        badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        badge.setFixedSize(22, 22)
+        badge.move(63, 5)
+        icon_row.addWidget(self._icon)
+        icon_row.addStretch()
+        lay.addLayout(icon_row)
+
+        self._title = QLabel()
+        self._title.setObjectName("updTitle")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._title)
+
+        self._meta = QLabel(tr("upd_found_meta",
+                               cur=current_version, new=self._new_version))
+        self._meta.setObjectName("updMeta")
+        self._meta.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._meta)
+
+        self._bar = QProgressBar()
+        self._bar.setObjectName("updBar")
+        self._bar.setRange(0, 100)
+        self._bar.setValue(0)
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(7)
+        lay.addWidget(self._bar)
+
+        self._detail = QLabel(tr("upd_connecting"))
+        self._detail.setObjectName("updDetail")
+        self._detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._detail.setWordWrap(True)
+        lay.addWidget(self._detail)
+
+        self._notes = _UpdateNotesView(sections)
+        lay.addWidget(self._notes, 1)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        self._secondary_btn = QPushButton(tr("upd_later"))
+        self._secondary_btn.setObjectName("updSecondary")
+        self._secondary_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._secondary_btn.clicked.connect(self._secondary_clicked)
+        button_row.addWidget(self._secondary_btn)
+        self._primary_btn = QPushButton(tr("upd_update_now"))
+        self._primary_btn.setObjectName("updPrimary")
+        self._primary_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._primary_btn.clicked.connect(self._primary_clicked)
+        button_row.addWidget(self._primary_btn)
+        lay.addLayout(button_row)
+
+        card.setStyleSheet(f"""
+            QFrame#updateCard {{ background-color: {C['SURFACE']};
+                border: 1px solid {C['BORDER']}; border-radius: 14px; }}
+            QLabel {{ background: transparent; color: {C['TEXT']};
+                font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; }}
+            QLabel#updIcon {{ background-color: {C['SURFACE2']};
+                border: 1px solid {C['BORDER']};
+                border-radius: 46px; }}
+            QLabel#updBadge {{ background-color: {C['SUCCESS']}; color: #071116;
+                border-radius: 11px; font-size: 12px; font-weight: bold; }}
+            QLabel#updTitle {{ color: {C['TEXT']}; font-size: 21px; font-weight: 700; }}
+            QLabel#updMeta {{ color: {C['TEXT_SEC']}; font-size: 12px; }}
+            QLabel#updDetail {{ color: {C['TEXT_MUTED']}; font-size: 11px; }}
+            QLabel#updSectionTitle {{ color: {C['TEXT']}; font-size: 14px;
+                font-weight: 700; padding-top: 4px; }}
+            QLabel#updBullet {{ color: {C['TEXT_SEC']}; font-size: 12px; }}
+            QProgressBar#updBar {{ background-color: {C['SURFACE3']}; border: none;
+                border-radius: 3px; }}
+            QProgressBar#updBar::chunk {{ background-color: {C['ACCENT']};
+                border-radius: 3px; }}
+            QPushButton {{ background-color: {C['SURFACE2']}; color: {C['TEXT_SEC']};
+                border: 1px solid transparent; border-radius: 8px;
+                padding: 7px 18px; font-size: 12px; }}
+            QPushButton:hover {{ background-color: {C['SURFACE3']}; color: {C['TEXT']}; }}
+            QPushButton#updPrimary {{ background-color: {C['ACCENT']}; color: #071116;
+                border: none; font-weight: 700; }}
+            QPushButton#updPrimary:hover {{ background-color: {C['ACCENT_HV']}; }}
+        """)
+        self._set_ready_state()
+
+    def _set_ready_state(self):
+        self._state = "ready"
+        self._title.setText(f"{tr('upd_new_title')}  v{self._new_version}")
+        detail = tr("upd_ready_hint")
+        if self._release_name and self._release_name != self._new_version:
+            detail = f"{self._release_name}   ·   {detail}"
+        self._detail.setText(detail)
+        self._bar.setValue(0)
+        self._primary_btn.setText(tr("upd_update_now"))
+        self._primary_btn.show()
+        self._secondary_btn.setText(tr("upd_later"))
+        self._secondary_btn.show()
+
+    def _primary_clicked(self):
+        if self._state in ("ready", "error"):
+            self._start_download()
+
+    def _secondary_clicked(self):
+        if self._state == "downloading":
+            self._cancel_download()
+        else:
+            self.reject()
+
+    def _start_download(self):
+        self._state = "downloading"
+        self._cancelling = False
+        self._title.setText(tr("upd_download", pct=0))
+        self._detail.setText(tr("upd_connecting"))
+        self._bar.setValue(0)
+        self._primary_btn.hide()
+        self._secondary_btn.setText(tr("upd_cancel"))
+        self._secondary_btn.setEnabled(True)
+        self._worker = _DownloadWorker(self._urls, self._tmp_exe, self)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.status.connect(self._on_status)
+        self._worker.finished_ok.connect(self._on_download_ok)
+        self._worker.failed.connect(self._on_download_failed)
+        self._worker.start()
+
+    def _on_progress(self, received, total):
+        if self._state != "downloading":
+            return
+        if total > 0:
+            pct = max(0, min(100, int(received * 100 / total)))
+            self._title.setText(tr("upd_download", pct=pct))
+            self._bar.setValue(pct)
+            self._detail.setText(tr(
+                "upd_download_detail",
+                done=f"{received / 1048576:.1f}",
+                total=f"{total / 1048576:.1f}"))
+
+    def _on_status(self, text):
+        if self._state == "downloading" and self._bar.value() == 0:
+            self._detail.setText(text)
+
+    def _on_download_ok(self, path):
+        if self._state != "downloading":
+            return
+        self._downloaded_path = path
+        self._state = "done"
+        self._title.setText(tr("upd_prepare"))
+        self._detail.setText(tr("upd_prepare"))
+        self._bar.setValue(100)
+        self._primary_btn.hide()
+        self._secondary_btn.hide()
+        QTimer.singleShot(650, self.accept)
+
+    def _on_download_failed(self, error):
+        if self._cancelling:
+            return
+        self._state = "error"
+        self._title.setText(tr("upd_error_title"))
+        self._detail.setText(tr("upd_download_failed",
+                                err=_plain_markdown_text(str(error))[:180]))
+        self._bar.setValue(0)
+        self._primary_btn.setText(tr("upd_retry"))
+        self._primary_btn.show()
+        self._secondary_btn.setText(tr("upd_close"))
+        self._secondary_btn.show()
+        self._secondary_btn.setEnabled(True)
+
+    def _cancel_download(self):
+        if self._cancelling:
+            return
+        if self._worker is None or not self._worker.isRunning():
+            self._finish_cancel()
+            return
+        self._cancelling = True
+        self._state = "cancelling"
+        self._title.setText(tr("upd_cancelling"))
+        self._secondary_btn.setEnabled(False)
+        self._worker.finished.connect(self._finish_cancel)
+        self._worker.abort()
+
+    def _finish_cancel(self):
+        self._worker = None
+        super().reject()
+
+    @property
+    def downloaded_path(self):
+        return self._downloaded_path
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(3, 6, 10, 170))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._sync_to_host)
+
+    def _sync_to_host(self):
+        host = self._host
+        if host is None:
+            return
+        try:
+            if host.isVisible():
+                self.setGeometry(host.frameGeometry())
+                self._card.setMaximumHeight(max(420, self.height() - 48))
+                self._notes.setMaximumHeight(max(120, self.height() - 390))
+        except Exception:
+            pass
+
+    def reject(self):
+        if self._worker is not None and self._worker.isRunning():
+            self._cancel_download()
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self._worker is not None and self._worker.isRunning():
+            event.ignore()
+            self._cancel_download()
+            return
+        super().closeEvent(event)
+
+
+class _UpdateStatusDialog(_UpdateDialog):
+    """“已是最新版本”状态卡片，复用更新卡片的完整视觉风格。"""
+
+    def __init__(self, owner, app, version):
+        super().__init__(
+            owner, app, version, version, "", [], [], "")
+        self._state = "status"
+        self._card.setMinimumHeight(360)
+        self._title.setText(f"{tr('upd_latest_title')}  v{version}")
+        self._meta.setText(f"{APP_NAME} v{version}")
+        self._detail.setText(tr("upd_latest_meta", v=version))
+        self._bar.setValue(100)
+        self._bar.setStyleSheet(
+            f"QProgressBar#updBar {{ background-color: {C['SURFACE3']}; border: none;"
+            " border-radius: 3px; }"
+            f"QProgressBar#updBar::chunk {{ background-color: {C['SUCCESS']};"
+            " border-radius: 3px; }")
+        self._notes.hide()
+        self._secondary_btn.hide()
+        self._primary_btn.setText(tr("btn_ok"))
+        self._primary_btn.clicked.connect(self.accept)
+        self.setWindowTitle(tr("upd_latest_title"))
+
+
+def _retention_summary(policy):
+    """Return a compact one-line description of a retention policy."""
+    policy = policy or {}
+    mode = policy.get("mode", "forever")
+    if mode == "age":
+        try:
+            hours = float(policy.get("hours", 0) or 0)
+        except (TypeError, ValueError):
+            hours = 0
+        if hours > 0 and abs(hours % 24) < 0.001:
+            return tr("ret_summary_days", n=int(hours // 24))
+        value = int(hours) if float(hours).is_integer() else f"{hours:g}"
+        return tr("ret_summary_hours", n=value)
+    if mode == "expire":
+        deadline = ClipboardStore._parse_time(policy.get("expire_at", ""))
+        return tr("ret_summary_expire",
+                  time=deadline.strftime("%Y-%m-%d %H:%M")
+                  if deadline else "?")
+    return tr("ret_summary_forever")
+
+
+class _RetentionDialog(QDialog):
+    """Compact retention settings card matching the updater's visual style."""
+
+    def __init__(self, owner, app, policy):
+        super().__init__(owner)
+        self._host = app if app is not None and app.isVisible() else owner
+        self._preset = "forever"
+        self._preset_btns = {}
+
+        self.setWindowTitle(tr("ret_title"))
+        self.setWindowFlags(
+            Qt.WindowType.Dialog |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setModal(True)
+        self.resize(900, 700)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 24, 24, 24)
+        outer.addStretch(1)
+        card = QFrame()
+        card.setObjectName("retCard")
+        card.setFixedWidth(620)
+        outer.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        outer.addStretch(1)
+
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(30, 24, 30, 22)
+        lay.setSpacing(11)
+
+        icon_row = QHBoxLayout()
+        icon_row.addStretch()
+        icon = QLabel("◷")
+        icon.setObjectName("retIcon")
+        icon.setFixedSize(72, 72)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_row.addWidget(icon)
+        icon_row.addStretch()
+        lay.addLayout(icon_row)
+
+        title = QLabel(tr("ret_title"))
+        title.setObjectName("retTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(title)
+        subtitle = QLabel(tr("ret_sub"))
+        subtitle.setObjectName("retSub")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setWordWrap(True)
+        lay.addWidget(subtitle)
+
+        options = QGridLayout()
+        options.setHorizontalSpacing(8)
+        options.setVerticalSpacing(8)
+        choices = [
+            ("forever", tr("ret_forever")),
+            ("1d", tr("ret_1d")),
+            ("3d", tr("ret_3d")),
+            ("7d", tr("ret_7d")),
+            ("custom", tr("ret_custom")),
+            ("expire", tr("ret_once")),
+        ]
+        for idx, (key, label) in enumerate(choices):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btn.clicked.connect(lambda _, k=key: self._pick(k))
+            self._preset_btns[key] = btn
+            options.addWidget(btn, idx // 3, idx % 3)
+        lay.addLayout(options)
+
+        self._custom_row = QWidget()
+        custom_lay = QHBoxLayout(self._custom_row)
+        custom_lay.setContentsMargins(0, 0, 0, 0)
+        custom_lay.setSpacing(8)
+        custom_lay.addWidget(QLabel(tr("ret_keep")))
+        self._custom_value = QSpinBox()
+        self._custom_value.setRange(1, 8760)
+        self._custom_value.setValue(12)
+        custom_lay.addWidget(self._custom_value)
+        self._custom_unit = QComboBox()
+        self._custom_unit.addItems(
+            [tr("ret_unit_hours"), tr("ret_unit_days")])
+        self._custom_unit.currentIndexChanged.connect(
+            self._on_custom_unit_changed)
+        custom_lay.addWidget(self._custom_unit)
+        custom_lay.addStretch()
+        lay.addWidget(self._custom_row)
+
+        self._expire_row = QWidget()
+        expire_lay = QHBoxLayout(self._expire_row)
+        expire_lay.setContentsMargins(0, 0, 0, 0)
+        expire_lay.setSpacing(8)
+        expire_lay.addWidget(QLabel(tr("ret_clear_at")))
+        self._expire_edit = QDateTimeEdit()
+        self._expire_edit.setCalendarPopup(True)
+        self._expire_edit.setDisplayFormat("yyyy-MM-dd  HH:mm")
+        self._expire_edit.setDateTime(
+            QDateTime.currentDateTime().addSecs(3600))
+        expire_lay.addWidget(self._expire_edit, 1)
+        lay.addWidget(self._expire_row)
+
+        note = QLabel(tr("ret_note"))
+        note.setObjectName("retNote")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton(tr("btn_save"))
+        save.setObjectName("retSave")
+        save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        save.clicked.connect(self.accept)
+        buttons.addWidget(save)
+        lay.addLayout(buttons)
+
+        card.setStyleSheet(f"""
+            QFrame#retCard {{ background-color: {C['SURFACE']};
+                border: 1px solid {C['BORDER']}; border-radius: 14px; }}
+            QLabel {{ background: transparent; color: {C['TEXT']};
+                font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; }}
+            QLabel#retIcon {{ background-color: {C['SURFACE2']};
+                border: 1px solid {C['BORDER']};
+                border-radius: 36px; color: {C['TEXT']}; font-size: 31px; }}
+            QLabel#retTitle {{ color: {C['TEXT']}; font-size: 20px; font-weight: 700; }}
+            QLabel#retSub, QLabel#retNote {{ color: {C['TEXT_SEC']}; font-size: 12px; }}
+            QPushButton {{ background-color: {C['SURFACE2']}; color: {C['TEXT_SEC']};
+                border: 1px solid transparent; border-radius: 8px;
+                padding: 7px 10px; font-size: 12px; }}
+            QPushButton:hover {{ background-color: {C['SURFACE3']}; color: {C['TEXT']}; }}
+            QPushButton:checked {{ background-color: {C['ACCENT']}; color: #071116;
+                border: none; font-weight: 700; }}
+            QPushButton#retSave {{ background-color: {C['ACCENT']}; color: #071116;
+                border: none; font-weight: 700; }}
+            QPushButton#retSave:hover {{ background-color: {C['ACCENT_HV']}; }}
+            QSpinBox, QComboBox, QDateTimeEdit {{ background-color: {C['INPUT_BG']};
+                color: {C['TEXT']}; border: 1px solid {C['BORDER']};
+                border-radius: 7px; padding: 5px 8px; font-size: 12px; }}
+            QComboBox QAbstractItemView {{ background-color: {C['SURFACE']};
+                color: {C['TEXT']}; selection-background-color: {C['ACCENT_DIM']}; }}
+        """)
+        self._apply_policy(policy)
+
+    def _on_custom_unit_changed(self, index):
+        self._custom_value.setMaximum(365 if index == 1 else 8760)
+
+    def _pick(self, key):
+        self._preset = key
+        for name, button in self._preset_btns.items():
+            button.setChecked(name == key)
+        self._custom_row.setVisible(key == "custom")
+        self._expire_row.setVisible(key == "expire")
+
+    def _apply_policy(self, policy):
+        policy = policy or {}
+        mode = policy.get("mode", "forever")
+        key = "forever"
+        if mode == "age":
+            try:
+                hours = max(1.0, float(policy.get("hours", 24)))
+            except (TypeError, ValueError):
+                hours = 24.0
+            if abs(hours - 24) < 0.001:
+                key = "1d"
+            elif abs(hours - 72) < 0.001:
+                key = "3d"
+            elif abs(hours - 168) < 0.001:
+                key = "7d"
+            else:
+                key = "custom"
+                if abs(hours % 24) < 0.001:
+                    self._custom_unit.setCurrentIndex(1)
+                    self._custom_value.setValue(max(1, int(hours // 24)))
+                else:
+                    self._custom_unit.setCurrentIndex(0)
+                    self._custom_value.setValue(max(1, int(hours)))
+        elif mode == "expire":
+            key = "expire"
+            deadline = ClipboardStore._parse_time(policy.get("expire_at", ""))
+            if deadline is not None:
+                self._expire_edit.setDateTime(
+                    QDateTime(deadline.year, deadline.month, deadline.day,
+                              deadline.hour, deadline.minute))
+        self._pick(key)
+
+    def policy(self):
+        if self._preset == "forever":
+            return {"mode": "forever"}
+        if self._preset in ("1d", "3d", "7d"):
+            return {"mode": "age",
+                    "hours": {"1d": 24, "3d": 72, "7d": 168}[self._preset]}
+        if self._preset == "custom":
+            value = int(self._custom_value.value())
+            hours = value * 24 if self._custom_unit.currentIndex() == 1 else value
+            return {"mode": "age", "hours": hours}
+        deadline = self._expire_edit.dateTime().toPyDateTime()
+        return {"mode": "expire",
+                "expire_at": deadline.replace(second=0, microsecond=0).isoformat()}
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(3, 6, 10, 170))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._sync_to_host)
+
+    def _sync_to_host(self):
+        host = self._host
+        try:
+            if host is not None and host.isVisible():
+                self.setGeometry(host.frameGeometry())
+        except Exception:
+            pass
+
+
+class _WatermarkFrame(QFrame):
+    """Light splash card with a faint tiled app-logo watermark."""
+
+    def __init__(self, logo_path, light, parent=None):
+        super().__init__(parent)
+        self._pixmap = QPixmap()
+        if logo_path and os.path.exists(logo_path):
+            self._pixmap = QIcon(logo_path).pixmap(46, 46)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._pixmap.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                            16, 16)
+        painter.setClipPath(path)
+        painter.setOpacity(0.045)
+        marks = [
+            (0.12, 0.13, -18), (0.30, 0.23, 24), (0.72, 0.10, 12),
+            (0.88, 0.28, -22), (0.18, 0.48, 32), (0.82, 0.55, -14),
+            (0.40, 0.70, -28), (0.10, 0.82, 16), (0.66, 0.86, 22),
+        ]
+        for rx, ry, angle in marks:
+            painter.save()
+            painter.translate(self.width() * rx, self.height() * ry)
+            painter.rotate(angle)
+            painter.drawPixmap(-23, -23, self._pixmap)
+            painter.restore()
+
+
+class _UpdateSplashDialog(QDialog):
+    """Small restart window shown after the download has completed."""
+
+    ready = pyqtSignal()
+
+    def __init__(self, app, new_version):
+        super().__init__(None)
+        self._app = app
+        self._pct = 3
+        self._finished = False
+        self._light = _is_light_theme()
+        self.setWindowTitle(f"{APP_NAME} v{new_version}")
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setFixedSize(760, 560)
+
+        if self._light:
+            card_bg, text, muted = "#f3f4f6", "#17191d", "#7d848e"
+            track, chunk = "#dfe3e8", "#0b83d8"
+            badge_bg = "#eceef1"
+        else:
+            card_bg, text, muted = "#1d1f24", "#f1f3f5", "#aeb5bd"
+            track, chunk = "#30343b", "#36bdf7"
+            badge_bg = "#26292f"
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(22, 22, 22, 22)
+        card = _WatermarkFrame(LOGO_ICO, self._light)
+        card.setObjectName("splashCard")
+        outer.addWidget(card)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(64, 58, 64, 52)
+        lay.setSpacing(8)
+        lay.addStretch(1)
+
+        logo = QLabel()
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if LOGO_ICO and os.path.exists(LOGO_ICO):
+            logo.setPixmap(QIcon(LOGO_ICO).pixmap(72, 72))
+        lay.addWidget(logo)
+
+        name = QLabel(APP_NAME)
+        name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name.setStyleSheet(
+            f"color: {text}; font-size: 28px; font-weight: 700;"
+            "font-family: \"Microsoft YaHei UI\",\"Segoe UI\",sans-serif;")
+        lay.addWidget(name)
+
+        ver = QLabel(f"v{new_version}")
+        ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ver.setFixedHeight(28)
+        ver.setStyleSheet(
+            f"color: {muted}; background: {badge_bg}; border-radius: 4px;"
+            "padding: 3px 12px; font-size: 13px;")
+        ver_row = QHBoxLayout()
+        ver_row.addStretch()
+        ver_row.addWidget(ver)
+        ver_row.addStretch()
+        lay.addLayout(ver_row)
+        lay.addStretch(2)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100)
+        self._bar.setValue(self._pct)
+        self._bar.setTextVisible(False)
+        self._bar.setFixedHeight(9)
+        self._bar.setStyleSheet(
+            f"QProgressBar {{ background: {track}; border: none;"
+            f" border-radius: 4px; }}"
+            f"QProgressBar::chunk {{ background: {chunk};"
+            f" border-radius: 4px; }}")
+        lay.addWidget(self._bar)
+
+        self._status = QLabel()
+        self._status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status.setStyleSheet(
+            f"color: {muted}; font-size: 13px;"
+            "font-family: \"Microsoft YaHei UI\",\"Segoe UI\",sans-serif;")
+        lay.addWidget(self._status)
+        card.setStyleSheet(
+            "QFrame#splashCard {"
+            f" background-color: {card_bg}; border: 1px solid {badge_bg};"
+            " border-radius: 16px; }")
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(45)
+        self._update_status()
+
+    def _update_status(self):
+        if self._pct < 82:
+            text = tr("upd_preparing_status", pct=self._pct)
+        elif self._pct < 97:
+            text = tr("upd_replacing_status", pct=self._pct)
+        else:
+            text = tr("upd_finishing_status", pct=self._pct)
+        self._status.setText(text)
+        self._bar.setValue(self._pct)
+
+    def _tick(self):
+        if self._pct < 82:
+            self._pct = min(82, self._pct + 3)
+        elif self._pct < 97:
+            self._pct = min(97, self._pct + 2)
+        else:
+            self._pct += 1
+        self._update_status()
+        if self._pct >= 100:
+            self._timer.stop()
+            self._status.setText(tr("upd_restarting"))
+            QTimer.singleShot(420, self._finish)
+
+    def _finish(self):
+        self._finished = True
+        self.ready.emit()
+        self.accept()
+
+    def closeEvent(self, event):
+        if not self._finished:
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._center_on_app)
+
+    def _center_on_app(self):
+        host = self._app
+        try:
+            if host is not None and host.isVisible():
+                center = host.frameGeometry().center()
+            else:
+                center = QApplication.primaryScreen().availableGeometry().center()
+            self.move(center.x() - self.width() // 2,
+                      center.y() - self.height() // 2)
+        except Exception:
+            pass
 
 
 # ===========================================================================
@@ -1932,8 +2856,8 @@ class _CornerHandle(QWidget):
 # Custom Title Bar (frameless window)
 # ===========================================================================
 class _TitleBar(QWidget):
-    """Custom title bar with animated gradient and window control buttons."""
-    HEIGHT = 32
+    """Flat custom title bar with window control buttons."""
+    HEIGHT = 36
 
     def __init__(self, parent_window):
         super().__init__()
@@ -1945,15 +2869,14 @@ class _TitleBar(QWidget):
         self._shimmer_offset = 0.0
         self._shimmer_timer = QTimer(self)
         self._shimmer_timer.timeout.connect(self._tick_shimmer)
-        self._shimmer_timer.start(50)
 
     def _build(self):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 0, 0, 0)
         lay.setSpacing(3)
         self._light = _is_light_theme()
-        hover_bg = ("background: rgba(0,0,0,22);" if self._light
-                    else "background: rgba(255,255,255,25);")
+        hover_bg = f"background: {C['SURFACE3']};"
+        close_hover = f"background: {C['DANGER']};"
 
         def _btn_icon(ico, png):
             if self._light:
@@ -1975,14 +2898,16 @@ class _TitleBar(QWidget):
             lay.addWidget(ico_lbl)
         # Title
         self._title_lbl = QLabel(APP_NAME)
-        self._title_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px; background: transparent;")
+        self._title_lbl.setStyleSheet(
+            f"color: {C['TEXT']}; font-size: 12px; font-weight: 600;"
+            " background: transparent;")
         lay.addWidget(self._title_lbl)
         lay.addStretch()
         # Window buttons (icon-based)
         # 直角 + 铺满标题栏高度：关闭按钮贴满窗口右上角，消除圆角露出的缝隙。
         btn_style_base = (
             "border: none; border-radius: 0; padding: 0; margin: 0; "
-            "min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; "
+            "min-width: 36px; max-width: 36px; min-height: 36px; max-height: 36px; "
             "background: transparent;")
         ico_size = QSize(14, 14)
 
@@ -2017,7 +2942,7 @@ class _TitleBar(QWidget):
         self._close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._close_btn.clicked.connect(self._win.close)
         self._close_btn.enterEvent = lambda e: (self._close_btn.setStyleSheet(
-            btn_style_base + "background: #e04343;"), self.update())[1]
+            btn_style_base + close_hover), self.update())[1]
         self._close_btn.leaveEvent = lambda e: (self._close_btn.setStyleSheet(
             btn_style_base + "background: transparent;"), self.update())[1]
         lay.addWidget(self._close_btn)
@@ -2075,8 +3000,8 @@ class _TitleBar(QWidget):
         self._shimmer_timer.stop()
 
     def resume_shimmer(self):
-        if not self._shimmer_timer.isActive():
-            self._shimmer_timer.start(50)
+        # Flat title bar: no continuous repaint.
+        self._shimmer_timer.stop()
 
     def _tick_shimmer(self):
         self._shimmer_offset += 0.02
@@ -2088,34 +3013,8 @@ class _TitleBar(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        light = _is_light_theme()
-        # Vertical gradient background (theme aware)
-        vgrad = QLinearGradient(0, 0, 0, h)
-        if light:
-            vgrad.setColorAt(0.0, QColor(250, 251, 254, 255))
-            vgrad.setColorAt(1.0, QColor(236, 239, 245, 255))
-        else:
-            vgrad.setColorAt(0.0, QColor(28, 30, 38, 255))
-            vgrad.setColorAt(1.0, QColor(16, 17, 22, 255))
-        p.fillRect(self.rect(), vgrad)
-        # Moving shimmer with subtle blue-purple tint
-        x = int(self._shimmer_offset * w * 2 - w * 0.4)
-        sgrad = QLinearGradient(x, 0, x + w // 3, 0)
-        if light:
-            sgrad.setColorAt(0.0, QColor(80, 110, 255, 0))
-            sgrad.setColorAt(0.5, QColor(90, 120, 255, 26))
-            sgrad.setColorAt(1.0, QColor(140, 110, 255, 0))
-        else:
-            sgrad.setColorAt(0.0, QColor(120, 140, 255, 0))
-            sgrad.setColorAt(0.5, QColor(120, 140, 255, 14))
-            sgrad.setColorAt(1.0, QColor(180, 120, 255, 0))
-        p.fillRect(self.rect(), sgrad)
-        # Bottom accent line with shifting hue
-        hue = (self._shimmer_offset * 360) % 360
-        import colorsys
-        r, g, b = colorsys.hsv_to_rgb(hue / 360.0, 0.5, 0.7)
-        accent = QColor(int(r * 255), int(g * 255), int(b * 255), 60)
-        p.setPen(QPen(accent, 1))
+        p.fillRect(self.rect(), QColor(C['SURFACE']))
+        p.setPen(QPen(QColor(C['BORDER']), 1))
         p.drawLine(0, h - 1, w, h - 1)
         p.end()
 
@@ -2294,11 +3193,11 @@ class DesktopClipboardWidget(QWidget):
     def _apply_theme(self):
         theme = load_config().get("theme", "dark")
         if theme == "light":
-            card_bg, txt, sec, border = "rgba(255,255,255,250)", "#1f2329", "#6b7280", "rgba(0,0,0,40)"
-            hover = "rgba(0,0,0,14)"
+            card_bg, txt, sec = "rgba(255,255,255,250)", C['TEXT'], C['TEXT_SEC']
+            border, hover = C['BORDER_LT'], "rgba(0,0,0,14)"
         else:
-            card_bg, txt, sec, border = "rgba(24,26,33,250)", "#e8eaed", "#9aa0a6", "rgba(255,255,255,34)"
-            hover = "rgba(255,255,255,22)"
+            card_bg, txt, sec = "rgba(29,31,36,248)", C['TEXT'], C['TEXT_SEC']
+            border, hover = C['BORDER_LT'], "rgba(255,255,255,18)"
         self.setStyleSheet(f"""
             #dwCard {{ background: {card_bg}; border: 1px solid {border}; border-radius: 10px; }}
             QLabel {{ background: transparent; color: {txt};
@@ -2634,9 +3533,9 @@ class _PopupPanel(QFrame):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
-        path.addRoundedRect(r, 6.0, 6.0)
-        p.fillPath(path, QColor(C['SURFACE2']))
-        p.setPen(QPen(QColor(C['BORDER']), 1.0))
+        path.addRoundedRect(r, 10.0, 10.0)
+        p.fillPath(path, QColor(C['SURFACE']))
+        p.setPen(QPen(QColor(C['BORDER_LT']), 1.0))
         p.drawPath(path)
 
 
@@ -2654,7 +3553,7 @@ class _SortMenuButton(QPushButton):
         self.setMinimumHeight(30)
         self.setStyleSheet(f"""
             QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
-                border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 6px 10px;
+                border: 1px solid transparent; border-radius: 8px; padding: 7px 11px;
                 font-size: 12px; text-align: left; }}
             QPushButton:hover {{ border-color: {C['BORDER_LT']}; color: {C['TEXT']}; }}
         """)
@@ -2761,6 +3660,7 @@ class YouBoardApp(QMainWindow):
         self._bg_pixmap = None
         self._bg_resize_timer = None
         self._image_loader = None
+        self._pending_image = None
         self._fade_anim = None
         self._resize_edge = 0
         self._resize_start_geo = None
@@ -2804,10 +3704,24 @@ class YouBoardApp(QMainWindow):
         self._poll_timer.timeout.connect(self._poll_monitor)
         self._poll_timer.start(120)
         # 文件失效即时检测：源文件删除后当场置灰，无需手动刷新
-        self._file_sig = None
+        self._file_missing = {}
+        self._file_status_worker = None
         self._file_check_timer = QTimer(self)
         self._file_check_timer.timeout.connect(self._check_files_changed)
         self._file_check_timer.start(2000)
+        QTimer.singleShot(500, self._check_files_changed)
+        # 图片/物化文件缓存回收：启动后执行一次，之后每 10 分钟检查
+        self._cache_cleanup_worker = None
+        self._cache_cleanup_pending = False
+        self._cache_cleanup_timer = QTimer(self)
+        self._cache_cleanup_timer.timeout.connect(self._schedule_cache_cleanup)
+        self._cache_cleanup_timer.start(10 * 60 * 1000)
+        self._retention_deadline_timer = QTimer(self)
+        self._retention_deadline_timer.setSingleShot(True)
+        self._retention_deadline_timer.timeout.connect(
+            self._on_retention_deadline)
+        QTimer.singleShot(3000, self._schedule_cache_cleanup)
+        QTimer.singleShot(1000, self._schedule_retention_deadline)
         self._animate_dot()
         # 桌面小组件（可选功能，默认开启；延迟创建不影响启动速度）
         self._desk_widget = None
@@ -2824,7 +3738,9 @@ class YouBoardApp(QMainWindow):
     # ------------------------------------------------------------------
     def _build_ui(self):
         central = QWidget()
-        central.setStyleSheet("background: transparent;")
+        central.setObjectName("rootSurface")
+        central.setStyleSheet(
+            "QWidget#rootSurface { background: transparent; }")
         self.setCentralWidget(central)
         self._bg_label = QLabel(central)
         self._bg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2841,16 +3757,27 @@ class YouBoardApp(QMainWindow):
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setHandleWidth(6)
-        self._splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
+        self._splitter.setStyleSheet(
+            f"QSplitter {{ background: {C['SURFACE']}; }}"
+            f"QSplitter::handle {{ background: {C['SURFACE']}; }}")
         root.addWidget(self._splitter, 1)
 
         self._tabs = QTabWidget()
+        self._tabs.setAutoFillBackground(True)
+        _tabs_pal = self._tabs.palette()
+        _tabs_pal.setColor(QPalette.ColorRole.Window, QColor(C['SURFACE']))
+        self._tabs.setPalette(_tabs_pal)
+        self._tabs.setStyleSheet(
+            f"QTabWidget {{ background: {C['SURFACE']}; }}"
+            f"QTabBar {{ background: {C['SURFACE']}; }}")
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self._splitter.addWidget(self._tabs)
 
         right_split = QSplitter(Qt.Orientation.Vertical)
         right_split.setHandleWidth(6)
-        right_split.setStyleSheet("QSplitter::handle { background: transparent; }")
+        right_split.setStyleSheet(
+            f"QSplitter {{ background: {C['SURFACE']}; }}"
+            f"QSplitter::handle {{ background: {C['SURFACE']}; }}")
         self._splitter.addWidget(right_split)
         self._build_preview_panel(right_split)
         self._build_history_panel(right_split)
@@ -2886,8 +3813,9 @@ class YouBoardApp(QMainWindow):
         header = QFrame()
         header.setStyleSheet(f"""
             QFrame {{
-                background: {C['HEADER_ALPHA']};
+                background: {C['SURFACE']};
                 border: none;
+                border-bottom: 1px solid {C['BORDER']};
                 border-radius: 0;
             }}
             QLabel {{
@@ -3076,6 +4004,7 @@ class YouBoardApp(QMainWindow):
     def showEvent(self, event):
         super().showEvent(event)
         self._resume_motion()
+        QTimer.singleShot(250, self._check_files_changed)
 
     def hideEvent(self, event):
         self._pause_motion()
@@ -3347,28 +4276,41 @@ class YouBoardApp(QMainWindow):
 
     def _build_preview_panel(self, parent_split):
         pf = QFrame()
-        pf.setStyleSheet("background: transparent; border: none; border-radius: 8px;")
+        pf.setStyleSheet("background: transparent; border: none;")
+        pf.setFrameShape(QFrame.Shape.NoFrame)
         pl = QVBoxLayout(pf)
         pl.setContentsMargins(8, 6, 8, 6)
         pl.setSpacing(4)
         title = QLabel(tr("panel_preview"))
         title.setStyleSheet(f"color: {C['ACCENT']}; font-weight: bold; font-size: 12px;")
         pl.addWidget(title)
+
+        # 标题留在边框外；只给真正的预览内容区域绘制边界。
+        preview_box = QFrame()
+        preview_box.setStyleSheet(
+            f"background: {C['SURFACE']}; border: 1px solid {C['BORDER_LT']};"
+            " border-radius: 10px;")
+        box_lay = QVBoxLayout(preview_box)
+        box_lay.setContentsMargins(4, 4, 4, 4)
+        box_lay.setSpacing(0)
         self._preview_scroll = QScrollArea()
         self._preview_scroll.setWidgetResizable(True)
         self._preview_inner = QWidget()
-        self._preview_inner.setStyleSheet(f"background: {C['PANEL_ALPHA2']};")
+        self._preview_inner.setStyleSheet("background: transparent;")
         self._preview_layout = QVBoxLayout(self._preview_inner)
         self._preview_layout.setContentsMargins(4, 4, 4, 4)
         self._preview_layout.setSpacing(4)
         self._preview_scroll.setWidget(self._preview_inner)
-        pl.addWidget(self._preview_scroll, 1)
+        box_lay.addWidget(self._preview_scroll, 1)
+        pl.addWidget(preview_box, 1)
         self._show_preview_placeholder()
         parent_split.addWidget(pf)
 
     def _build_history_panel(self, parent_split):
         hf = QFrame()
-        hf.setStyleSheet("background: transparent; border: none; border-radius: 8px;")
+        hf.setStyleSheet(
+            f"background: {C['SURFACE']}; border: 1px solid {C['BORDER_LT']};"
+            " border-radius: 10px;")
         hl = QVBoxLayout(hf)
         hl.setContentsMargins(8, 6, 8, 6)
         hl.setSpacing(4)
@@ -3382,7 +4324,7 @@ class YouBoardApp(QMainWindow):
         title.setStyleSheet(f"color: {C['ACCENT']}; font-weight: bold; font-size: 12px;")
         hl.addWidget(title)
         self._hist_list = QListWidget()
-        self._hist_list.setStyleSheet(f"QListWidget {{ background: {C['PANEL_ALPHA2']}; }}")
+        self._hist_list.setStyleSheet("QListWidget { background: transparent; }")
         self._hist_list.setAlternatingRowColors(False)
         self._hist_list.setSpacing(2)
         self._hist_list.doubleClicked.connect(lambda: self._restore_history())
@@ -3411,7 +4353,9 @@ class YouBoardApp(QMainWindow):
     def _build_statusbar(self, root):
         bar = QFrame()
         bar.setFixedHeight(34)
-        bar.setStyleSheet("background: transparent; border: none;")
+        bar.setStyleSheet(
+            f"background: {C['SURFACE']};"
+            f" border-top: 1px solid {C['BORDER']};")
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(12, 0, 12, 0)
         self._hint_lbl = QLabel()
@@ -3642,6 +4586,8 @@ class YouBoardApp(QMainWindow):
             except ValueError:
                 time_str = ts[:19] if len(ts) >= 19 else ts
             is_pin = entry["hash"] in self._pinned_hashes
+            missing = (etype == "file" and
+                       self._file_missing.get(entry.get("hash", ""), False))
             status = "\U0001f4cc" if is_pin else ""
             if etype == "text":
                 content = entry.get("content", "")
@@ -3666,13 +4612,12 @@ class YouBoardApp(QMainWindow):
                 fp = "  |  ".join(os.path.basename(p) for p in paths[:6])
                 if len(paths) > 6:
                     fp += f"  …(+{len(paths) - 6})"
-                if self.store.file_entry_missing(entry):
+                if missing:
                     fp += f"  {tr('file_missing')}"
                 vals = [str(i + 1), time_str, status,
                         str(entry.get("file_count", len(paths))),
                         _extract_extensions(paths),
                         fmt_size(total_sz) if total_sz > 0 else "?", fp]
-            missing = (etype == "file") and self.store.file_entry_missing(entry)
             for col, val in enumerate(vals):
                 item = QTableWidgetItem(val)
                 if etype == "text" and col == 3:
@@ -3706,6 +4651,7 @@ class YouBoardApp(QMainWindow):
         self._refresh_tab("file")
         self._refresh_history_list()
         self._update_desk_widget()
+        self._schedule_cache_cleanup()
 
     def _missing_icon(self):
         if not hasattr(self, "_jinggao_icon"):
@@ -3713,16 +4659,91 @@ class YouBoardApp(QMainWindow):
         return self._jinggao_icon
 
     def _check_files_changed(self):
-        """定时检测文件失效状态，源文件被删除时当场刷新（无需手动 F5）。"""
+        """后台检测文件失效状态，源文件被删除时当场刷新（无需手动 F5）。"""
+        if not self.isVisible() or self.isMinimized():
+            return
+        worker = getattr(self, "_file_status_worker", None)
+        if worker is not None and worker.isRunning():
+            return
         try:
             entries = self.store.get_by_type("file")
-            sig = tuple(self.store.file_entry_missing(e) for e in entries)
         except Exception:
             return
-        if getattr(self, "_file_sig", None) != sig:
-            self._file_sig = sig
-            self._refresh_tab("file")
+        worker = _FileStatusWorker(entries, self)
+        self._file_status_worker = worker
+        worker.done.connect(self._on_file_status_ready)
+        worker.finished.connect(
+            lambda current=worker: self._on_file_status_worker_finished(current))
+        worker.start()
+
+    def _on_file_status_ready(self, missing):
+        if missing == getattr(self, "_file_missing", None):
+            return
+        self._file_missing = missing or {}
+        if self.isVisible() and not self.isMinimized():
+            if self._active_type == "file":
+                self._refresh_tab("file")
             self._update_desk_widget()
+
+    def _on_file_status_worker_finished(self, worker):
+        if worker is getattr(self, "_file_status_worker", None):
+            self._file_status_worker = None
+        worker.deleteLater()
+
+    def _schedule_cache_cleanup(self):
+        """在后台回收不再被历史或快照引用的图片与文件缓存。"""
+        worker = getattr(self, "_cache_cleanup_worker", None)
+        if worker is not None and worker.isRunning():
+            self._cache_cleanup_pending = True
+            return
+        worker = _CacheCleanupWorker(self.store, self)
+        self._cache_cleanup_worker = worker
+        worker.done.connect(self._on_cache_cleanup_done)
+        worker.finished.connect(
+            lambda current=worker: self._on_cache_cleanup_finished(current))
+        worker.start()
+
+    def _on_cache_cleanup_done(self, removed_entries, removed_files, freed):
+        # 保留策略删除历史后静默刷新列表；缓存文件回收不改变界面。
+        if removed_entries and self.isVisible() and not self.isMinimized():
+            for etype in ("text", "image", "file", "url"):
+                self._refresh_tab(etype)
+            self._refresh_history_list()
+            self._update_desk_widget()
+
+    def _on_cache_cleanup_finished(self, worker):
+        if worker is getattr(self, "_cache_cleanup_worker", None):
+            self._cache_cleanup_worker = None
+        worker.deleteLater()
+        if getattr(self, "_cache_cleanup_pending", False):
+            self._cache_cleanup_pending = False
+            QTimer.singleShot(300, self._schedule_cache_cleanup)
+
+    def _apply_retention_policy(self):
+        """保留策略变化后立即执行一次，并安排固定到期时间。"""
+        self._schedule_cache_cleanup()
+        self._schedule_retention_deadline()
+
+    def _schedule_retention_deadline(self):
+        """为“指定时间清空”安排一次性触发，长周期自动分段续排。"""
+        timer = getattr(self, "_retention_deadline_timer", None)
+        if timer is None:
+            return
+        policy = load_config().get("history_retention") or {}
+        if policy.get("mode") != "expire":
+            timer.stop()
+            return
+        expire_at = ClipboardStore._parse_time(policy.get("expire_at", ""))
+        if expire_at is None:
+            timer.stop()
+            return
+        delay_ms = int(max(0.0, (expire_at - datetime.now()).total_seconds())
+                       * 1000)
+        timer.start(min(delay_ms, 24 * 60 * 60 * 1000))
+
+    def _on_retention_deadline(self):
+        self._schedule_cache_cleanup()
+        self._schedule_retention_deadline()
 
     def _update_tab_badge(self, etype):
         n = self.store.count(etype)
@@ -3810,6 +4831,7 @@ class YouBoardApp(QMainWindow):
         self.store.clear_snapshots()
         self._refresh_history_list()
         self._set_status(tr("st_history_cleared"), "ok")
+        self._schedule_cache_cleanup()
 
     # ------------------------------------------------------------------
     # Tab switching / shortcuts / status bar
@@ -3868,6 +4890,9 @@ class YouBoardApp(QMainWindow):
     # Preview panel
     # ------------------------------------------------------------------
     def _clear_preview(self):
+        self._pending_image = None
+        self._cancel_image_loader()
+
         def _clear_layout(layout):
             while layout.count():
                 item = layout.takeAt(0)
@@ -4018,9 +5043,7 @@ class YouBoardApp(QMainWindow):
                         360, 300, Qt.AspectRatioMode.KeepAspectRatio,
                         Qt.TransformationMode.SmoothTransformation))
             if HAS_PIL:
-                self._image_loader = ImageLoader(img_path, gen)
-                self._image_loader.finished.connect(self._on_image_loaded)
-                self._image_loader.start()
+                self._queue_image_load(img_path, gen)
         info_row = QHBoxLayout()
         for text, bg, fg in [
             (f" {entry.get('width', '?')} × {entry.get('height', '?')} ", C['ACCENT_DIM'], C['ACCENT']),
@@ -4035,6 +5058,42 @@ class YouBoardApp(QMainWindow):
         hint.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
         info_row.addWidget(hint)
         self._preview_layout.addLayout(info_row)
+
+    def _cancel_image_loader(self):
+        """取消仍在解码的旧图片，避免快速切换多图时线程堆积。"""
+        loader = getattr(self, "_image_loader", None)
+        if loader is not None and loader.isRunning():
+            loader.cancel()
+
+    def _queue_image_load(self, path, gen):
+        """最多保留一个图片解码任务，始终优先最新选择。"""
+        self._pending_image = (path, gen)
+        loader = getattr(self, "_image_loader", None)
+        if loader is not None and loader.isRunning():
+            loader.cancel()
+            return
+        self._start_pending_image_load()
+
+    def _start_pending_image_load(self):
+        pending = getattr(self, "_pending_image", None)
+        self._pending_image = None
+        if not pending:
+            return
+        path, gen = pending
+        if gen != self._preview_gen:
+            return
+        loader = ImageLoader(path, gen)
+        self._image_loader = loader
+        loader.loaded.connect(self._on_image_loaded)
+        loader.finished.connect(
+            lambda current=loader: self._on_image_loader_finished(current))
+        loader.start()
+
+    def _on_image_loader_finished(self, loader):
+        if loader is getattr(self, "_image_loader", None):
+            self._image_loader = None
+        loader.deleteLater()
+        self._start_pending_image_load()
 
     def _on_image_loaded(self, gen, path, img):
         if gen != self._preview_gen or path != self._cur_image_path:
@@ -4305,6 +5364,7 @@ class YouBoardApp(QMainWindow):
         self._update_preview()
         self._refresh_history_list(animate=True)
         self._set_status(status_msg, "ok")
+        self._schedule_cache_cleanup()
 
     # ---- Clear operations ----
     def _clear_type(self):
@@ -4351,6 +5411,7 @@ class YouBoardApp(QMainWindow):
         self.store.clear_unpinned()
         self._refresh_all()
         self._set_status(tr("st_cleared_unpinned"), "ok")
+        self._schedule_cache_cleanup()
 
     def _clear_all(self):
         total = self.store.count()
@@ -4366,6 +5427,7 @@ class YouBoardApp(QMainWindow):
         self.store.clear()
         self._refresh_all()
         self._set_status(tr("st_cleared_all"), "ok")
+        self._schedule_cache_cleanup()
 
     # ---- Export / copy paths ----
     def _export_selected(self):
@@ -4617,6 +5679,9 @@ class YouBoardApp(QMainWindow):
 
     def closeEvent(self, event):
         """X = quit the app."""
+        self._pending_image = None
+        self._cancel_image_loader()
+        self._wait_aux_workers()
         self._save_window_geometry()
         self._end_session()  # 临时会话：退出即清空本次记录
         self._unregister_hotkey()
@@ -4633,6 +5698,9 @@ class YouBoardApp(QMainWindow):
         event.accept()
 
     def _real_quit(self):
+        self._pending_image = None
+        self._cancel_image_loader()
+        self._wait_aux_workers()
         self._save_window_geometry()
         self._end_session()  # 临时会话：退出即清空本次记录
         if hasattr(self, '_unregister_hotkey'):
@@ -4647,6 +5715,13 @@ class YouBoardApp(QMainWindow):
         if hasattr(self, '_tray') and self._tray:
             self._tray.hide()
         QApplication.quit()
+
+    def _wait_aux_workers(self):
+        """等待短时后台任务收尾，避免退出时销毁运行中的 QThread。"""
+        for attr in ("_file_status_worker", "_cache_cleanup_worker"):
+            worker = getattr(self, attr, None)
+            if worker is not None and worker.isRunning():
+                worker.wait(1200)
 
     def _save_window_geometry(self):
         """退出/重启前保存主窗口位置、大小与最大化状态，保证下次启动原样恢复。"""
@@ -5330,6 +6405,77 @@ class HotkeyCapture(QPushButton):
         super().focusOutEvent(event)
 
 
+class _DialogHeader(QWidget):
+    """Flat draggable header used by secondary dialogs."""
+
+    HEIGHT = 40
+
+    def __init__(self, dialog, title):
+        super().__init__(dialog)
+        self._dialog = dialog
+        self._drag_pos = None
+        self.setObjectName("dialogHeader")
+        self.setFixedHeight(self.HEIGHT)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 0, 8, 0)
+        lay.setSpacing(8)
+        if LOGO_ICO and os.path.exists(LOGO_ICO):
+            icon = QLabel()
+            icon.setFixedSize(20, 20)
+            icon.setPixmap(QIcon(LOGO_ICO).pixmap(18, 18))
+            lay.addWidget(icon)
+        label = QLabel(title)
+        label.setObjectName("dialogTitle")
+        lay.addWidget(label)
+        lay.addStretch()
+        self._close_btn = QPushButton("✕")
+        self._close_btn.setObjectName("dialogClose")
+        self._close_btn.setFixedSize(30, 30)
+        self._close_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._close_btn.clicked.connect(dialog.close)
+        lay.addWidget(self._close_btn)
+        self.setStyleSheet(f"""
+            QWidget#dialogHeader {{ background: {C['SURFACE']};
+                border-bottom: 1px solid {C['BORDER']}; }}
+            QLabel {{ background: transparent; color: {C['TEXT']}; }}
+            QLabel#dialogTitle {{ font-size: 12px; font-weight: 600; }}
+            QPushButton#dialogClose {{ background: transparent; color: {C['TEXT_SEC']};
+                border: none; border-radius: 6px; padding: 0; font-size: 13px; }}
+            QPushButton#dialogClose:hover {{ background: {C['DANGER']}; color: #ffffff; }}
+        """)
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        pos = event.position().toPoint()
+        if self._close_btn.geometry().contains(pos):
+            event.ignore()
+            return
+        handle = self._dialog.windowHandle()
+        if handle is not None and handle.startSystemMove():
+            event.accept()
+            return
+        self._drag_pos = (event.globalPosition().toPoint() -
+                          self._dialog.frameGeometry().topLeft())
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self._dialog.move(event.globalPosition().toPoint() - self._drag_pos)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+
+def _make_frameless_dialog(dialog, title):
+    """Apply the shared flat dialog chrome and return its custom header."""
+    dialog.setWindowTitle(title)
+    dialog.setWindowFlags(
+        Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+    return _DialogHeader(dialog, title)
+
+
 # ===========================================================================
 # Settings Dialog
 # ===========================================================================
@@ -5338,9 +6484,9 @@ class _HotkeyDialog(QDialog):
 
     def __init__(self, parent, values):
         super().__init__(parent)
-        self.setWindowTitle(tr("set_hotkeys_title"))
+        header = _make_frameless_dialog(self, tr("set_hotkeys_title"))
         self.setModal(True)
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(520 if LANG == "en" else 440)
         self._values = dict(values)
         self._rows = {}
         self.setStyleSheet(f"""
@@ -5355,7 +6501,14 @@ class _HotkeyDialog(QDialog):
             QPushButton[cssClass="accent"]:hover {{ background: {C['ACCENT_HV']}; }}
         """)
 
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(header)
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(20, 16, 20, 16)
+        outer.addWidget(content, 1)
         self._add_row(lay, "hotkey", tr("set_hotkey_title"))
         lay.addWidget(self._make_sep())
         for key in ("hk_copy", "hk_delete", "hk_pin",
@@ -5398,10 +6551,17 @@ class _HotkeyDialog(QDialog):
 
     def _change(self, key, cur_lbl):
         dlg = QDialog(self)
-        dlg.setWindowTitle(tr("hk_dialog_title"))
+        dialog_header = _make_frameless_dialog(dlg, tr("hk_dialog_title"))
         dlg.setModal(True)
         dlg.setMinimumWidth(340)
-        l = QVBoxLayout(dlg)
+        outer = QVBoxLayout(dlg)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(dialog_header)
+        body = QWidget()
+        l = QVBoxLayout(body)
+        l.setContentsMargins(20, 16, 20, 16)
+        outer.addWidget(body, 1)
         hint = QLabel(tr("hk_dialog_hint"))
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px;")
@@ -5537,9 +6697,8 @@ class PhoneTransferDialog(QDialog):
         self._qr_url = None
         self._fw_done = False
         self._server_was_running = False
-        self.setWindowTitle(tr("phone_title"))
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
-        self.setFixedSize(420, 740)
+        header = _make_frameless_dialog(self, tr("phone_title"))
+        self.setFixedSize(440 if LANG == "en" else 420, 760)
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
         self.setStyleSheet(f"""
@@ -5547,10 +6706,10 @@ class PhoneTransferDialog(QDialog):
             QLabel {{ background: transparent; color: {C['TEXT']}; }}
             QLabel#muted {{ color: {C['TEXT_MUTED']}; font-size: 11px; }}
             QLabel#url {{ color: {C['ACCENT']}; font-size: 11px; font-family: Consolas; }}
-            QComboBox {{ background: {C['SURFACE2']}; color: {C['TEXT']};
-                border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 4px 8px; font-size: 12px; }}
+            QComboBox {{ background: {C['INPUT_BG']}; color: {C['TEXT']};
+                border: 1px solid {C['BORDER']}; border-radius: 8px; padding: 6px 9px; font-size: 12px; }}
             QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
-                border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 6px 14px; font-size: 12px; }}
+                border: 1px solid transparent; border-radius: 8px; padding: 7px 14px; font-size: 12px; }}
             QPushButton:hover {{ background: {C['SURFACE3']}; color: {C['TEXT']}; }}
             QPushButton[cssClass="accent"] {{ background: {C['ACCENT']}; color: #fff; border: none; font-weight: bold; }}
             QPushButton[cssClass="accent"]:hover {{ background: {C['ACCENT_HV']}; }}
@@ -5571,9 +6730,15 @@ class PhoneTransferDialog(QDialog):
         self._server_was_running = self._server.running
         self._server.start()
 
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(header)
+        body = QWidget()
+        root = QVBoxLayout(body)
         root.setContentsMargins(20, 18, 20, 18)
         root.setSpacing(10)
+        outer.addWidget(body, 1)
 
         title = QLabel(tr("phone_title"))
         title.setStyleSheet(f"color: {C['TEXT']}; font-size: 16px; font-weight: bold;")
@@ -5583,7 +6748,7 @@ class PhoneTransferDialog(QDialog):
         self._qr_lbl.setFixedSize(300, 300)
         self._qr_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._qr_lbl.setStyleSheet(
-            "background: #ffffff; border-radius: 12px; border: 1px solid #2a3a5f; "
+            "background: #ffffff; border-radius: 12px; border: none; "
             "color: #6b7f9f; font-size: 13px;")
         root.addWidget(self._qr_lbl, 0, Qt.AlignmentFlag.AlignHCenter)
 
@@ -5726,23 +6891,36 @@ class PhoneTransferDialog(QDialog):
         """尽力自动放行 Windows 防火墙（仅打包版；后台线程执行，不阻塞界面）。"""
         if not IS_WIN or not getattr(sys, "frozen", False):
             return
+        # 普通权限运行时 netsh 无法改防火墙，且部分安全策略会弹出启动错误；
+        # 只在明确具备管理员权限时尝试，其他情况交给 Windows 首次监听提示。
+        try:
+            if not ctypes.windll.shell32.IsUserAnAdmin():
+                return
+        except Exception:
+            return
+        netsh = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                             "System32", "netsh.exe")
+        if not os.path.exists(netsh):
+            return
 
         def _work():
             try:
                 exe = os.path.abspath(sys.executable)
                 rule = "YouBoard Phone Transfer"
                 out = subprocess.run(
-                    ["netsh", "advfirewall", "firewall", "show", "rule",
+                    [netsh, "advfirewall", "firewall", "show", "rule",
                      "name=" + rule],
-                    capture_output=True, text=True, timeout=6)
+                    capture_output=True, text=True, timeout=6,
+                    creationflags=0x08000000)
                 if rule in (out.stdout or ""):
                     return
                 subprocess.run(
-                    ["netsh", "advfirewall", "firewall", "add", "rule",
+                    [netsh, "advfirewall", "firewall", "add", "rule",
                      "name=" + rule, "dir=in", "action=allow",
                      "program=" + exe, "enable=yes",
                      "profile=any"],
-                    capture_output=True, text=True, timeout=6)
+                    capture_output=True, text=True, timeout=6,
+                    creationflags=0x08000000)
             except Exception:
                 pass
 
@@ -5826,10 +7004,10 @@ class SettingsDialog(QDialog):
     def __init__(self, app):
         super().__init__(app)
         self.app = app
-        self.setWindowTitle(tr("settings_title"))
-        self.resize(480, 620)
-        self.setMinimumSize(420, 500)
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
+        header = _make_frameless_dialog(self, tr("settings_title"))
+        self.resize(620 if LANG == "en" else 500, 680)
+        self.setMinimumSize(560 if LANG == "en" else 460, 560)
+        self.setSizeGripEnabled(True)
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
 
@@ -5837,10 +7015,13 @@ class SettingsDialog(QDialog):
         self._lang_sel = LANG if LANG in STRINGS else "zh"
         self._theme_sel = cfg.get("theme", "dark")
         self._bg_path = cfg.get("bg_image", "")
+        self._retention_policy = (cfg.get("history_retention")
+                                  or {"mode": "forever"})
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        root.addWidget(header)
         self.setStyleSheet(f"""
             QDialog {{ background-color: {C['BG']}; }}
             QScrollArea {{ background: transparent; border: none; }}
@@ -5944,6 +7125,20 @@ class SettingsDialog(QDialog):
         ss_desc.setWordWrap(True)
         self._lay.addWidget(ss_desc)
 
+        # History retention card
+        self._card(tr("set_retention"))
+        ret_row = QHBoxLayout()
+        self._retention_lbl = QLabel(_retention_summary(self._retention_policy))
+        self._retention_lbl.setStyleSheet(
+            f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        self._retention_lbl.setWordWrap(True)
+        ret_row.addWidget(self._retention_lbl, 1)
+        ret_btn = QPushButton(tr("set_retention_open"))
+        ret_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        ret_btn.clicked.connect(self._open_retention)
+        ret_row.addWidget(ret_btn)
+        self._lay.addLayout(ret_row)
+
         # Theme card
         self._card(tr("set_theme"))
         theme_row = QHBoxLayout()
@@ -5967,19 +7162,22 @@ class SettingsDialog(QDialog):
         self._bg_lbl = QLabel(self._bg_display_name())
         self._bg_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
         self._bg_lbl.setWordWrap(True)
-        self._bg_lbl.setMaximumWidth(320)
         bg_row.addWidget(self._bg_lbl, 1)
+        self._lay.addLayout(bg_row)
+
+        bg_btn_row = QHBoxLayout()
         sel_btn = QPushButton(tr("set_bg_select"))
         sel_btn.clicked.connect(self._select_bg)
-        bg_row.addWidget(sel_btn)
+        bg_btn_row.addWidget(sel_btn)
         clr_btn = QPushButton(tr("set_bg_clear"))
         clr_btn.clicked.connect(self._clear_bg)
-        bg_row.addWidget(clr_btn)
+        bg_btn_row.addWidget(clr_btn)
         wall_btn = QPushButton(tr("set_bg_wallpaper"))
         wall_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         wall_btn.clicked.connect(self._use_wallpaper)
-        bg_row.addWidget(wall_btn)
-        self._lay.addLayout(bg_row)
+        bg_btn_row.addWidget(wall_btn)
+        bg_btn_row.addStretch()
+        self._lay.addLayout(bg_btn_row)
 
         # 历史壁纸：横向缩略图，点击可再次使用
         hist_lbl = QLabel(tr("set_bg_history"))
@@ -6061,6 +7259,13 @@ class SettingsDialog(QDialog):
         footer.addWidget(save_btn)
         root.addLayout(footer)
 
+        # 设置窗口是无边框窗口，补回四边和四角的拖拽缩放热区。
+        self._resize_edges = [
+            _EdgeHandle(self, edge) for edge in ("left", "right", "top", "bottom")]
+        self._resize_corners = [
+            _CornerHandle(self, corner) for corner in ("tl", "tr", "bl", "br")]
+        QTimer.singleShot(0, self._place_resize_handles)
+
         # 设置窗口打开期间兜底刷新：即使主窗口轮询受阻，复制的新内容也会实时显示
         self._live_refresh_timer = QTimer(self)
         self._live_refresh_timer.timeout.connect(self._live_refresh)
@@ -6069,6 +7274,36 @@ class SettingsDialog(QDialog):
         self._cursor_timer = QTimer(self)
         self._cursor_timer.timeout.connect(self._force_cursor_refresh)
         self._cursor_timer.start(120)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_resize_handles()
+
+    def _place_resize_handles(self):
+        w, h = self.width(), self.height()
+        t = _EdgeHandle.THICKNESS
+        if getattr(self, "_resize_edges", None):
+            left, right, top, bottom = self._resize_edges
+            left.setGeometry(0, t, t, max(0, h - 2 * t))
+            right.setGeometry(max(0, w - t), t, t, max(0, h - 2 * t))
+            top.setGeometry(t, 0, max(0, w - 2 * t), t)
+            bottom.setGeometry(t, max(0, h - t), max(0, w - 2 * t), t)
+            for handle in self._resize_edges:
+                handle.show()
+                handle.raise_()
+        if getattr(self, "_resize_corners", None):
+            s = _CornerHandle.SIZE
+            positions = {
+                "tl": (0, 0),
+                "tr": (max(0, w - s), 0),
+                "bl": (0, max(0, h - s)),
+                "br": (max(0, w - s), max(0, h - s)),
+            }
+            for handle in self._resize_corners:
+                x, y = positions[handle._corner]
+                handle.setGeometry(x, y, s, s)
+                handle.show()
+                handle.raise_()
 
     def _refresh_button_cursors(self):
         """滚动区按钮手型光标刷新：修复 Qt 滚动区在鼠标静止时
@@ -6294,6 +7529,19 @@ class SettingsDialog(QDialog):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._hotkey_values = dlg.values()
 
+    def _open_retention(self):
+        """打开紧凑的历史保留策略卡片并立即保存策略。"""
+        dlg = _RetentionDialog(self, self.app, self._retention_policy)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._retention_policy = dlg.policy()
+        cfg = load_config()
+        cfg["history_retention"] = self._retention_policy
+        save_config(cfg)
+        self._retention_lbl.setText(
+            _retention_summary(self._retention_policy))
+        self.app._apply_retention_policy()
+
     def _save(self):
         try:
             cfg = load_config()
@@ -6339,31 +7587,6 @@ class SettingsDialog(QDialog):
         import urllib.request
         import json as _json
 
-        def _short_release_notes(body):
-            """从 GitHub Release 正文提取最多 2 句更新说明。"""
-            if not body:
-                return ""
-            import re as _re
-            lines = []
-            for ln in body.splitlines():
-                s = ln.strip()
-                if not s:
-                    continue
-                if s.startswith(("#", ">", "!")) or _re.match(r"^[-*+]\s", s):
-                    continue
-                lines.append(s)
-                if len(lines) >= 2:
-                    break
-            note = " ".join(lines)
-            note = _re.sub(r"[*_`#>{}\[\]]", "", note)
-            note = _re.sub(r"\s+", " ", note).strip()
-            parts = _re.split(r"(?<=[。！？.!?])\s*", note)
-            if len(parts) > 2:
-                note = "".join(parts[:2]).strip()
-            if len(note) > 80:
-                note = note[:77].rstrip() + "…"
-            return note
-
         try:
             url = "https://api.github.com/repos/cloudxys/YouBoard/releases/latest"
             req = urllib.request.Request(url, headers={"User-Agent": "YouBoard"})
@@ -6378,7 +7601,8 @@ class SettingsDialog(QDialog):
                 except (ValueError, AttributeError):
                     return (0,)
             if not tag or _ver_tuple(tag) <= _ver_tuple(APP_VERSION):
-                QMessageBox.information(self, tr("upd_title"), tr("upd_latest", v=APP_VERSION))
+                _UpdateStatusDialog(
+                    self, self.app, APP_VERSION).exec()
                 return
             # Find the portable EXE asset
             assets = data.get("assets", [])
@@ -6398,18 +7622,8 @@ class SettingsDialog(QDialog):
                 webbrowser.open(data.get(
                     "html_url", "https://github.com/cloudxys/YouBoard/releases"))
                 return
-            notes = _short_release_notes(data.get("body", ""))
-            msg = tr("upd_new_msg", cur=APP_VERSION, new=tag, name=name)
-            if notes:
-                msg = notes + "\n\n" + msg
-            ret = QMessageBox.question(
-                self, tr("upd_new_title"),
-                msg,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if ret != QMessageBox.StandardButton.Yes:
-                return
-            # Download new EXE
-            self._do_update(dl_url)
+            # Download new EXE with the custom update card.
+            self._do_update(dl_url, tag, name, data.get("body", ""))
         except Exception as e:
             import urllib.error
             err_str = str(e)
@@ -6420,7 +7634,7 @@ class SettingsDialog(QDialog):
             else:
                 QMessageBox.warning(self, tr("upd_title"), tr("upd_failed", e=err_str))
 
-    def _do_update(self, dl_url):
+    def _do_update(self, dl_url, new_version, release_name, release_body):
         """Download new EXE in-app with live progress, then replace + restart."""
         try:
             # Determine current EXE path
@@ -6440,55 +7654,18 @@ class SettingsDialog(QDialog):
                                "https://mirror.ghproxy.com/", "https://ghfast.top/",
                                "https://github.moeyy.xyz/", "https://ghproxy.com/"):
                     urls.append(mirror + dl_url)
-
-            # Real-time progress dialog
-            dlg = QProgressDialog("正在准备下载...", "取消", 0, 100, self)
-            dlg.setWindowTitle("正在更新")
-            dlg.setWindowModality(Qt.WindowModality.WindowModal)
-            dlg.setMinimumDuration(0)
-            dlg.setAutoClose(False)
-            dlg.setAutoReset(False)
-            dlg.resize(380, 130)
-
             self._dl_current = current_exe
-            self._dl_worker = _DownloadWorker(urls, tmp_exe, self)
-
-            def on_progress(recv, total):
-                if dlg.wasCanceled():
-                    self._dl_worker.abort()
-                    return
-                if total > 0:
-                    pct = int(recv * 100 / total)
-                    dlg.setMaximum(100)
-                    dlg.setValue(pct)
-                    dlg.setLabelText(
-                        f"正在下载新版本... {recv / 1048576:.1f} / {total / 1048576:.1f} MB  ({pct}%)")
-                else:
-                    dlg.setMaximum(0)  # indeterminate
-                    dlg.setLabelText(f"正在下载新版本... {recv / 1048576:.1f} MB")
-
-            def on_status(text):
-                if not dlg.wasCanceled():
-                    dlg.setLabelText(text)
-
-            def on_ok(path):
-                dlg.close()
-                self._finish_update(path)
-
-            def on_fail(err):
-                dlg.close()
-                QMessageBox.warning(self, "更新失败", f"下载失败: {err}")
-
-            self._dl_worker.progress.connect(on_progress)
-            self._dl_worker.status.connect(on_status)
-            self._dl_worker.finished_ok.connect(on_ok)
-            self._dl_worker.failed.connect(on_fail)
-            dlg.canceled.connect(self._dl_worker.abort)
-            self._dl_worker.start()
+            sections = _release_notes_sections(release_body)
+            dlg = _UpdateDialog(
+                self, self.app, APP_VERSION, new_version, release_name,
+                sections, urls, tmp_exe)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                self._finish_update(dlg.downloaded_path, new_version)
         except Exception as e:
-            QMessageBox.warning(self, "更新失败", f"下载或替换失败: {e}")
+            QMessageBox.warning(self, tr("upd_error_title"),
+                                tr("upd_replace_failed", err=e))
 
-    def _finish_update(self, tmp_exe):
+    def _finish_update(self, tmp_exe, new_version):
         """Write replace-and-restart batch script, launch it, and quit."""
         try:
             current_exe = self._dl_current
@@ -6512,11 +7689,20 @@ del "%~f0"
             with open(bat_path, "w", encoding="utf-8") as f:
                 f.write(bat_content)
             import subprocess
-            subprocess.Popen(["cmd.exe", "/c", bat_path],
-                             creationflags=0x00000008)  # DETACHED_PROCESS
-            self.app._real_quit()
+            self._splash = _UpdateSplashDialog(self.app, new_version)
+
+            def _launch():
+                try:
+                    subprocess.Popen(["cmd.exe", "/c", bat_path],
+                                     creationflags=0x00000008)  # DETACHED_PROCESS
+                finally:
+                    self.app._real_quit()
+
+            self._splash.ready.connect(_launch)
+            self._splash.exec()
         except Exception as e:
-            QMessageBox.warning(self, "更新失败", f"替换失败: {e}")
+            QMessageBox.warning(self, tr("upd_error_title"),
+                                tr("upd_replace_failed", err=e))
 
 
 class CloudSyncDialog(QDialog):
@@ -6526,28 +7712,33 @@ class CloudSyncDialog(QDialog):
         super().__init__(app)
         self.app = app
         self._sync_worker = None
-        self.setWindowTitle(tr("set_sync"))
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint)
-        self.setFixedSize(500, 590)
+        header = _make_frameless_dialog(self, tr("set_sync"))
+        self.setFixedSize(520 if LANG == "en" else 500, 630)
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
         self.setStyleSheet(f"""
             QDialog {{ background-color: {C['BG']}; }}
             QLabel {{ background: transparent; color: {C['TEXT']}; }}
             QLabel#muted {{ color: {C['TEXT_MUTED']}; font-size: 11px; }}
-            QComboBox, QLineEdit {{ background: {C['SURFACE2']}; color: {C['TEXT']};
-                border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 5px 8px; font-size: 12px; }}
+            QComboBox, QLineEdit {{ background: {C['INPUT_BG']}; color: {C['TEXT']};
+                border: 1px solid {C['BORDER']}; border-radius: 8px; padding: 7px 9px; font-size: 12px; }}
             QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
-                border: 1px solid {C['BORDER']}; border-radius: 6px; padding: 6px 14px; font-size: 12px; }}
+                border: 1px solid transparent; border-radius: 8px; padding: 7px 14px; font-size: 12px; }}
             QPushButton:hover {{ background: {C['SURFACE3']}; color: {C['TEXT']}; }}
             QPushButton[cssClass="accent"] {{ background: {C['ACCENT']}; color: #fff; border: none; font-weight: bold; }}
             QPushButton[cssClass="accent"]:hover {{ background: {C['ACCENT_HV']}; }}
         """)
 
         cfg = load_config()
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(header)
+        body = QWidget()
+        root = QVBoxLayout(body)
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(10)
+        outer.addWidget(body, 1)
 
         title = QLabel(tr("set_sync"))
         title.setStyleSheet(f"color: {C['TEXT']}; font-size: 16px; font-weight: bold;")
@@ -6864,6 +8055,50 @@ def cli_search(store, keyword, entry_type=None):
 # ===========================================================================
 # Single instance mutex
 # ===========================================================================
+def _find_youboard_window():
+    """查找已有 YouBoard 顶层窗口（包括最小化或隐藏到托盘的窗口）。"""
+    if not IS_WIN:
+        return None
+    found = []
+    user32 = ctypes.windll.user32
+    enum_proc = ctypes.WINFUNCTYPE(
+        ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
+    def _visit(hwnd, _lparam):
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length > 0:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if "YouBoard" in (buf.value or ""):
+                found.append(hwnd)
+                return False
+        return True
+
+    callback = enum_proc(_visit)
+    user32.EnumWindows.argtypes = [enum_proc, ctypes.wintypes.LPARAM]
+    user32.EnumWindows.restype = ctypes.wintypes.BOOL
+    user32.EnumWindows(callback, 0)
+    return found[0] if found else None
+
+
+def _activate_existing_window(hwnd):
+    """把已有实例恢复并带到前台。"""
+    if not IS_WIN or not hwnd:
+        return
+    user32 = ctypes.windll.user32
+    try:
+        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    except Exception:
+        try:
+            user32.ShowWindow(hwnd, 5)  # SW_SHOW
+        except Exception:
+            pass
+    try:
+        user32.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+
 def _single_instance():
     """Prevent multiple GUI instances via a named Win32 mutex."""
     if not IS_WIN:
@@ -6883,12 +8118,38 @@ def _single_instance():
         return lock_file
 
     mutex_name = "YouBoard_SingleInstance_Mutex"
-    handle = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
-    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-        hwnd = ctypes.windll.user32.FindWindowW(None, "YouBoard")
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [
+        ctypes.c_void_p, ctypes.wintypes.BOOL, ctypes.wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = ctypes.wintypes.HANDLE
+    kernel32.GetLastError.restype = ctypes.wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    handle = kernel32.CreateMutexW(None, False, mutex_name)
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        # 启动早期窗口标题可能尚未创建完整，短暂等待后按标题子串查找。
+        hwnd = None
+        for _ in range(8):
+            hwnd = _find_youboard_window()
+            if hwnd:
+                break
+            time.sleep(0.25)
         if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
+            _activate_existing_window(hwnd)
+        else:
+            # 避免静默退出：明确告诉用户如何处理占用单实例锁的旧进程。
+            ctypes.windll.user32.MessageBoxW(
+                None,
+                "YouBoard 已在后台运行，但窗口暂时无法显示。\n"
+                "请从任务栏托盘退出旧实例，或在任务管理器中结束 "
+                "YouBoard.exe 后重新打开。\n\n"
+                "YouBoard is already running, but its window could not "
+                "be shown. Please quit the old instance and try again.",
+                "YouBoard",
+                0x00000040)  # MB_ICONINFORMATION
+        try:
+            kernel32.CloseHandle(handle)
+        except Exception:
+            pass
         sys.exit(0)
     return handle
 

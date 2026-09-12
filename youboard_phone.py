@@ -304,7 +304,7 @@ class PhoneTransferServer:
     def auth_ok(self, token):
         return bool(token) and hmac.compare_digest(token, self.token)
 
-    def history_json(self, limit=None, etype=None):
+    def history_json(self, limit=None, offset=0, etype=None):
         all_entries = []
         for key in ("text", "image", "file", "url"):
             if etype and etype != "all" and etype != key:
@@ -318,15 +318,20 @@ class PhoneTransferServer:
         def _sort_key(pair):
             return pair[1].get("timestamp", "")
         all_entries.sort(key=_sort_key, reverse=True)
+        try:
+            offset_i = max(0, int(offset))
+        except (ValueError, TypeError):
+            offset_i = 0
 
-        # 无上限（limit 为空 / 0 / None 时返回全部），与电脑端一致
+        # limit=0 仍保留“全部”语义；手机页面默认传具体页大小。
         if limit is None or (str(limit).isdigit() and int(limit) <= 0):
-            selected = all_entries
+            selected = all_entries[offset_i:]
         else:
             try:
-                selected = all_entries[: int(limit)]
+                page_size = max(1, int(limit))
+                selected = all_entries[offset_i:offset_i + page_size]
             except (ValueError, TypeError):
-                selected = all_entries
+                selected = all_entries[offset_i:]
 
         out = []
         for key, e in selected:
@@ -334,7 +339,7 @@ class PhoneTransferServer:
                 out.append(_entry_to_public(e, self, key))
             except Exception:
                 continue
-        return out
+        return out, len(all_entries)
 
     def find_file(self, entry_hash, idx):
         """按 hash 查找文件条目中的第 idx 个路径；找不到返回 None。"""
@@ -359,7 +364,7 @@ _PAGE = r"""<!DOCTYPE html>
 <meta name="robots" content="noindex">
 <title>YouBoard · 手机传输</title>
 <style>
-:root{--bg:#0b1220;--card:#141d30;--card2:#18233a;--border:#223252;--text:#e7eefb;--muted:#8fa3c4;--accent:#4da3ff;--ok:#37c285;}
+:root{--bg:#121417;--card:#1d1f24;--card2:#26292f;--border:#30343b;--text:#f1f3f5;--muted:#9aa1aa;--accent:#36bdf7;--ok:#43d17a;}
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;padding:14px 14px 130px;-webkit-tap-highlight-color:transparent}
 header{display:flex;align-items:center;gap:10px;margin-bottom:6px}
@@ -374,8 +379,8 @@ h1{font-size:17px;font-weight:700;line-height:1.2}
 .card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;margin-bottom:10px}
 .meta{display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted);margin-bottom:7px}
 .tag{padding:2px 8px;border-radius:8px;font-size:11px;flex:0 0 auto}
-.tag.text{background:#24446e;color:#8cc7ff}.tag.image{background:#3e3a24;color:#ffd76e}
-.tag.file{background:#3d2c46;color:#d9a7ff}.tag.url{background:#1e4a3c;color:#7ff0c0}
+.tag.text{background:#173849;color:#8edcff}.tag.image{background:#3a3118;color:#ffd76e}
+.tag.file{background:#38294a;color:#d9a7ff}.tag.url{background:#143a2d;color:#7ff0c0}
 .content{font-size:14px;line-height:1.55;word-break:break-all;white-space:pre-wrap;cursor:pointer}
 .content:active{opacity:.6}
 .content.img{text-align:center;cursor:default}
@@ -388,12 +393,14 @@ h1{font-size:17px;font-weight:700;line-height:1.2}
 a.dl{color:var(--accent);text-decoration:none;font-size:13px;flex:0 0 auto;padding:4px 10px;border:1px solid var(--accent);border-radius:8px}
 a.dl:active{background:var(--accent);color:#fff}
 .empty{color:var(--muted);text-align:center;padding:60px 0;font-size:13px}
+.more{display:none;background:var(--card);border:1px solid var(--border);color:var(--accent);border-radius:10px;padding:10px 22px;font-size:13px;cursor:pointer}
+.more:active{background:var(--card2)}
 .send{position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--border);padding:10px 14px;display:flex;gap:8px;align-items:flex-end}
 .send textarea{flex:1;background:var(--card);border:1px solid var(--border);border-radius:10px;color:var(--text);padding:10px;font-size:14px;resize:none;height:44px;font-family:inherit;outline:none}
 .send textarea:focus{border-color:var(--accent)}
 .send button{background:var(--accent);border:none;color:#fff;border-radius:10px;padding:0 18px;font-size:14px;height:44px;flex:0 0 auto;cursor:pointer}
 .send button:active{opacity:.8}
-.toast{position:fixed;left:50%;top:16px;transform:translateX(-50%);background:#1e2a44;border:1px solid var(--accent);color:var(--text);padding:8px 16px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .25s;z-index:9;max-width:82vw;text-align:center}
+.toast{position:fixed;left:50%;top:16px;transform:translateX(-50%);background:#1d1f24;border:1px solid var(--accent);color:var(--text);padding:8px 16px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .25s;z-index:9;max-width:82vw;text-align:center}
 .toast.show{opacity:1}
 </style>
 </head>
@@ -404,6 +411,7 @@ a.dl:active{background:var(--accent);color:#fff}
 </header>
 <div class="tabs" id="tabs"></div>
 <div id="list"><div class="empty">...</div></div>
+<div style="text-align:center;padding:8px 0 4px"><button class="more" id="moreBtn"></button></div>
 <div class="send">
   <textarea id="msg" placeholder="..."></textarea>
   <button id="sendBtn">...</button>
@@ -429,11 +437,15 @@ var T = {
   image: ZH ? '图片' : 'Image',
   file: ZH ? '文件' : 'Files',
   url: ZH ? '网址' : 'URLs',
-  missing: ZH ? '已失效' : 'missing'
+  missing: ZH ? '已失效' : 'missing',
+  more: ZH ? '加载更多' : 'Load more'
 };
 var TAGS = ['all', 'text', 'image', 'file', 'url'];
 var CUR = 'all';
 var ENTRIES = [];
+var TOTAL = 0;
+var PAGE_SIZE = 60;
+var LOADING = false;
 
 function $(id){ return document.getElementById(id); }
 function esc(s){
@@ -462,9 +474,26 @@ function buildTabs(){
     var d = document.createElement('div');
     d.className = 'chip' + (t === CUR ? ' on' : '');
     d.textContent = T[t];
-    d.onclick = function(){ CUR = t; buildTabs(); render(); };
+    d.onclick = function(){
+      if(CUR === t) return;
+      CUR = t;
+      ENTRIES = [];
+      TOTAL = 0;
+      buildTabs();
+      poll();
+    };
     wrap.appendChild(d);
   });
+}
+function updateMore(){
+  var btn = $('moreBtn');
+  if(!btn) return;
+  btn.textContent = T.more;
+  if(ENTRIES.length > 0 && ENTRIES.length < TOTAL){
+    btn.style.display = 'inline-block';
+  } else {
+    btn.style.display = 'none';
+  }
 }
 function fmtTime(ts){
   if(!ts) return '';
@@ -505,9 +534,11 @@ function render(){
   var items = ENTRIES.filter(function(e){ return CUR === 'all' || e.type === CUR; });
   if(!items.length){
     list.innerHTML = '<div class="empty">' + T.empty + '</div>';
+    updateMore();
     return;
   }
   list.innerHTML = items.map(card).join('');
+  updateMore();
 }
 function copyText(txt){
   if(!txt) return;
@@ -531,25 +562,53 @@ function fallbackCopy(txt){
     toast(T.copied);
   }catch(e){ toast(T.copyFail); }
 }
+function markOnline(d){
+  $('dot').classList.remove('off');
+  $('sub').textContent = T.online + ' · ' + (d.clients || 0) + ' · ' +
+    ENTRIES.length + (TOTAL > ENTRIES.length ? '/' + TOTAL : '') + ' ' +
+    T.all.toLowerCase();
+}
+function markOffline(){
+  $('dot').classList.add('off');
+  $('sub').textContent = T.offline;
+}
 function poll(){
-  api('/api/history?limit=0')
+  if(LOADING) return;
+  LOADING = true;
+  var want = Math.max(PAGE_SIZE, ENTRIES.length);
+  api('/api/history?limit=' + want + '&offset=0&type=' +
+      encodeURIComponent(CUR))
     .then(function(d){
       if(!d || !d.ok) throw new Error('bad');
+      TOTAL = d.total || 0;
       ENTRIES = d.entries || [];
-      $('dot').classList.remove('off');
-      $('sub').textContent = T.online + ' · ' + (d.clients || 0) + ' · ' + ENTRIES.length + ' ' + T.all.toLowerCase();
+      markOnline(d);
       render();
     })
-    .catch(function(){
-      $('dot').classList.add('off');
-      $('sub').textContent = T.offline;
-    });
+    .catch(markOffline)
+    .then(function(){ LOADING = false; });
+}
+function loadMore(){
+  if(LOADING || ENTRIES.length >= TOTAL) return;
+  LOADING = true;
+  api('/api/history?limit=' + PAGE_SIZE + '&offset=' + ENTRIES.length +
+      '&type=' + encodeURIComponent(CUR))
+    .then(function(d){
+      if(!d || !d.ok) throw new Error('bad');
+      TOTAL = d.total || TOTAL;
+      ENTRIES = ENTRIES.concat(d.entries || []);
+      markOnline(d);
+      render();
+    })
+    .catch(markOffline)
+    .then(function(){ LOADING = false; });
 }
 $('sendBtn').textContent = T.send;
 $('msg').placeholder = T.sendHint;
 $('sub').textContent = T.connecting;
 buildTabs();
 render();
+$('moreBtn').onclick = loadMore;
 poll();
 setInterval(poll, 2500);
 $('sendBtn').onclick = function(){
@@ -693,14 +752,21 @@ class _PhoneHandler(BaseHTTPRequestHandler):
         if path == "/api/history":
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             limit = qs.get("limit", ["0"])[0]
+            offset = qs.get("offset", ["0"])[0]
             etype = qs.get("type", ["all"])[0]
             try:
                 limit_i = int(limit) if str(limit).isdigit() else 0
             except (ValueError, TypeError):
                 limit_i = 0
-            entries = srv.history_json(limit=limit_i, etype=etype)
+            try:
+                offset_i = max(0, int(offset))
+            except (ValueError, TypeError):
+                offset_i = 0
+            entries, total = srv.history_json(
+                limit=limit_i, offset=offset_i, etype=etype)
             self._send_json({"ok": True, "clients": srv.client_count(),
-                             "count": len(entries), "entries": entries})
+                             "count": len(entries), "total": total,
+                             "offset": offset_i, "entries": entries})
             return
 
         m = _IMG_RE.match(path)

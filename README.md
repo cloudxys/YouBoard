@@ -16,7 +16,7 @@
 - **历史快照** — 记录删除/清空操作，支持一键回滚，新条目淡入动画
 - **中英双语** — 设置中一键切换语言，检查更新等对话框完整适配
 - **开机自启动** — 设置中开关控制
-- **自动更新** — 设置 → 关于 → 检查更新，软件内多线程分段下载（8线程并行 Range 请求，类似 IDM 原理，跑满带宽），5秒速度检测自动切换最快源，进度条实时显示 MB/百分比，全球多镜像探测，下载完成自动替换重启
+- **自动更新** — 设置 → 关于 → 检查更新，卡片式界面展示版本更新日志与下载进度；软件内多线程分段下载（8线程并行 Range 请求，类似 IDM 原理，跑满带宽），5秒速度检测自动切换最快源，全球多镜像探测，下载完成自动替换重启
 - **可自定义动作快捷键** — 设置里可自定义复制 / 删除 / 置顶 / 切换分类等快捷键，点击「更改」弹出录制窗口
 - **快捷键** — Enter 复制、Del 删除、Space 置顶、Tab 下一个分类、Shift+Tab 上一个分类、Ctrl+A 全选、Ctrl+O 打开、F5 刷新
 - **环境灯带** — 全宽 RGB 灯带动效，呼吸流转 + 按键波纹 + 操作浪涌（QPainter 30fps）
@@ -39,7 +39,7 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v2.8.0.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v2.9.0.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -116,7 +116,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v2.8.0.exe`
+输出：`YouBoard_Setup_v2.9.0.exe`
 
 ## 📁 项目结构
 
@@ -145,20 +145,36 @@ YouBoard/
 │   ├── sousuo.ico       # 搜索框图标
 │   ├── anse.ico         # 主题按钮：暗色
 │   └── liangse.ico      # 主题按钮：亮色
-├── version_info.txt     # EXE 版本信息（v2.8.0）
+├── version_info.txt     # EXE 版本信息（v2.9.0）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
 ├── YouBoard_Mac.spec    # macOS PyInstaller 配置
 ├── build_mac.sh         # macOS 一键构建脚本
 ├── README_MAC.md        # macOS 构建与使用说明
 ├── .github/workflows/   # GitHub Actions 自动构建发布
-├── youboard_setup.iss   # Inno Setup 安装脚本（v2.8.0）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v2.9.0）
 ├── youboard_config.json # 用户配置（自动生成）
 ├── .youboard.json       # 剪贴板历史数据（自动生成）
 └── youboard.key         # 历史加密密钥（自动生成，勿提交）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v2.9.0
+
+- 🎨 **全局界面更新**
+  - 主窗口、设置、快捷键、手机传输、云同步与更新窗口统一为深色内容优先风格，并适配亮色主题
+  - 修复最大化搜索框圆角不一致、英文设置布局裁切和设置窗口无法缩放的问题
+- 🧹 **历史保留与安全写入**
+  - 历史、快照、配置改为原子写入，异常中断时更不容易损坏数据
+  - 新增保留策略：永久 / 1、3、7 天 / 自定义小时或天 / 指定日期时间自动清空
+  - 自动回收不再被历史或快照引用的图片与文件缓存
+- 📱 **手机传输分页**
+  - 每页 60 条，底部按需加载更多
+  - 分页与文件状态检查只处理当前页，降低手机端首屏等待
+- ⚡ **稳定性优化**
+  - 文件失效检测移到后台并缓存结果，图片预览取消旧任务，避免线程堆积
+  - 修复自动检查更新与后台线程退出引起的崩溃
 
 ### YouBoard v2.8.0
 
