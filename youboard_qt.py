@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-YouBoard v2.9.0 — 剪贴板历史管理器 / Clipboard History Manager
+YouBoard v3.0.0 — 剪贴板历史管理器 / Clipboard History Manager
 PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系统托盘。
 """
 
@@ -64,6 +64,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QTextEdit, QListView, QListWidget, QListWidgetItem,
     QStyle, QProgressDialog, QProgressBar, QStyledItemDelegate,
     QStyleOptionViewItem, QGridLayout, QSpinBox, QDateTimeEdit, QSizeGrip,
+    QColorDialog,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
@@ -75,6 +76,7 @@ from PyQt6.QtGui import (
     QAction, QActionGroup, QKeySequence, QShortcut, QBrush, QPen,
     QPalette, QPainterPath, QCursor, QMovie, QTextDocument,
     QTextCharFormat, QTextCursor,
+    QRegion,
 )
 try:
     import PIL  # noqa: F401  # 轻量探测；PIL.Image 按需在调用点懒加载，降低常驻内存
@@ -109,7 +111,7 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "2.9.0"
+APP_VERSION = "3.0.0"
 LOGO_ICO = get_icon_path()
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
@@ -167,10 +169,14 @@ class _InlineImageDelegate(QStyledItemDelegate):
     def paint(self, painter, option, index):
         html = index.data(self.HTML_ROLE)
         if not html:
-            super().paint(painter, option, index)
+            opt = QStyleOptionViewItem(option)
+            # 去掉“获得焦点”状态：否则单元格文字外面会出现一圈细直角框
+            opt.state &= ~QStyle.StateFlag.State_HasFocus
+            super().paint(painter, opt, index)
             return
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
+        opt.state &= ~QStyle.StateFlag.State_HasFocus
         opt.text = ""
         opt.icon = QIcon()
         widget = option.widget
@@ -197,6 +203,79 @@ class _InlineImageDelegate(QStyledItemDelegate):
         doc.drawContents(painter, QRectF(
             0, 0, max(1.0, option.rect.width() - 6), option.rect.height()))
         painter.restore()
+
+
+class _NoFocusDelegate(QStyledItemDelegate):
+    """普通单元格同样去掉焦点框（点选后不要文字外那圈细直角框）。"""
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        opt.state &= ~QStyle.StateFlag.State_HasFocus
+        super().paint(painter, opt, index)
+
+
+class _Table(QTableWidget):
+    """列表控件：选中/拖选时不要横向乱跳。
+
+    内容列按内容撑开后非常宽，Qt 默认会在选中某格时调用 scrollTo() 试图把整格
+    露出来，于是拖选多行时视图会突然横向跳到右边。这里保持横向位置不动。
+    """
+
+    def scrollTo(self, index, hint=QAbstractItemView.ScrollHint.EnsureVisible):
+        bar = self.horizontalScrollBar()
+        keep = bar.value()
+        super().scrollTo(index, hint)
+        if bar.value() != keep:
+            bar.setValue(keep)
+
+
+class _RoundMenu(QMenu):
+    """圆角弹层：四角裁成圆角，角外不绘制（透出后面的桌面，不会留方块底）。"""
+
+    RADIUS = 9
+
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        _round_window_corners(self, self.RADIUS)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        _round_window_corners(self, self.RADIUS)
+
+
+def _round_window_corners(widget, radius=9):
+    """把顶层弹层的四角裁圆，角外完全不绘制，避免露出一块方块底。
+
+    一律用物理像素的圆角区域把窗口四角裁掉：这样无论系统的分层透明是否生效，
+    圆角面板之外都不会再画东西，也就不可能露出方块底。
+    """
+    try:
+        if IS_WIN and widget.isWindow():
+            hwnd = int(widget.winId())
+            try:
+                dpr = float(widget.devicePixelRatioF()) or 1.0
+            except Exception:
+                dpr = 1.0
+            w = max(1, int(round(widget.width() * dpr)))
+            h = max(1, int(round(widget.height() * dpr)))
+            d = max(2, int(round(radius * dpr)) * 2)
+            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d)
+            if rgn:
+                ctypes.windll.user32.SetWindowRgn(hwnd, rgn, True)
+                return
+    except Exception:
+        pass
+    try:
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(widget.rect()), float(radius), float(radius))
+        widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
+    except Exception:
+        pass
 
 
 def _build_tray_icon():
@@ -279,7 +358,7 @@ def _checkmark_png_path():
 THEME_DARK = {
     "BG": "#15171b", "SURFACE": "#1d1f24", "SURFACE2": "#26292f",
     "SURFACE3": "#30343b", "ROW_ALT": "#1b1d21", "INPUT_BG": "#111316",
-    "BORDER": "#2c3037", "BORDER_LT": "#3b414a",
+    "BORDER": "#3a4049", "BORDER_LT": "#4c535e",
     "TEXT": "#f1f3f5", "TEXT_SEC": "#aeb5bd", "TEXT_MUTED": "#737b86",
     "ACCENT": "#36bdf7", "ACCENT_HV": "#62cdff", "ACCENT_DIM": "#153849",
     "TEAL": "#43d6c2", "AMBER": "#f4b84d", "PIN_BG": "#3a3118",
@@ -287,12 +366,21 @@ THEME_DARK = {
     "PANEL_ALPHA": "rgba(29, 31, 36, 252)",
     "PANEL_ALPHA2": "rgba(38, 41, 47, 250)",
     "HEADER_ALPHA": "rgba(19, 20, 23, 250)",
+    "DIALOG_BG": "#24272d",
+    "DIALOG_EDGE": "#5c6673",
+    # 有自定义背景时才启用：内容区 / 卡片 / 顶栏的半透明底色（让壁纸透出来）
+    "GLASS_PANE": "rgba(29, 31, 36, 132)",
+    "GLASS_CARD": "rgba(29, 31, 36, 146)",
+    "GLASS_HEADER": "rgba(19, 20, 23, 140)",
+    "GLASS_INPUT": "rgba(17, 19, 22, 150)",
+    "GLASS_BUTTON": "rgba(38, 41, 47, 152)",
+    "GLASS_ROW_ALT": "rgba(0, 0, 0, 66)",
 }
 
 THEME_LIGHT = {
     "BG": "#f3f4f6", "SURFACE": "#ffffff", "SURFACE2": "#eceef1",
     "SURFACE3": "#dfe3e8", "ROW_ALT": "#f7f8fa", "INPUT_BG": "#f7f8fa",
-    "BORDER": "#d7dbe0", "BORDER_LT": "#bcc3cc",
+    "BORDER": "#cbd0d8", "BORDER_LT": "#aeb6c1",
     "TEXT": "#17191d", "TEXT_SEC": "#4b515a", "TEXT_MUTED": "#7d848e",
     "ACCENT": "#0b83d8", "ACCENT_HV": "#0a6fb8", "ACCENT_DIM": "#d9edfb",
     "TEAL": "#0f9f8f", "AMBER": "#b45309", "PIN_BG": "#fff3c4",
@@ -300,18 +388,339 @@ THEME_LIGHT = {
     "PANEL_ALPHA": "rgba(255, 255, 255, 252)",
     "PANEL_ALPHA2": "rgba(248, 249, 251, 250)",
     "HEADER_ALPHA": "rgba(255, 255, 255, 252)",
+    "DIALOG_BG": "#ffffff",
+    "DIALOG_EDGE": "#98a2b0",
+    "GLASS_PANE": "rgba(255, 255, 255, 128)",
+    "GLASS_CARD": "rgba(255, 255, 255, 142)",
+    "GLASS_HEADER": "rgba(255, 255, 255, 136)",
+    "GLASS_INPUT": "rgba(247, 248, 250, 146)",
+    "GLASS_BUTTON": "rgba(236, 238, 241, 148)",
+    "GLASS_ROW_ALT": "rgba(0, 0, 0, 22)",
 }
 
+# ---------------------------------------------------------------------------
+# 皮肤（和暗色 / 亮色同级，只能选一种）
+#   核心色在下面声明，其余（半透明面板 / 弹窗 / 玻璃层）由核心色推导，
+#   避免漏配某个键导致某处看不清。
+# ---------------------------------------------------------------------------
+
+
+def _hex_rgb(color):
+    c = QColor(color)
+    return c.red(), c.green(), c.blue()
+
+
+def _mix(color_a, color_b, ratio):
+    """按比例把 color_a 混向 color_b（ratio=0 全是 a，1 全是 b）。"""
+    r1, g1, b1 = _hex_rgb(color_a)
+    r2, g2, b2 = _hex_rgb(color_b)
+    r = int(round(r1 + (r2 - r1) * ratio))
+    g = int(round(g1 + (g2 - g1) * ratio))
+    b = int(round(b1 + (b2 - b1) * ratio))
+    return "#%02x%02x%02x" % (max(0, min(255, r)),
+                              max(0, min(255, g)),
+                              max(0, min(255, b)))
+
+
+def _rgba(color, alpha):
+    r, g, b = _hex_rgb(color)
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+def _luminance(color):
+    r, g, b = _hex_rgb(color)
+
+    def _ch(v):
+        v = v / 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * _ch(r) + 0.7152 * _ch(g) + 0.0722 * _ch(b)
+
+
+def _contrast_ratio(color_a, color_b):
+    la, lb = _luminance(color_a), _luminance(color_b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _on_accent_color(accent=None):
+    """压在强调色上的文字色：保证对比度够。"""
+    accent = accent or C.get("ACCENT", "#0b83d8")
+    return "#0c1420" if _luminance(accent) > 0.5 else "#ffffff"
+
+
+# 每套皮肤只需要声明核心色，半透明/弹窗/玻璃层会由这些颜色推出来
+_SKIN_SPECS = (
+    {
+        "id": "beige", "light": True,
+        "colors": {
+            "BG": "#f4eee0", "SURFACE": "#fffaf0", "SURFACE2": "#efe7d6",
+            "SURFACE3": "#e2d7bf", "ROW_ALT": "#faf4e8", "INPUT_BG": "#fffdf7",
+            "BORDER": "#d5c8ac", "BORDER_LT": "#b9a781",
+            "TEXT": "#2e2a1f", "TEXT_SEC": "#584f3c", "TEXT_MUTED": "#857a62",
+            "ACCENT": "#9a6516", "ACCENT_HV": "#b87a1c", "ACCENT_DIM": "#ecdfc0",
+            "TEAL": "#1a7a6c", "AMBER": "#9a5b06", "PIN_BG": "#f7e7ba",
+            "DANGER": "#b3261e", "SUCCESS": "#247a45", "FLASH_BG": "#dcefd9",
+        },
+    },
+    {
+        "id": "ocean", "light": False,
+        "colors": {
+            "BG": "#0a1524", "SURFACE": "#0f2039", "SURFACE2": "#152f4f",
+            "SURFACE3": "#1d3d63", "ROW_ALT": "#0d1c30", "INPUT_BG": "#08121f",
+            "BORDER": "#2a4a72", "BORDER_LT": "#3d6faf",
+            "TEXT": "#eaf2ff", "TEXT_SEC": "#a9c0dd", "TEXT_MUTED": "#7791b3",
+            "ACCENT": "#4da3ff", "ACCENT_HV": "#7cbcff", "ACCENT_DIM": "#16395c",
+            "TEAL": "#35d0c0", "AMBER": "#f2b24a", "PIN_BG": "#33290f",
+            "DANGER": "#ff6b61", "SUCCESS": "#3fd07f", "FLASH_BG": "#10352c",
+        },
+    },
+    {
+        "id": "violet", "light": False,
+        "colors": {
+            "BG": "#150f20", "SURFACE": "#1e1630", "SURFACE2": "#2a2042",
+            "SURFACE3": "#372a56", "ROW_ALT": "#191129", "INPUT_BG": "#100a1a",
+            "BORDER": "#443262", "BORDER_LT": "#5f4787",
+            "TEXT": "#f4eeff", "TEXT_SEC": "#c0b0dd", "TEXT_MUTED": "#8b7bab",
+            "ACCENT": "#b18cff", "ACCENT_HV": "#c9adff", "ACCENT_DIM": "#33254f",
+            "TEAL": "#43d6c2", "AMBER": "#f4b84d", "PIN_BG": "#332a12",
+            "DANGER": "#f0645b", "SUCCESS": "#4cd88a", "FLASH_BG": "#153a2e",
+        },
+    },
+    {
+        "id": "forest", "light": False,
+        "colors": {
+            "BG": "#0e1a13", "SURFACE": "#15241b", "SURFACE2": "#1d3226",
+            "SURFACE3": "#274232", "ROW_ALT": "#122016", "INPUT_BG": "#0a140e",
+            "BORDER": "#2c4a36", "BORDER_LT": "#406a4d",
+            "TEXT": "#e9f6ec", "TEXT_SEC": "#a9c8b1", "TEXT_MUTED": "#75937d",
+            "ACCENT": "#58c98a", "ACCENT_HV": "#7fdcab", "ACCENT_DIM": "#1d3b2a",
+            "TEAL": "#3fd0c0", "AMBER": "#e0b04a", "PIN_BG": "#2f2a12",
+            "DANGER": "#f27a6f", "SUCCESS": "#4ed07e", "FLASH_BG": "#153a2b",
+        },
+    },
+    {
+        "id": "contrast", "light": False,
+        "colors": {
+            "BG": "#000000", "SURFACE": "#0b0b0b", "SURFACE2": "#161616",
+            "SURFACE3": "#212121", "ROW_ALT": "#0d0d0d", "INPUT_BG": "#050505",
+            "BORDER": "#6d6d6d", "BORDER_LT": "#9c9c9c",
+            "TEXT": "#ffffff", "TEXT_SEC": "#e6e6e6", "TEXT_MUTED": "#bdbdbd",
+            "ACCENT": "#ffd400", "ACCENT_HV": "#ffe14d", "ACCENT_DIM": "#3a3300",
+            "TEAL": "#00e5d0", "AMBER": "#ffb300", "PIN_BG": "#3a3300",
+            "DANGER": "#ff5a52", "SUCCESS": "#4dff88", "FLASH_BG": "#0d3a22",
+        },
+    },
+)
+THEME_SKINS = {spec["id"]: spec for spec in _SKIN_SPECS}
+CUSTOM_SKIN_ID = "custom"
+# 自定义皮肤的默认配色（深青蓝，颜色可自己改）
+_CUSTOM_SKIN_DEFAULTS = {
+    "skin_custom_bg": "#0f1a1d",
+    "skin_custom_surface": "#16262b",
+    "skin_custom_text": "#eaf5f7",
+    "skin_custom_accent": "#2fb3a0",
+}
+
+
+def _build_palette(base_name, colors):
+    """按核心色补全整套调色板（半透明层、弹窗、玻璃层都由核心色推导）。"""
+    palette = dict(THEME_LIGHT if base_name == "light" else THEME_DARK)
+    palette.update(colors)
+    palette["PANEL_ALPHA"] = _rgba(palette["SURFACE"], 252)
+    palette["PANEL_ALPHA2"] = _rgba(palette["SURFACE2"], 250)
+    palette["HEADER_ALPHA"] = _rgba(palette["BG"], 250)
+    palette["DIALOG_BG"] = palette["SURFACE"]
+    palette["DIALOG_EDGE"] = palette["BORDER_LT"]
+    palette["GLASS_PANE"] = _rgba(palette["SURFACE"], 132)
+    palette["GLASS_CARD"] = _rgba(palette["SURFACE"], 146)
+    palette["GLASS_HEADER"] = _rgba(palette["BG"], 140)
+    palette["GLASS_INPUT"] = _rgba(palette["INPUT_BG"], 150)
+    palette["GLASS_BUTTON"] = _rgba(palette["SURFACE2"], 152)
+    palette["GLASS_ROW_ALT"] = ("rgba(0, 0, 0, 22)" if base_name == "light"
+                                else "rgba(0, 0, 0, 66)")
+    return palette
+
+
+def _custom_skin_colors(cfg=None):
+    """读取自定义皮肤配色，并保证正文对比度足够（不够就自动换成黑/白）。"""
+    cfg = cfg if isinstance(cfg, dict) else load_config()
+    colors = {}
+    for key, default in _CUSTOM_SKIN_DEFAULTS.items():
+        value = str(cfg.get(key, default) or default)
+        colors[key] = value if QColor(value).isValid() else default
+    bg = colors["skin_custom_bg"]
+    surface = colors["skin_custom_surface"]
+    text = colors["skin_custom_text"]
+    accent = colors["skin_custom_accent"]
+    if _contrast_ratio(text, surface) < 3.0:
+        text = "#111111" if _luminance(surface) > 0.5 else "#f6f8f8"
+    text_sec = _mix(text, surface, 0.25)
+    if _contrast_ratio(text_sec, surface) < 2.5:
+        text_sec = _mix(text, surface, 0.12)
+    text_muted = _mix(text, surface, 0.45)
+    if _contrast_ratio(text_muted, surface) < 2.0:
+        text_muted = _mix(text, surface, 0.3)
+    light = _luminance(bg) > 0.5
+    return {
+        "light": light,
+        "colors": {
+            "BG": bg, "SURFACE": surface,
+            "SURFACE2": _mix(surface, bg, 0.45),
+            "SURFACE3": _mix(surface, text, 0.16),
+            "ROW_ALT": _mix(bg, surface, 0.35),
+            "INPUT_BG": _mix(bg, surface, 0.2),
+            "BORDER": _mix(surface, text, 0.26),
+            "BORDER_LT": _mix(surface, text, 0.42),
+            "TEXT": text, "TEXT_SEC": text_sec, "TEXT_MUTED": text_muted,
+            "ACCENT": accent,
+            "ACCENT_HV": (_mix(accent, "#000000", 0.18) if light
+                          else _mix(accent, "#ffffff", 0.22)),
+            "ACCENT_DIM": _mix(surface, accent, 0.28),
+            "TEAL": _mix(accent, "#00b3a0", 0.5),
+            "AMBER": "#9a5b06" if light else "#f4b84d",
+            "PIN_BG": _mix(surface, "#ffd400", 0.22),
+            "DANGER": "#b3261e" if light else "#f0645b",
+            "SUCCESS": "#1c7a45" if light else "#43d17a",
+            "FLASH_BG": _mix(surface, "#3fd07f", 0.22),
+        },
+    }
+
+
+def resolve_palette(name="dark"):
+    """把主题名解析成完整调色板：dark / light / 皮肤 id / custom。"""
+    name = str(name or "dark")
+    if name in ("dark", "light"):
+        return dict(THEME_LIGHT if name == "light" else THEME_DARK)
+    skin = THEME_SKINS.get(name)
+    if skin is not None:
+        return _build_palette("light" if skin["light"] else "dark",
+                              skin["colors"])
+    if name == CUSTOM_SKIN_ID:
+        custom = _custom_skin_colors()
+        return _build_palette("light" if custom["light"] else "dark",
+                              custom["colors"])
+    return dict(THEME_DARK)
+
+
+def _skin_swatch(skin_id):
+    """皮肤小色块：上半是面板色、下半是强调色，用来一眼区分皮肤。"""
+    palette = resolve_palette(skin_id)
+    pm = QPixmap(14, 14)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0.5, 0.5, 13.0, 13.0), 4.0, 4.0)
+    p.fillPath(path, qcolor(palette["SURFACE"]))
+    p.setClipPath(path)
+    p.fillRect(QRectF(0.0, 7.0, 14.0, 7.0), qcolor(palette["ACCENT"]))
+    p.setClipping(False)
+    p.setPen(QPen(qcolor(palette["BORDER_LT"]), 1.0))
+    p.drawPath(path)
+    p.end()
+    return pm
+
+
+def _skin_preview_pixmap(skin_id, w=112, h=44):
+    """皮肤预览小图：模拟一小块界面（底色 + 侧栏 + 面板 + 文字条 + 强调色）。"""
+    palette = resolve_palette(skin_id)
+    pm = QPixmap(w, h)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0.5, 0.5, w - 1.0, h - 1.0), 6.0, 6.0)
+    p.setClipPath(path)
+    p.fillPath(path, qcolor(palette["BG"]))
+    p.fillRect(QRectF(0, 0, w, 9), qcolor(palette["SURFACE"]))
+    p.fillRect(QRectF(0, 0, 11, h), qcolor(palette["SURFACE2"]))
+    p.fillRect(QRectF(16, 14, w - 22, h - 19), qcolor(palette["SURFACE"]))
+    p.fillRect(QRectF(21, 19, (w - 32) * 0.72, 3), qcolor(palette["TEXT"]))
+    p.fillRect(QRectF(21, 25, (w - 32) * 0.45, 3), qcolor(palette["TEXT_SEC"]))
+    p.fillRect(QRectF(21, h - 12, 17, 6), qcolor(palette["ACCENT"]))
+    p.setClipping(False)
+    p.setPen(QPen(qcolor(palette["BORDER_LT"]), 1.0))
+    p.drawPath(path)
+    p.end()
+    return pm
+
+
 C = {}
+_THEME_IS_LIGHT = False
 
 
 def apply_theme(name="dark"):
     """Set the active theme palette into global C dict."""
-    global C
-    C = THEME_LIGHT if name == "light" else THEME_DARK
+    global C, _THEME_IS_LIGHT
+    name = str(name or "dark")
+    if name in ("dark", "light"):
+        _THEME_IS_LIGHT = (name == "light")
+    elif name in THEME_SKINS:
+        _THEME_IS_LIGHT = bool(THEME_SKINS[name]["light"])
+    elif name == CUSTOM_SKIN_ID:
+        _THEME_IS_LIGHT = bool(_custom_skin_colors()["light"])
+    else:
+        _THEME_IS_LIGHT = False
+    C = resolve_palette(name)
 
 
 apply_theme(load_config().get("theme", "dark"))
+
+
+# ---------------------------------------------------------------------------
+# 自定义背景（壁纸）：只有真正设置了背景图时才让面板半透明，其它情况观感完全不变
+# ---------------------------------------------------------------------------
+_GLASS_ACTIVE = False
+
+
+def set_glass_active(flag):
+    global _GLASS_ACTIVE
+    _GLASS_ACTIVE = bool(flag)
+
+
+def is_glass_active():
+    return _GLASS_ACTIVE
+
+
+def bg_configured(cfg=None):
+    """配置里是否有一张真实存在的背景图。"""
+    try:
+        cfg = cfg if isinstance(cfg, dict) else load_config()
+        path = (cfg.get("bg_image") or "").strip()
+        return bool(path) and os.path.exists(path)
+    except Exception:
+        return False
+
+
+def surface_bg(key="SURFACE", glass_key="GLASS_PANE"):
+    """面板底色：有背景图时取半透明色（壁纸透出），否则用原来的实色。"""
+    if _GLASS_ACTIVE:
+        return C.get(glass_key, C.get("PANEL_ALPHA", C[key]))
+    return C[key]
+
+
+def qcolor(spec):
+    """把主题色字符串转成 QColor：支持 "#rrggbb" 与 "rgba(r, g, b, a)"。
+
+    注意：QColor("rgba(...)") 在 Qt 里是无效色，直接喂给 QPainter 会画成黑色，
+    所以这里手动解析。
+    """
+    s = str(spec).strip()
+    if s.startswith("rgba(") and s.endswith(")"):
+        parts = [p.strip() for p in s[5:-1].split(",")]
+        if len(parts) == 4:
+            try:
+                return QColor(int(float(parts[0])), int(float(parts[1])),
+                              int(float(parts[2])), int(float(parts[3])))
+            except ValueError:
+                pass
+    return QColor(s)
+
+
+def glass_transparent():
+    """透明底色：Qt 对关键字 transparent 的处理不可靠，显式用 rgba 全透明。"""
+    return "rgba(0, 0, 0, 0)"
 
 
 def apply_global_palette(name="dark"):
@@ -323,7 +732,7 @@ def apply_global_palette(name="dark"):
     app = QApplication.instance()
     if app is None:
         return
-    c = THEME_LIGHT if name == "light" else THEME_DARK
+    c = resolve_palette(name)
     pal = app.palette()
     for role, key in [
         (QPalette.ColorRole.Window, "SURFACE2"),
@@ -345,7 +754,7 @@ def apply_global_palette(name="dark"):
 
 def _is_light_theme():
     """当前是否亮色主题（用于亮色下标题栏、按钮图标等做适配）。"""
-    return C.get("BG") == THEME_LIGHT.get("BG")
+    return bool(_THEME_IS_LIGHT)
 
 
 class _ThemeTitleBarFilter(QObject):
@@ -636,18 +1045,39 @@ def build_qss(theme_name="dark", flush=False):
     """
     apply_theme(theme_name)
     c = C
+    # 有自定义背景时内容区/标签栏用半透明底色，让壁纸透出来
+    pane_bg = c['GLASS_PANE'] if _GLASS_ACTIVE else c['SURFACE']
     pane_radius = "0" if flush else "10px"
     flush_rules = ""
+    # 有背景时，滚动区域/列表的 viewport 也要透明，否则会把壁纸整块挡住
+    glass_rules = "" if not _GLASS_ACTIVE else """
+    QWidget#qt_scrollarea_viewport, QWidget#qt_scrollarea_vcontainer,
+    QWidget#qt_scrollarea_hcontainer { background: rgba(0, 0, 0, 0); }
+    QScrollArea, QAbstractScrollArea { background: rgba(0, 0, 0, 0); }
+    QScrollArea > QWidget > QWidget { background: rgba(0, 0, 0, 0); }
+    QAbstractItemView { background: rgba(0, 0, 0, 0); }
+    QListWidget, QListView, QTreeView, QTableView, QTableWidget,
+    QStackedWidget { background: rgba(0, 0, 0, 0); }
+    QTableWidget, QTableView, QTreeView {
+        alternate-background-color: %s; }
+    QLineEdit, QComboBox, QSpinBox, QDateTimeEdit, QTextEdit, QPlainTextEdit {
+        background: %s; }
+    QPushButton { background: %s; }
+    QCheckBox::indicator { background: %s; }
+""" % (c['GLASS_ROW_ALT'], c['GLASS_INPUT'], c['GLASS_BUTTON'], c['GLASS_INPUT'])
     return f"""
-    QMainWindow, QDialog {{ background-color: {c['BG']}; }}
+    /* 无边框窗口：窗体底色留出 1px 当描边，和桌面区分开（否则浅色主题下边界看不清） */
+    QMainWindow {{ background-color: {c['BORDER_LT']}; }}
+    QDialog {{ background-color: {c['BG']}; }}
+    QWidget#rootSurface {{ background-color: {c['BG']}; }}
     QWidget {{ color: {c['TEXT']}; font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; font-size: 13px; }}
     QToolTip {{ background: {c['SURFACE']}; color: {c['TEXT']};
         border: 1px solid {c['BORDER_LT']}; padding: 6px 9px; border-radius: 6px; }}
-    QTabWidget {{ background: {c['SURFACE']}; }}
-    QTabWidget::tab-bar {{ left: 0; background: {c['SURFACE']}; }}
+    QTabWidget {{ background: {pane_bg}; }}
+    QTabWidget::tab-bar {{ left: 0; background: {pane_bg}; }}
     QTabWidget::pane {{ border: 1px solid {c['BORDER_LT']};
-        background: {c['SURFACE']}; border-radius: {pane_radius}; }}
-    QTabBar {{ background: {c['SURFACE']}; qproperty-drawBase: 0; }}
+        background: {pane_bg}; border-radius: {pane_radius}; }}
+    QTabBar {{ background: {pane_bg}; qproperty-drawBase: 0; }}
     QTabBar::tab {{ background: transparent; color: {c['TEXT_MUTED']}; padding: 10px 18px;
         margin: 0 3px; border: none; border-bottom: 2px solid transparent; font-weight: 600; }}
     QTabBar::tab:selected {{ color: {c['TEXT']}; border-bottom-color: {c['ACCENT']}; }}
@@ -656,6 +1086,8 @@ def build_qss(theme_name="dark", flush=False):
         border: none; gridline-color: transparent;
         selection-background-color: {c['ACCENT_DIM']}; selection-color: {c['TEXT']}; }}
     QTableWidget::item {{ padding: 8px 10px; border-bottom: 1px solid {c['BORDER']}; }}
+    /* 横竖滚动条交汇处的小方块（角控件）不要 */
+    QAbstractScrollArea::corner {{ background: transparent; border: none; }}
     QHeaderView::section {{ background: transparent; color: {c['TEXT_MUTED']};
         padding: 7px 10px; border: none; border-bottom: 1px solid {c['BORDER']};
         font-weight: 600; font-size: 11px; }}
@@ -707,6 +1139,7 @@ def build_qss(theme_name="dark", flush=False):
         margin-top: 12px; padding-top: 16px; font-weight: bold; font-size: 11px; color: {c['TEXT_MUTED']}; }}
     QGroupBox::title {{ subcontrol-origin: margin; left: 14px; padding: 0 6px; }}
     QScrollArea {{ background: transparent; border: none; }}
+    {glass_rules}
     QFrame[cssClass="glass"] {{ background: {c['PANEL_ALPHA']}; border: 1px solid {c['BORDER']};
         border-radius: 12px; }}
     QFrame[cssClass="glass2"] {{ background: {c['PANEL_ALPHA2']}; border: 1px solid {c['BORDER']};
@@ -814,6 +1247,20 @@ STRINGS = {
         "set_autostart_desc": "登录 Windows 后自动启动 YouBoard 并监听剪贴板",
         "set_theme": "主题 / THEME", "set_theme_dark": "暗色", "set_theme_light": "亮色",
         "set_theme_note": "切换主题后应用将立即重启",
+        "set_skin": "皮肤 / SKIN",
+        "set_skin_note": "暗色、亮色和皮肤只能选一种；选皮肤后立即生效并重启应用",
+        "skin_beige": "护眼米黄", "skin_beige_desc": "暖米黄底，长时间看更舒服",
+        "skin_ocean": "深海蓝", "skin_ocean_desc": "深蓝海面色调，偏冷偏科技",
+        "skin_violet": "幽夜紫", "skin_violet_desc": "暗紫底色，柔和不刺眼",
+        "skin_forest": "森林绿", "skin_forest_desc": "深绿林间色调，自然安静",
+        "skin_contrast": "高对比", "skin_contrast_desc": "纯黑底白字，对比最强",
+        "skin_custom": "自定义皮肤", "skin_custom_desc": "自己挑底色、面板色、文字色和强调色",
+        "set_skin_custom_edit": "编辑自定义皮肤…",
+        "skin_dlg_title": "自定义皮肤", "skin_dlg_bg": "底色",
+        "skin_dlg_surface": "面板色", "skin_dlg_text": "文字色",
+        "skin_dlg_accent": "强调色", "skin_dlg_hint":
+            "选完点确定保存；正在使用自定义皮肤时会立即重启生效。文字与底色对比不够时会自动改成黑/白。",
+        "skin_dlg_pick": "选择颜色",
         "set_bg": "背景 / BACKGROUND", "set_bg_select": "选择背景图片",
         "set_bg_wallpaper": "使用当前壁纸",
         "set_bg_history": "历史壁纸",
@@ -842,7 +1289,7 @@ STRINGS = {
         "tray_phone": "发送到手机…",
         "tray_phone_stop": "停止手机传输（端口 {port}）",
         "set_session_title": "临时会话",
-        "set_session_desc": "开启后剪贴板内容照常记录（正常使用）；退出应用或关闭开关时，本次开启后产生的记录（历史、快照、图片与文件缓存）将全部清除",
+        "set_session_desc": "开启期间照常记录；退出应用或关闭开关时清空本次记录",
         "set_retention": "历史保留 / RETENTION",
         "set_retention_open": "设置",
         "ret_title": "历史保留策略",
@@ -888,7 +1335,7 @@ STRINGS = {
         "widget_click_copy": "点击复制回剪贴板",
         "st_copied": "已复制回剪贴板",
         "set_phone": "手机传输 / PHONE",
-        "set_phone_desc": "用手机扫码后，可在手机浏览器中查看 / 复制剪贴板历史，或把手机上的文字一键发回电脑（手机与电脑需在同一 Wi-Fi / 局域网）",
+        "set_phone_desc": "手机扫码即可查看 / 复制剪贴板历史，也能把手机文字发回电脑（同一 Wi-Fi）",
         "set_phone_open": "打开传输窗口",
         "phone_title": "发送到手机",
         "phone_starting": "正在启动服务…",
@@ -912,7 +1359,7 @@ STRINGS = {
         "phone_start_failed": "传输服务启动失败：{err}",
         "phone_received": "已收到来自手机的文字",
         "set_sync": "云同步 / CLOUD SYNC",
-        "set_sync_desc": "把加密后的剪贴板历史同步到云端（GitHub Gist / WebDAV），换设备输入同一同步密码即可恢复",
+        "set_sync_desc": "加密后同步到云端（GitHub Gist / WebDAV），换设备用同一密码恢复",
         "set_sync_open": "打开同步窗口",
         "set_sync_backend": "后端",
         "set_sync_off": "不使用",
@@ -1062,6 +1509,20 @@ STRINGS = {
         "set_autostart_desc": "Automatically start YouBoard and monitor the clipboard when you sign in",
         "set_theme": "Theme / 主题", "set_theme_dark": "Dark", "set_theme_light": "Light",
         "set_theme_note": "The app restarts immediately after switching theme",
+        "set_skin": "Skin / 皮肤",
+        "set_skin_note": "Dark, Light and skins are mutually exclusive; picking a skin applies immediately and restarts the app",
+        "skin_beige": "Warm Beige", "skin_beige_desc": "Warm beige background, easier for long reading",
+        "skin_ocean": "Deep Ocean", "skin_ocean_desc": "Cool deep-blue tones with a techy feel",
+        "skin_violet": "Night Violet", "skin_violet_desc": "Soft dark violet, gentle on the eyes",
+        "skin_forest": "Forest Green", "skin_forest_desc": "Deep green woodland tones, calm and natural",
+        "skin_contrast": "High Contrast", "skin_contrast_desc": "Pure black with white text, maximum contrast",
+        "skin_custom": "Custom Skin", "skin_custom_desc": "Pick your own background, panel, text and accent colors",
+        "set_skin_custom_edit": "Edit custom skin…",
+        "skin_dlg_title": "Custom skin", "skin_dlg_bg": "Background",
+        "skin_dlg_surface": "Panel", "skin_dlg_text": "Text",
+        "skin_dlg_accent": "Accent", "skin_dlg_hint":
+            "Click OK to save; if the custom skin is active the app restarts right away. Text is auto-switched to black/white when contrast is too low.",
+        "skin_dlg_pick": "Pick color",
         "set_bg": "Background / 背景", "set_bg_select": "Choose background image",
         "set_bg_wallpaper": "Use current wallpaper",
         "set_bg_history": "Wallpaper history",
@@ -1090,7 +1551,7 @@ STRINGS = {
         "tray_phone": "Send to Phone…",
         "tray_phone_stop": "Stop Phone Transfer (port {port})",
         "set_session_title": "Temporary Session",
-        "set_session_desc": "While on, clipboard content is recorded normally; when you quit the app or turn it off, everything recorded since enabling (history, snapshots, image & file cache) is wiped",
+        "set_session_desc": "Records normally while on; quitting or switching it off clears what was recorded in this session",
         "set_retention": "History Retention / RETENTION",
         "set_retention_open": "Configure",
         "ret_title": "History retention",
@@ -1136,7 +1597,7 @@ STRINGS = {
         "widget_click_copy": "Click to copy back to clipboard",
         "st_copied": "Copied back to clipboard",
         "set_phone": "Phone Transfer / PHONE",
-        "set_phone_desc": "Scan the QR code with your phone to browse / copy clipboard history in the browser, or send text from your phone to the PC (phone and PC must be on the same Wi-Fi / LAN)",
+        "set_phone_desc": "Scan the QR code to browse / copy history on your phone, or send phone text back to the PC (same Wi-Fi)",
         "set_phone_open": "Open Transfer Window",
         "phone_title": "Send to Phone",
         "phone_starting": "Starting server…",
@@ -1160,7 +1621,7 @@ STRINGS = {
         "phone_start_failed": "Failed to start transfer server: {err}",
         "phone_received": "Received text from phone",
         "set_sync": "Cloud Sync / CLOUD SYNC",
-        "set_sync_desc": "Sync your encrypted clipboard history to the cloud (GitHub Gist / WebDAV); restore on another device with the same sync passphrase",
+        "set_sync_desc": "Sync encrypted history to the cloud (GitHub Gist / WebDAV); restore elsewhere with the same passphrase",
         "set_sync_open": "Open Sync Window",
         "set_sync_backend": "Backend",
         "set_sync_off": "Off",
@@ -1181,7 +1642,7 @@ STRINGS = {
         "sync_cleared": "Cloud sync config cleared",
         "sync_gist_id": "Linked Gist: {gid}",
         "set_check_update": "Check Update",
-        "upd_title": "检查更新 · Check Update",
+        "upd_title": "Check Update",
         "upd_latest": "已是最新版本 v{v}\nAlready on the latest version v{v}",
         "upd_latest_title": "You're up to date",
         "upd_latest_meta": "YouBoard v{v} is the latest version.",
@@ -1864,6 +2325,7 @@ class _UpdateDialog(QDialog):
         badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
         badge.setFixedSize(22, 22)
         badge.move(63, 5)
+        self._badge = badge
         icon_row.addWidget(self._icon)
         icon_row.addStretch()
         lay.addLayout(icon_row)
@@ -2077,27 +2539,38 @@ class _UpdateDialog(QDialog):
 
 
 class _UpdateStatusDialog(_UpdateDialog):
-    """“已是最新版本”状态卡片，复用更新卡片的完整视觉风格。"""
+    """更新结果状态卡片，复用更新卡片的完整视觉风格。"""
 
-    def __init__(self, owner, app, version):
+    def __init__(self, owner, app, version, title=None, detail=None,
+                 kind="latest"):
         super().__init__(
             owner, app, version, version, "", [], [], "")
+        version = str(version or APP_VERSION)
+        title = title or f"{tr('upd_latest_title')}  v{version}"
+        detail = detail or tr("upd_latest_meta", v=version)
         self._state = "status"
         self._card.setMinimumHeight(360)
-        self._title.setText(f"{tr('upd_latest_title')}  v{version}")
+        self._title.setText(title)
         self._meta.setText(f"{APP_NAME} v{version}")
-        self._detail.setText(tr("upd_latest_meta", v=version))
-        self._bar.setValue(100)
-        self._bar.setStyleSheet(
-            f"QProgressBar#updBar {{ background-color: {C['SURFACE3']}; border: none;"
-            " border-radius: 3px; }"
-            f"QProgressBar#updBar::chunk {{ background-color: {C['SUCCESS']};"
-            " border-radius: 3px; }")
+        self._detail.setText(detail)
+        if kind == "warning":
+            self._badge.setText("!")
+            self._badge.setStyleSheet(
+                f"background-color: {C['AMBER']}; color: #071116;"
+                " border-radius: 11px; font-size: 12px; font-weight: bold;")
+            self._bar.hide()
+        else:
+            self._bar.setValue(100)
+            self._bar.setStyleSheet(
+                f"QProgressBar#updBar {{ background-color: {C['SURFACE3']};"
+                " border: none; border-radius: 3px; }"
+                f"QProgressBar#updBar::chunk {{ background-color: {C['SUCCESS']};"
+                " border-radius: 3px; }")
         self._notes.hide()
         self._secondary_btn.hide()
         self._primary_btn.setText(tr("btn_ok"))
         self._primary_btn.clicked.connect(self.accept)
-        self.setWindowTitle(tr("upd_latest_title"))
+        self.setWindowTitle(title)
 
 
 def _retention_summary(policy):
@@ -2761,17 +3234,8 @@ class _ResizeGrip(QWidget):
         self._start_geo = None
 
     def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # Draw 3 diagonal dots (classic resize grip pattern)
-        color = QColor(160, 165, 180, 140)
-        s = self.SIZE
-        for i in range(3):
-            offset = 4 + i * 5
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(color)
-            p.drawEllipse(s - offset - 1, s - offset - 1, 3, 3)
-        p.end()
+        # 右下角不再画那三个小点：拖拽热区与斜向光标保留，视觉上不留痕迹
+        return
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -2948,8 +3412,9 @@ class _TitleBar(QWidget):
         lay.addWidget(self._close_btn)
 
     def _toggle_max(self):
-        if self._win.isMaximized():
-            self._win.showNormal()
+        if self._win._is_window_maximized():
+            # 用记住的普通大小还原：即使 Qt 状态位没跟上，也能确定缩回去
+            self._win._restore_normal_size()
             self._max_btn.setIcon(self._icon_max)
         else:
             self._win.showMaximized()
@@ -2958,7 +3423,8 @@ class _TitleBar(QWidget):
         self.update()
 
     def update_max_btn(self):
-        self._max_btn.setIcon(self._icon_rest if self._win.isMaximized() else self._icon_max)
+        self._max_btn.setIcon(self._icon_rest
+                              if self._win._is_window_maximized() else self._icon_max)
         self._max_btn.repaint()
         self.update()
 
@@ -2981,9 +3447,9 @@ class _TitleBar(QWidget):
 
     def mouseMoveEvent(self, event):
         if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
-            if self._win.isMaximized():
+            if self._win._is_window_maximized():
                 # Un-maximize on drag
-                self._win.showNormal()
+                self._win._restore_normal_size()
                 self._max_btn.setIcon(self._icon_max)
                 self._drag_pos = QPoint(int(self._win.width() / 2), int(self.HEIGHT / 2))
             self._win.move(event.globalPosition().toPoint() - self._drag_pos)
@@ -3013,7 +3479,9 @@ class _TitleBar(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
-        p.fillRect(self.rect(), QColor(C['SURFACE']))
+        # 有自定义背景时标题栏半透明，让壁纸透上来
+        p.fillRect(self.rect(), qcolor(
+            C['GLASS_HEADER'] if _GLASS_ACTIVE else C['SURFACE']))
         p.setPen(QPen(QColor(C['BORDER']), 1))
         p.drawLine(0, h - 1, w, h - 1)
         p.end()
@@ -3191,13 +3659,10 @@ class DesktopClipboardWidget(QWidget):
             pass
 
     def _apply_theme(self):
-        theme = load_config().get("theme", "dark")
-        if theme == "light":
-            card_bg, txt, sec = "rgba(255,255,255,250)", C['TEXT'], C['TEXT_SEC']
-            border, hover = C['BORDER_LT'], "rgba(0,0,0,14)"
-        else:
-            card_bg, txt, sec = "rgba(29,31,36,248)", C['TEXT'], C['TEXT_SEC']
-            border, hover = C['BORDER_LT'], "rgba(255,255,255,18)"
+        card_bg, txt, sec = C['PANEL_ALPHA'], C['TEXT'], C['TEXT_SEC']
+        border = C['BORDER_LT']
+        hover = ("rgba(0,0,0,14)" if _is_light_theme()
+                 else "rgba(255,255,255,18)")
         self.setStyleSheet(f"""
             #dwCard {{ background: {card_bg}; border: 1px solid {border}; border-radius: 10px; }}
             QLabel {{ background: transparent; color: {txt};
@@ -3534,7 +3999,9 @@ class _PopupPanel(QFrame):
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
         path.addRoundedRect(r, 10.0, 10.0)
-        p.fillPath(path, QColor(C['SURFACE']))
+        # 有壁纸时弹层也用半透明底色，避免出现一块死黑
+        p.fillPath(path, qcolor(
+            C['GLASS_CARD'] if _GLASS_ACTIVE else C['SURFACE']))
         p.setPen(QPen(QColor(C['BORDER_LT']), 1.0))
         p.drawPath(path)
 
@@ -3552,10 +4019,12 @@ class _SortMenuButton(QPushButton):
         self.setFixedWidth(150)
         self.setMinimumHeight(30)
         self.setStyleSheet(f"""
-            QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
-                border: 1px solid transparent; border-radius: 8px; padding: 7px 11px;
+            QPushButton {{ background: {surface_bg('SURFACE2', glass_key='GLASS_BUTTON')};
+                color: {C['TEXT_SEC']};
+                border: 1px solid {C['BORDER']}; border-radius: 8px; padding: 7px 11px;
                 font-size: 12px; text-align: left; }}
-            QPushButton:hover {{ border-color: {C['BORDER_LT']}; color: {C['TEXT']}; }}
+            QPushButton:hover {{ border-color: {C['BORDER_LT']}; color: {C['TEXT']};
+                background: {surface_bg('SURFACE3', glass_key='GLASS_BUTTON')}; }}
         """)
         self.clicked.connect(self._popup)
 
@@ -3585,6 +4054,8 @@ class _SortMenuButton(QPushButton):
             self._sortpop = None
         pop = _PopupPanel(self, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         pop.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # 不要系统方角投影：它会在圆角面板外圈糊出一个直角灰框
+        pop.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
         pop.setStyleSheet(f"""
             QPushButton {{ background: transparent; color: {C['TEXT']};
                 border: none; border-radius: 4px; text-align: left; padding: 7px 10px;
@@ -3610,6 +4081,8 @@ class _SortMenuButton(QPushButton):
         pop.adjustSize()
         pop.move(self.mapToGlobal(QPoint(0, self.height())))
         pop.show()
+        # 四角裁圆 + 角外不绘制：避免露出方块底
+        _round_window_corners(pop, 10)
 
     def _on_pick(self, idx):
         if self._sortpop is not None:
@@ -3625,6 +4098,17 @@ class _SortMenuButton(QPushButton):
                 self.currentIndexChanged.emit(idx)
 
 
+class _AutoHideLabel(QLabel):
+    """空文本时自动隐藏：避免状态栏右侧留下两个空标签的小痕迹。"""
+
+    def setText(self, text):
+        super().setText(text)
+        try:
+            self.setVisible(bool(str(text).strip()))
+        except Exception:
+            pass
+
+
 class YouBoardApp(QMainWindow):
 
     def __init__(self, store, monitor=None):
@@ -3636,6 +4120,8 @@ class YouBoardApp(QMainWindow):
         self._active_type = "text"
         self._tables = {}
         self._tab_layouts = []
+        # 每个标签页里“按内容撑开”的那一列（横向滚动条靠它才能左右拖动看全文）
+        self._flex_cols = {}
         self._iid_to_hash = {"text": {}, "image": {}, "file": {}, "url": {}}
         self._search_edits = {}
         self._search_timers = {}
@@ -3650,6 +4136,8 @@ class YouBoardApp(QMainWindow):
         self._cur_text_entry = None
         self._cached_pil = None
         self._cached_path = None
+        self._cached_qpixmap = None
+        self._cached_qpixmap_path = None
         self._last_render_key = None
         self._status_timer = None
         self._dot_phase = 0
@@ -3662,6 +4150,10 @@ class YouBoardApp(QMainWindow):
         self._image_loader = None
         self._pending_image = None
         self._fade_anim = None
+        self._max_before_hide = False
+        self._last_geo = None      # 记住最后一次真实的窗口位置/大小
+        self._last_max = False     # 记住最后一次是否最大化
+        self._state_ready = False  # 启动稳定后才允许自动保存窗口状态
         self._resize_edge = 0
         self._resize_start_geo = None
         self._resize_start_pos = None
@@ -3669,8 +4161,12 @@ class YouBoardApp(QMainWindow):
         self.setWindowTitle(tr("win_title"))
         self.resize(1180, 720)
         self.setMinimumSize(920, 540)
+        # 无边框窗口：留 1px 窗体边框当描边，让窗口和桌面分得清
+        self.setContentsMargins(1, 1, 1, 1)
         # Restore saved window geometry
         cfg = load_config()
+        # 设置了背景图时启用半透明面板（让壁纸透出来）；没背景时保持原来的实心观感
+        set_glass_active(bg_configured(cfg))
         saved_geo = cfg.get("win_geometry")
         geo_ok = bool(saved_geo and len(saved_geo) == 4)
         if geo_ok:
@@ -3681,7 +4177,8 @@ class YouBoardApp(QMainWindow):
                 geo_ok = False
         if geo_ok:
             self.setGeometry(saved_geo[0], saved_geo[1], saved_geo[2], saved_geo[3])
-        if cfg.get("win_maximized", False):
+        self._restore_maximized = bool(cfg.get("win_maximized", False))
+        if self._restore_maximized:
             self.showMaximized()
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
@@ -3739,8 +4236,6 @@ class YouBoardApp(QMainWindow):
     def _build_ui(self):
         central = QWidget()
         central.setObjectName("rootSurface")
-        central.setStyleSheet(
-            "QWidget#rootSurface { background: transparent; }")
         self.setCentralWidget(central)
         self._bg_label = QLabel(central)
         self._bg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3757,27 +4252,33 @@ class YouBoardApp(QMainWindow):
 
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setHandleWidth(6)
+        _panel_bg = surface_bg()
+        # 有背景时分隔条自身不画底色：多层半透明叠加会把壁纸压黑
+        _split_bg = "transparent" if is_glass_active() else _panel_bg
         self._splitter.setStyleSheet(
-            f"QSplitter {{ background: {C['SURFACE']}; }}"
-            f"QSplitter::handle {{ background: {C['SURFACE']}; }}")
+            f"QSplitter {{ background: {_split_bg}; }}"
+            f"QSplitter::handle {{ background: {_split_bg}; }}")
         root.addWidget(self._splitter, 1)
 
         self._tabs = QTabWidget()
         self._tabs.setAutoFillBackground(True)
         _tabs_pal = self._tabs.palette()
-        _tabs_pal.setColor(QPalette.ColorRole.Window, QColor(C['SURFACE']))
+        if is_glass_active():
+            _tabs_pal.setColor(QPalette.ColorRole.Window, qcolor(C['GLASS_PANE']))
+        else:
+            _tabs_pal.setColor(QPalette.ColorRole.Window, QColor(C['SURFACE']))
         self._tabs.setPalette(_tabs_pal)
         self._tabs.setStyleSheet(
-            f"QTabWidget {{ background: {C['SURFACE']}; }}"
-            f"QTabBar {{ background: {C['SURFACE']}; }}")
+            f"QTabWidget {{ background: {_panel_bg}; }}"
+            f"QTabBar {{ background: {_panel_bg}; }}")
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self._splitter.addWidget(self._tabs)
 
         right_split = QSplitter(Qt.Orientation.Vertical)
         right_split.setHandleWidth(6)
         right_split.setStyleSheet(
-            f"QSplitter {{ background: {C['SURFACE']}; }}"
-            f"QSplitter::handle {{ background: {C['SURFACE']}; }}")
+            f"QSplitter {{ background: {_split_bg}; }}"
+            f"QSplitter::handle {{ background: {_split_bg}; }}")
         self._splitter.addWidget(right_split)
         self._build_preview_panel(right_split)
         self._build_history_panel(right_split)
@@ -3813,7 +4314,7 @@ class YouBoardApp(QMainWindow):
         header = QFrame()
         header.setStyleSheet(f"""
             QFrame {{
-                background: {C['SURFACE']};
+                background: {surface_bg(glass_key='GLASS_HEADER')};
                 border: none;
                 border-bottom: 1px solid {C['BORDER']};
                 border-radius: 0;
@@ -3937,6 +4438,12 @@ class YouBoardApp(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._record_window_state()
+        self._schedule_state_save()
+        # 窗口大小变化时同步标题栏的最大化/还原图标
+        # （被系统直接最大化时不会发 WindowStateChange，只能靠这里兜底）
+        if hasattr(self, '_title_bar'):
+            self._title_bar.update_max_btn()
         if hasattr(self, '_bg_label'):
             self._bg_label.setGeometry(self.rect())
             if self._bg_pixmap and not self._bg_pixmap.isNull():
@@ -4000,6 +4507,17 @@ class YouBoardApp(QMainWindow):
                 self._pause_motion()
             elif self.isVisible():
                 self._resume_motion()
+            # 最大化/还原后记录并保存状态，异常退出也不会丢
+            self._record_window_state()
+            self._schedule_state_save()
+            # 状态切换后几何要等一拍才最终确定，延迟再记一次，避免记到过渡值
+            QTimer.singleShot(180, self._record_window_state)
+            QTimer.singleShot(240, self._schedule_state_save)
+
+    def moveEvent(self, event):
+        super().moveEvent(event)
+        self._record_window_state()
+        self._schedule_state_save()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -4213,13 +4731,21 @@ class YouBoardApp(QMainWindow):
         act_row.addWidget(export_btn)
         lay.addLayout(act_row)
 
-        table = QTableWidget()
+        table = _Table()
+        # 内容列会按内容撑开，横向滚动条用来左右拖动看完整内容
+        table.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # 逐像素滚动：滚动更顺滑，不再一格一格地跳
+        table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         table.setAlternatingRowColors(True)
         table.setShowGrid(False)
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # 点选单元格后不要那圈细焦点框（选中高亮保留）
+        table.setItemDelegate(_NoFocusDelegate(table))
         table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         table.customContextMenuRequested.connect(
             lambda pos, t=etype: self._on_right_click(t, pos))
@@ -4230,26 +4756,29 @@ class YouBoardApp(QMainWindow):
         if etype == "text":
             table.setColumnCount(4)
             table.setHorizontalHeaderLabels(["#", tr("col_time"), "", tr("col_preview")])
-            table.setColumnWidth(0, 44)
-            table.setColumnWidth(1, 150)
+            table.setColumnWidth(0, 58)
+            table.setColumnWidth(1, 186)
             table.setColumnWidth(2, 30)
-            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+            self._flex_cols[etype] = 3
         elif etype == "url":
             table.setColumnCount(4)
             table.setHorizontalHeaderLabels(["#", tr("col_time"), "", tr("col_url")])
-            table.setColumnWidth(0, 44)
-            table.setColumnWidth(1, 150)
+            table.setColumnWidth(0, 58)
+            table.setColumnWidth(1, 186)
             table.setColumnWidth(2, 30)
-            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+            self._flex_cols[etype] = 3
         elif etype == "image":
             table.setColumnCount(7)
             table.setHorizontalHeaderLabels(
                 ["#", tr("col_time"), "", tr("col_filename"), tr("col_format"),
                  tr("col_dims"), tr("col_size")])
-            table.setColumnWidth(0, 44)
-            table.setColumnWidth(1, 140)
+            table.setColumnWidth(0, 58)
+            table.setColumnWidth(1, 186)
             table.setColumnWidth(2, 30)
-            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+            self._flex_cols[etype] = 3
             table.setColumnWidth(4, 58)
             table.setColumnWidth(5, 92)
             table.setColumnWidth(6, 74)
@@ -4258,14 +4787,26 @@ class YouBoardApp(QMainWindow):
             table.setHorizontalHeaderLabels(
                 ["#", tr("col_time"), "", tr("col_count"), tr("col_format"),
                  tr("col_size"), tr("col_files")])
-            table.setColumnWidth(0, 44)
-            table.setColumnWidth(1, 132)
+            table.setColumnWidth(0, 58)
+            table.setColumnWidth(1, 186)
             table.setColumnWidth(2, 30)
             table.setColumnWidth(3, 46)
             table.setColumnWidth(4, 62)
             table.setColumnWidth(5, 74)
-            table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+            table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+            self._flex_cols[etype] = 6
 
+        # 内容列的标题靠左（该列会被内容撑得很宽，居中会跑到很右边去）
+        _flex = self._flex_cols.get(etype)
+        if _flex is not None:
+            _head = table.horizontalHeaderItem(_flex)
+            if _head is not None:
+                _head.setTextAlignment(
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        # 时间列标题与时间值都居中，保证标题正对着下面时间的中心
+        _time_head = table.horizontalHeaderItem(1)
+        if _time_head is not None:
+            _time_head.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(table, 1)
         self._tables[etype] = table
         if etype == "text":
@@ -4276,7 +4817,8 @@ class YouBoardApp(QMainWindow):
 
     def _build_preview_panel(self, parent_split):
         pf = QFrame()
-        pf.setStyleSheet("background: transparent; border: none;")
+        pf.setStyleSheet(
+            f"background: {glass_transparent()}; border: none;")
         pf.setFrameShape(QFrame.Shape.NoFrame)
         pl = QVBoxLayout(pf)
         pl.setContentsMargins(8, 6, 8, 6)
@@ -4288,15 +4830,24 @@ class YouBoardApp(QMainWindow):
         # 标题留在边框外；只给真正的预览内容区域绘制边界。
         preview_box = QFrame()
         preview_box.setStyleSheet(
-            f"background: {C['SURFACE']}; border: 1px solid {C['BORDER_LT']};"
+            f"background: {surface_bg(glass_key='GLASS_CARD')};"
+            f" border: 1px solid {C['BORDER_LT']};"
             " border-radius: 10px;")
         box_lay = QVBoxLayout(preview_box)
         box_lay.setContentsMargins(4, 4, 4, 4)
         box_lay.setSpacing(0)
         self._preview_scroll = QScrollArea()
         self._preview_scroll.setWidgetResizable(True)
+        if is_glass_active():
+            # 有壁纸时必须显式透明：否则滚动控件会把父面板的半透明底色再画一遍，
+            # 叠起来壁纸被压暗（预览区会明显比历史面板黑）
+            self._preview_scroll.setStyleSheet(
+                f"background: {glass_transparent()}; border: none;")
+            self._preview_scroll.viewport().setStyleSheet(
+                f"background: {glass_transparent()};")
         self._preview_inner = QWidget()
-        self._preview_inner.setStyleSheet("background: transparent;")
+        self._preview_inner.setStyleSheet(
+            f"background: {glass_transparent()};")
         self._preview_layout = QVBoxLayout(self._preview_inner)
         self._preview_layout.setContentsMargins(4, 4, 4, 4)
         self._preview_layout.setSpacing(4)
@@ -4308,9 +4859,13 @@ class YouBoardApp(QMainWindow):
 
     def _build_history_panel(self, parent_split):
         hf = QFrame()
+        hf.setObjectName("histPanel")
+        # 选择器必须限定到面板本身：不带选择器的样式表会按类名匹配到子控件，
+        # QLabel 是 QFrame 的子类，会被套上一圈多余的方框（“历史快照”那圈就是它）
         hf.setStyleSheet(
-            f"background: {C['SURFACE']}; border: 1px solid {C['BORDER_LT']};"
-            " border-radius: 10px;")
+            f"QFrame#histPanel {{ background: {surface_bg(glass_key='GLASS_CARD')};"
+            f" border: 1px solid {C['BORDER_LT']};"
+            f" border-radius: 10px; }}")
         hl = QVBoxLayout(hf)
         hl.setContentsMargins(8, 6, 8, 6)
         hl.setSpacing(4)
@@ -4324,7 +4879,10 @@ class YouBoardApp(QMainWindow):
         title.setStyleSheet(f"color: {C['ACCENT']}; font-weight: bold; font-size: 12px;")
         hl.addWidget(title)
         self._hist_list = QListWidget()
-        self._hist_list.setStyleSheet("QListWidget { background: transparent; }")
+        # 快照列表自己保留圆角面板（原来那圈背景/描边就是它的）
+        self._hist_list.setStyleSheet(
+            f"QListWidget {{ background: {surface_bg(glass_key='GLASS_CARD')};"
+            f" border: 1px solid {C['BORDER_LT']}; border-radius: 10px; }}")
         self._hist_list.setAlternatingRowColors(False)
         self._hist_list.setSpacing(2)
         self._hist_list.doubleClicked.connect(lambda: self._restore_history())
@@ -4354,7 +4912,7 @@ class YouBoardApp(QMainWindow):
         bar = QFrame()
         bar.setFixedHeight(34)
         bar.setStyleSheet(
-            f"background: {C['SURFACE']};"
+            f"background: {surface_bg(glass_key='GLASS_HEADER')};"
             f" border-top: 1px solid {C['BORDER']};")
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(12, 0, 12, 0)
@@ -4362,11 +4920,13 @@ class YouBoardApp(QMainWindow):
         self._hint_lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px; background: transparent;")
         bl.addWidget(self._hint_lbl)
         bl.addStretch()
-        self._sel_lbl = QLabel()
+        self._sel_lbl = _AutoHideLabel()
         self._sel_lbl.setStyleSheet(f"color: {C['ACCENT']}; font-size: 12px; font-weight: bold; background: transparent;")
+        self._sel_lbl.setVisible(False)
         bl.addWidget(self._sel_lbl)
-        self._status_lbl = QLabel()
+        self._status_lbl = _AutoHideLabel()
         self._status_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px; font-weight: bold; background: transparent;")
+        self._status_lbl.setVisible(False)
         bl.addWidget(self._status_lbl)
         root.addWidget(bar)
 
@@ -4622,7 +5182,7 @@ class YouBoardApp(QMainWindow):
                 item = QTableWidgetItem(val)
                 if etype == "text" and col == 3:
                     item.setData(_InlineImageDelegate.HTML_ROLE, preview_html)
-                if col in (0, 2):
+                if col in (0, 1, 2):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if is_pin:
                     item.setBackground(pin_color)
@@ -4633,6 +5193,20 @@ class YouBoardApp(QMainWindow):
                 table.setItem(i, col, item)
             iid_map[i] = entry["hash"]
         self._iid_to_hash[etype] = iid_map
+        # 内容列按内容撑开（不窄于剩余宽度）：这样横向滚动条才有可拖动的范围，
+        # 长内容可以左右拖动看全
+        flex_col = getattr(self, "_flex_cols", {}).get(etype)
+        if flex_col is not None and flex_col < table.columnCount():
+            try:
+                hint = table.sizeHintForColumn(flex_col)
+                others = sum(table.columnWidth(c)
+                             for c in range(table.columnCount())
+                             if c != flex_col)
+                target = max(hint, table.viewport().width() - others)
+                if abs(table.columnWidth(flex_col) - target) > 2:
+                    table.setColumnWidth(flex_col, target)
+            except Exception:
+                pass
         pin_n = self.store.pinned_count(etype)
         cl = self._count_labels.get(etype)
         if cl:
@@ -5010,6 +5584,12 @@ class YouBoardApp(QMainWindow):
         gen = self._preview_gen
         self._cur_image_entry = entry
         self._clear_preview()
+        # 切换记录时先丢弃上一张已解码的图：
+        # 否则当前记录图片文件缺失（或还在后台解码）时，
+        # 标签重排触发的重绘会把上一张图当成这一条记录显示。
+        self._cached_qpixmap = None
+        self._cached_qpixmap_path = None
+        self._last_render_key = None
         img_path = self._image_full_path(entry)
         thumb_path = os.path.join(os.path.dirname(img_path), "thumb_" + os.path.basename(img_path))
         self._preview_img_lbl = QLabel()
@@ -5108,8 +5688,10 @@ class YouBoardApp(QMainWindow):
             qimg = QImage(data, rgba.width, rgba.height,
                           rgba.width * 4, QImage.Format.Format_RGBA8888).copy()
             self._cached_qpixmap = QPixmap.fromImage(qimg)
+            self._cached_qpixmap_path = path
         except Exception:
             self._cached_qpixmap = None
+            self._cached_qpixmap_path = None
         self._render_preview_image()
         # Delayed re-render in case label size wasn't final yet
         QTimer.singleShot(100, self._render_preview_image)
@@ -5119,6 +5701,11 @@ class YouBoardApp(QMainWindow):
             return
         pm = getattr(self, '_cached_qpixmap', None)
         if pm is None or pm.isNull():
+            return
+        # 只画“当前这条记录”的图；文件缺失或尚未解码完成时保持占位提示，
+        # 绝不能把上一张已缓存的图重新画到这个标签上。
+        if (not self._cur_image_path
+                or getattr(self, '_cached_qpixmap_path', None) != self._cur_image_path):
             return
         lbl_w = self._preview_img_lbl.width()
         lbl_h = self._preview_img_lbl.height()
@@ -5613,14 +6200,15 @@ class YouBoardApp(QMainWindow):
         dlg = PhoneTransferDialog(self)
         dlg.exec()
 
-    def apply_settings(self, lang, autostart, theme="dark", bg_changed=False):
+    def apply_settings(self, lang, autostart, theme="dark", bg_changed=False,
+                       force_restart=False):
         if autostart != get_autostart():
             if set_autostart(autostart):
                 self._set_status(tr("st_autostart_on") if autostart else tr("st_autostart_off"), "ok")
             else:
                 self._set_status(tr("st_autostart_failed"), "err")
         cfg = load_config()
-        need_restart = bg_changed
+        need_restart = bool(bg_changed or force_restart)
         if cfg.get("language", "zh") != lang:
             cfg["language"] = lang
             need_restart = True
@@ -5666,12 +6254,18 @@ class YouBoardApp(QMainWindow):
     # ------------------------------------------------------------------
     def _apply_max_state(self):
         """最大化时内容贴合屏幕左缘（左边距归零 + 直角面板），消除圆角缺口。"""
-        maxed = self.isMaximized()
+        maxed = self._is_window_maximized()
         if getattr(self, "_flush", None) == maxed:
             return
         self._flush = maxed
+        # 1px 外框只在普通窗口下保留（最大化时贴着屏幕边，留着反而多余）
+        if maxed:
+            self.setContentsMargins(0, 0, 0, 0)
+        else:
+            self.setContentsMargins(1, 1, 1, 1)
         for lay in getattr(self, "_tab_layouts", []):
-            lay.setContentsMargins(0 if maxed else 8, 8, 8, 8)
+            # 最大化时也留一点左边距：内容贴着屏幕边缘看着太挤
+            lay.setContentsMargins(8, 8, 8, 8)
         try:
             self.setStyleSheet(build_qss(load_config().get("theme", "dark"), flush=maxed))
         except Exception:
@@ -5726,20 +6320,117 @@ class YouBoardApp(QMainWindow):
     def _save_window_geometry(self):
         """退出/重启前保存主窗口位置、大小与最大化状态，保证下次启动原样恢复。"""
         try:
+            self._record_window_state()
             cfg = load_config()
-            geo = self.normalGeometry() if self.isMaximized() else self.geometry()
-            cfg["win_geometry"] = [geo.x(), geo.y(), geo.width(), geo.height()]
-            cfg["win_maximized"] = self.isMaximized()
+            maxed = bool(getattr(self, "_last_max", self._is_window_maximized()))
+            geo = getattr(self, "_last_geo", None)
+            if geo is not None and self._rect_is_maximized(geo):
+                # 整屏大小的矩形只可能来自最大化（或状态切换那一瞬间）。
+                # 若把它当作“普通大小”写进配置，下次启动会被判成脏数据并退回默认
+                # 大小，用户刚调好的尺寸就白调了——所以这里不覆盖已有的值。
+                geo = None
+                maxed = True
+            if geo is None:
+                if not cfg.get("win_geometry"):
+                    base = (self.normalGeometry() if self._is_window_maximized()
+                            else self.geometry())
+                    cfg["win_geometry"] = [base.x(), base.y(),
+                                           base.width(), base.height()]
+            else:
+                cfg["win_geometry"] = [geo.x(), geo.y(), geo.width(), geo.height()]
+            cfg["win_maximized"] = maxed
             save_config(cfg)
         except Exception:
             pass
+
+    @staticmethod
+    def _rect_is_maximized(geo):
+        """几何是否等于（或几乎等于）所在屏幕的可用区。
+
+        最大化、以及最大化/还原切换的瞬间都会返回整屏矩形。
+        """
+        try:
+            screen = QApplication.screenAt(geo.center())
+            if screen is None:
+                screen = QApplication.primaryScreen()
+            avail = screen.availableGeometry()
+            return (abs(geo.width() - avail.width()) <= 2
+                    and abs(geo.height() - avail.height()) <= 2)
+        except Exception:
+            return False
+
+    def _is_window_maximized(self):
+        """窗口是否处于最大化。
+
+        无边框窗口（自绘标题栏 + 手动补的 WS_THICKFRAME）有时会被系统直接最大化，
+        Qt 的状态位没跟上：窗口看着已经铺满屏幕，isMaximized() 却是 False，
+        于是标题栏图标不切换、退出时也记不住最大化。这里补上几何判断兜底。
+        """
+        try:
+            return bool(self.isMaximized()
+                        or self._rect_is_maximized(self.geometry()))
+        except Exception:
+            return False
+
+    def _restore_normal_size(self):
+        """还原成普通窗口：优先用记住的普通大小，保证一定缩得回去。"""
+        try:
+            if self.isMaximized():
+                self.showNormal()
+        except Exception:
+            pass
+        geo = getattr(self, "_last_geo", None)
+        try:
+            if geo is not None and not self._rect_is_maximized(geo):
+                if self._rect_is_maximized(self.geometry()):
+                    self.setGeometry(geo)
+                return
+        except Exception:
+            pass
+        try:
+            self.showNormal()
+        except Exception:
+            pass
+
+    def _record_window_state(self):
+        """记录当前窗口状态。
+
+        窗口隐藏后代 isMaximized()/normalGeometry() 会失真（会被记成普通窗口和默认
+        大小），所以隐藏时先把真实状态记下来，退出时直接用记住的值。
+        另外：无边框窗口在“最大化/还原”切换的一瞬间，状态位已经变了而几何还是
+        整屏矩形；这种值一旦被当成“普通大小”记下来，用户上次调好的大小就丢了。
+        """
+        try:
+            if self.isVisible() and not self.isMinimized():
+                if self._is_window_maximized():
+                    self._last_max = True
+                    # 最大化时不要用 normalGeometry() 覆盖已记录的普通大小
+                    if self._last_geo is None:
+                        self._last_geo = self.normalGeometry()
+                else:
+                    self._last_geo = self.geometry()
+                    self._last_max = False
+        except Exception:
+            pass
+
+    def _schedule_state_save(self):
+        """窗口大小/位置变化后延迟保存一次，避免异常退出（断电、结束进程）丢状态。"""
+        if not getattr(self, "_state_ready", False):
+            return
+        timer = getattr(self, "_state_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._save_window_geometry)
+            self._state_timer = timer
+        timer.start(900)
 
     def _init_tray(self):
         """创建并显示系统托盘图标（幂等）。启动早期调用，保证图标及时出现。"""
         if getattr(self, "_tray", None) is not None:
             return
         self._tray = QSystemTrayIcon(_build_tray_icon(), self)
-        tray_menu = QMenu()
+        tray_menu = _RoundMenu()
         show_act = QAction(tr("tray_show"), self)
         show_act.triggered.connect(self._tray_show)
         self._tray_session_act = QAction(tr("tray_session"), self)
@@ -5978,13 +6669,18 @@ class YouBoardApp(QMainWindow):
         self._register_hotkey()
         # Fade-in animation
         self._fade_in()
-        self.show()
+        if getattr(self, "_restore_maximized", False):
+            self.showMaximized()
+        else:
+            self.show()
         # 开机自启动时任务栏偶发显示默认占位图标：onefile 程序启动阶段
         # 解压/初始化较慢，任务栏可能在图标就绪前就抓取了占位图标；
         # 这里在窗口显示后（立即 + 延迟）重新注册 AppUserModelID 并重设图标，
         # 让 shell 有机会重新解析为正确的 YouBoard 图标。
         QTimer.singleShot(0, self._refresh_taskbar_icon)
         QTimer.singleShot(1500, self._refresh_taskbar_icon)
+        # 启动稳定后才开启"窗口大小自动保存"，避免启动阶段的默认尺寸覆盖已存尺寸
+        QTimer.singleShot(3000, self._enable_state_autosave)
         # Add native resize borders to frameless window (WS_THICKFRAME)
         try:
             import ctypes
@@ -5998,6 +6694,14 @@ class YouBoardApp(QMainWindow):
                                                 style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
         except Exception:
             pass
+        # 原生样式位修改后再恢复一次最大化，避免被 Windows 重置为普通窗口。
+        if getattr(self, "_restore_maximized", False):
+            QTimer.singleShot(0, self.showMaximized)
+
+    def _enable_state_autosave(self):
+        """启动稳定后开启窗口状态自动保存（大小/位置/最大化）。"""
+        self._record_window_state()
+        self._state_ready = True
 
     def _refresh_taskbar_icon(self):
         """重新注册进程 AppUserModelID 并重设窗口/应用图标，强制任务栏刷新图标。"""
@@ -6106,14 +6810,22 @@ class YouBoardApp(QMainWindow):
             return  # debounce: ignore rapid double-fires
         self._hk_last_time = now
         if self.isVisible() and not self.isMinimized():
+            # 记住隐藏前的最大化状态：重新呼出时按原样恢复，不再被强制还原
+            self._max_before_hide = self._is_window_maximized()
+            self._record_window_state()
             self.hide()
         else:
-            self.showNormal()
-            self.activateWindow()
-            self.raise_()
+            self._show_preserving_state()
 
     def _tray_show(self):
-        self.showNormal()
+        self._show_preserving_state()
+
+    def _show_preserving_state(self):
+        """显示窗口时保持它原来的大小状态（最大化就还是最大化）。"""
+        if self._is_window_maximized() or getattr(self, "_max_before_hide", False):
+            self.showMaximized()
+        else:
+            self.showNormal()
         self.activateWindow()
         self.raise_()
 
@@ -6490,7 +7202,8 @@ class _HotkeyDialog(QDialog):
         self._values = dict(values)
         self._rows = {}
         self.setStyleSheet(f"""
-            QDialog {{ background-color: {C['BG']}; }}
+            QDialog {{ background-color: {C['DIALOG_BG']};
+                border: 1px solid {C['BORDER_LT']}; }}
             QLabel {{ background: transparent; color: {C['TEXT']}; }}
             QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
                 border: 1px solid {C['BORDER']}; border-radius: 6px;
@@ -6702,7 +7415,8 @@ class PhoneTransferDialog(QDialog):
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
         self.setStyleSheet(f"""
-            QDialog {{ background-color: {C['BG']}; }}
+            QDialog {{ background-color: {C['DIALOG_BG']};
+                border: 1px solid {C['BORDER_LT']}; }}
             QLabel {{ background: transparent; color: {C['TEXT']}; }}
             QLabel#muted {{ color: {C['TEXT_MUTED']}; font-size: 11px; }}
             QLabel#url {{ color: {C['ACCENT']}; font-size: 11px; font-family: Consolas; }}
@@ -6999,13 +7713,73 @@ class PhoneTransferDialog(QDialog):
         event.accept()
 
 
+class _SkinTile(QFrame):
+    """皮肤卡片：上面一小块配色预览，下面是皮肤名；选中时描边高亮。"""
+
+    clicked = pyqtSignal(str)
+
+    def __init__(self, skin_id, title, parent=None):
+        super().__init__(parent)
+        self._skin_id = skin_id
+        self._selected = False
+        self.setObjectName("skinTile")
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(7, 7, 7, 5)
+        lay.setSpacing(4)
+        preview = QLabel()
+        preview.setObjectName("skinPreview")
+        preview.setPixmap(_skin_preview_pixmap(skin_id))
+        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview = preview
+        lay.addWidget(preview, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._name = QLabel(title)
+        self._name.setObjectName("skinName")
+        self._name.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._name)
+        self.set_selected(False)
+
+    def skin_id(self):
+        return self._skin_id
+
+    def refresh_preview(self):
+        """自定义皮肤改了颜色后，重新画一遍预览小图。"""
+        try:
+            self._preview.setPixmap(_skin_preview_pixmap(self._skin_id))
+        except Exception:
+            pass
+
+    def set_selected(self, flag):
+        self._selected = bool(flag)
+        if self._selected:
+            self.setStyleSheet(
+                f"QFrame#skinTile {{ background: {C['ACCENT_DIM']}; "
+                f"border: 2px solid {C['ACCENT']}; border-radius: 10px; }}")
+            self._name.setStyleSheet(
+                f"background: transparent; color: {C['TEXT']}; "
+                f"font-size: 11px; font-weight: 600;")
+        else:
+            self.setStyleSheet(
+                f"QFrame#skinTile {{ background: {C['SURFACE2']}; "
+                f"border: 2px solid {C['BORDER']}; border-radius: 10px; }}"
+                f"QFrame#skinTile:hover {{ border-color: {C['BORDER_LT']}; }}")
+            self._name.setStyleSheet(
+                f"background: transparent; color: {C['TEXT_SEC']}; "
+                f"font-size: 11px;")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._skin_id)
+        super().mousePressEvent(event)
+
+
 class SettingsDialog(QDialog):
 
     def __init__(self, app):
         super().__init__(app)
         self.app = app
         header = _make_frameless_dialog(self, tr("settings_title"))
-        self.resize(620 if LANG == "en" else 500, 680)
+        self.resize(620 if LANG == "en" else 500, 740)
         self.setMinimumSize(560 if LANG == "en" else 460, 560)
         self.setSizeGripEnabled(True)
         if LOGO_ICO and os.path.exists(LOGO_ICO):
@@ -7019,13 +7793,15 @@ class SettingsDialog(QDialog):
                                   or {"mode": "forever"})
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        # 预留 2px：保证面板外沿的描边不会被内部控件盖住（左侧曾经整条消失）
+        root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(0)
         root.addWidget(header)
         self.setStyleSheet(f"""
-            QDialog {{ background-color: {C['BG']}; }}
+            QDialog {{ background-color: {C['DIALOG_BG']};
+                border: 2px solid {C['DIALOG_EDGE']}; }}
             QScrollArea {{ background: transparent; border: none; }}
-            QScrollArea > QWidget > QWidget {{ background: {C['BG']}; }}
+            QScrollArea > QWidget > QWidget {{ background: {C['DIALOG_BG']}; }}
             QWidget {{ color: {C['TEXT']}; font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; }}
             QLabel {{ background: transparent; color: {C['TEXT']}; }}
             QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']}; border: 1px solid {C['BORDER']};
@@ -7056,8 +7832,8 @@ class SettingsDialog(QDialog):
             self._refresh_button_cursors)
         inner = QWidget()
         self._lay = QVBoxLayout(inner)
-        self._lay.setContentsMargins(16, 12, 16, 12)
-        self._lay.setSpacing(12)
+        self._lay.setContentsMargins(14, 9, 14, 9)
+        self._lay.setSpacing(7)
         scroll.setWidget(inner)
         root.addWidget(scroll, 1)
 
@@ -7156,6 +7932,36 @@ class SettingsDialog(QDialog):
         self._lay.addLayout(theme_row)
         self._paint_theme()
 
+        # 皮肤：和暗色 / 亮色同级，只能选一种（三列配色预览卡片，紧凑清晰）
+        skin_title = QLabel(tr("set_skin"))
+        skin_title.setStyleSheet(
+            f"color: {C['TEXT_SEC']}; font-size: 11px; font-weight: bold; "
+            f"letter-spacing: 1px; padding-top: 10px;")
+        self._lay.addWidget(skin_title)
+        self._skin_tiles = {}
+        skin_grid = QGridLayout()
+        skin_grid.setContentsMargins(0, 0, 0, 0)
+        skin_grid.setHorizontalSpacing(10)
+        skin_grid.setVerticalSpacing(8)
+        for col in range(3):
+            skin_grid.setColumnStretch(col, 1)
+        skin_items = [(spec["id"], tr("skin_" + spec["id"]))
+                      for spec in _SKIN_SPECS]
+        skin_items.append((CUSTOM_SKIN_ID, tr("skin_custom")))
+        for idx, (sid, label) in enumerate(skin_items):
+            tile = _SkinTile(sid, label)
+            tile.clicked.connect(self._pick_theme)
+            skin_grid.addWidget(tile, idx // 3, idx % 3)
+            self._skin_tiles[sid] = tile
+        self._lay.addLayout(skin_grid)
+        self._custom_skin_btn = QPushButton(tr("set_skin_custom_edit"))
+        self._custom_skin_btn.setCursor(
+            QCursor(Qt.CursorShape.PointingHandCursor))
+        self._custom_skin_btn.clicked.connect(self._edit_custom_skin)
+        self._lay.addWidget(self._custom_skin_btn, 0,
+                            Qt.AlignmentFlag.AlignLeft)
+        self._paint_theme()
+
         # Background card
         self._card(tr("set_bg"))
         bg_row = QHBoxLayout()
@@ -7188,7 +7994,7 @@ class SettingsDialog(QDialog):
         self._bg_history.setViewMode(QListView.ViewMode.IconMode)
         self._bg_history.setFlow(QListView.Flow.LeftToRight)
         self._bg_history.setWrapping(False)
-        self._bg_history.setFixedHeight(76)
+        self._bg_history.setFixedHeight(62)
         self._bg_history.setIconSize(QSize(56, 40))
         # 历史壁纸仅供点击选用，禁止拖拽/改序
         self._bg_history.setMovement(QListView.Movement.Static)
@@ -7332,10 +8138,26 @@ class SettingsDialog(QDialog):
             pass
 
     def _card(self, title):
+        box = QFrame()
+        box.setObjectName("settingsSection")
+        box.setStyleSheet(
+            f"QFrame#settingsSection {{ background: {C['SURFACE3']};"
+            f" border: 1px solid {C['BORDER_LT']}; border-radius: 8px; }}")
+        row = QHBoxLayout(box)
+        row.setContentsMargins(10, 4, 10, 4)
+        row.setSpacing(8)
+        accent = QFrame()
+        accent.setFixedSize(3, 14)
+        accent.setStyleSheet(
+            f"background: {C['ACCENT']}; border: none; border-radius: 1px;")
+        row.addWidget(accent)
         lbl = QLabel(title)
-        lbl.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px; font-weight: bold; "
-                          f"letter-spacing: 1px; padding-top: 8px;")
-        self._lay.addWidget(lbl)
+        lbl.setStyleSheet(
+            f"color: {C['TEXT_SEC']}; font-size: 11px; font-weight: 700;"
+            " letter-spacing: 1px;")
+        row.addWidget(lbl)
+        row.addStretch()
+        self._lay.addWidget(box)
 
     def _add_sep(self):
         line = QFrame()
@@ -7366,11 +8188,94 @@ class SettingsDialog(QDialog):
     def _paint_theme(self):
         for tname, btn in self._theme_btns.items():
             if tname == self._theme_sel:
-                btn.setStyleSheet(f"background: {C['ACCENT']}; color: #0c1420; font-weight: bold; "
+                btn.setStyleSheet(f"background: {C['ACCENT']}; color: {_on_accent_color()}; font-weight: bold; "
                                   f"border-radius: 6px; padding: 7px 16px;")
             else:
                 btn.setStyleSheet(f"background: {C['SURFACE3']}; color: {C['TEXT_SEC']}; "
                                   f"border-radius: 6px; padding: 7px 16px;")
+        for sid, tile in getattr(self, "_skin_tiles", {}).items():
+            tile.set_selected(sid == self._theme_sel)
+
+    def _edit_custom_skin(self):
+        """自定义皮肤颜色：底色 / 面板 / 文字 / 强调色。"""
+        cfg = load_config()
+        current = {}
+        for key, default in _CUSTOM_SKIN_DEFAULTS.items():
+            value = str(cfg.get(key, default) or default)
+            current[key] = value if QColor(value).isValid() else default
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("skin_dlg_title"))
+        dlg.setModal(True)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(9)
+        title = QLabel(tr("skin_dlg_title"))
+        title.setStyleSheet(f"color: {C['TEXT']}; font-size: 13px; font-weight: bold;")
+        lay.addWidget(title)
+        hint = QLabel(tr("skin_dlg_hint"))
+        hint.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        picks = {}
+        for key, label_key in (("skin_custom_bg", "skin_dlg_bg"),
+                               ("skin_custom_surface", "skin_dlg_surface"),
+                               ("skin_custom_text", "skin_dlg_text"),
+                               ("skin_custom_accent", "skin_dlg_accent")):
+            row = QHBoxLayout()
+            name_lbl = QLabel(tr(label_key))
+            name_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+            name_lbl.setFixedWidth(70)
+            row.addWidget(name_lbl)
+            swatch = QPushButton(current[key])
+            swatch.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            swatch.setMinimumWidth(140)
+
+            def _paint_swatch(btn, color):
+                btn.setText(color)
+                btn.setStyleSheet(
+                    f"background: {color}; color: "
+                    f"{'#111111' if _luminance(color) > 0.5 else '#ffffff'};"
+                    f" border: 1px solid {C['BORDER_LT']}; border-radius: 6px;"
+                    f" padding: 6px 10px;")
+
+            _paint_swatch(swatch, current[key])
+
+            def _pick(btn=swatch, cfg_key=key):
+                picked = QColorDialog.getColor(
+                    QColor(current[cfg_key]), dlg, tr("skin_dlg_pick"))
+                if picked.isValid():
+                    current[cfg_key] = picked.name()
+                    _paint_swatch(btn, current[cfg_key])
+
+            swatch.clicked.connect(_pick)
+            row.addWidget(swatch, 1)
+            lay.addLayout(row)
+            picks[key] = swatch
+        btns = QHBoxLayout()
+        btns.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.clicked.connect(dlg.reject)
+        btns.addWidget(cancel)
+        ok = QPushButton(tr("btn_save"))
+        ok.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        ok.setStyleSheet(
+            f"background: {C['ACCENT']}; color: {_on_accent_color()}; "
+            f"font-weight: bold; border-radius: 6px; padding: 7px 16px;")
+        ok.clicked.connect(dlg.accept)
+        btns.addWidget(ok)
+        lay.addLayout(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        cfg = load_config()
+        for key, value in current.items():
+            cfg[key] = value
+        save_config(cfg)
+        self._theme_sel = CUSTOM_SKIN_ID
+        self._custom_skin_dirty = True
+        tile = getattr(self, "_skin_tiles", {}).get(CUSTOM_SKIN_ID)
+        if tile is not None:
+            tile.refresh_preview()
+        self._paint_theme()
 
     def _bg_display_name(self):
         if self._bg_path and os.path.exists(self._bg_path):
@@ -7562,7 +8467,9 @@ class SettingsDialog(QDialog):
             self.app.set_temporary_session(self._session_cb.isChecked())
             self.accept()
             self.app.apply_settings(self._lang_sel, self._auto_cb.isChecked(),
-                                    self._theme_sel, bg_changed)
+                                    self._theme_sel, bg_changed,
+                                    force_restart=bool(getattr(
+                                        self, "_custom_skin_dirty", False)))
         except Exception:
             import traceback as _tb
             _tb.print_exc()
@@ -7628,11 +8535,23 @@ class SettingsDialog(QDialog):
             import urllib.error
             err_str = str(e)
             if isinstance(e, urllib.error.HTTPError) and e.code == 403:
-                QMessageBox.warning(self, tr("upd_title"), tr("upd_rate_limit"))
+                _UpdateStatusDialog(
+                    self, self.app, APP_VERSION,
+                    title=tr("upd_title"),
+                    detail=tr("upd_rate_limit"),
+                    kind="warning").exec()
             elif isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError, OSError)):
-                QMessageBox.warning(self, tr("upd_title"), tr("upd_network_err"))
+                _UpdateStatusDialog(
+                    self, self.app, APP_VERSION,
+                    title=tr("upd_title"),
+                    detail=tr("upd_network_err"),
+                    kind="warning").exec()
             else:
-                QMessageBox.warning(self, tr("upd_title"), tr("upd_failed", e=err_str))
+                _UpdateStatusDialog(
+                    self, self.app, APP_VERSION,
+                    title=tr("upd_title"),
+                    detail=tr("upd_failed", e=err_str),
+                    kind="warning").exec()
 
     def _do_update(self, dl_url, new_version, release_name, release_body):
         """Download new EXE in-app with live progress, then replace + restart."""
@@ -7717,7 +8636,8 @@ class CloudSyncDialog(QDialog):
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
         self.setStyleSheet(f"""
-            QDialog {{ background-color: {C['BG']}; }}
+            QDialog {{ background-color: {C['DIALOG_BG']};
+                border: 1px solid {C['BORDER_LT']}; }}
             QLabel {{ background: transparent; color: {C['TEXT']}; }}
             QLabel#muted {{ color: {C['TEXT_MUTED']}; font-size: 11px; }}
             QComboBox, QLineEdit {{ background: {C['INPUT_BG']}; color: {C['TEXT']};

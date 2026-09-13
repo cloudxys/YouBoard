@@ -1,8 +1,8 @@
-; YouBoard v2.9.0 Inno Setup 安装脚本
+; YouBoard v3.0.0 Inno Setup 安装脚本
 ; 功能：多盘检测选最大空闲盘根目录安装，数据保留更新，uninstall.exe，自定义图标
 
 #define MyAppName "YouBoard"
-#define MyAppVersion "2.9.0"
+#define MyAppVersion "3.0.0"
 #define MyAppPublisher "YouBoard"
 #define MyAppExeName "YouBoard.exe"
 #define MyAppURL "https://github.com/cloudxys/YouBoard"
@@ -22,7 +22,11 @@ UninstallDisplayIcon={app}\YouBoard.ico
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 Compression=lzma2/max
 SolidCompression=yes
+; 安装/卸载界面统一成应用本身的浅色风格（浅灰底 + 应用图标），安装和卸载共用。
+; 这里只用 Inno 6/7 都支持的写法，保证 GitHub Actions 上的 Inno 版本也能编译通过。
 WizardStyle=modern
+WizardImageFile=res\setup_wizard_large.bmp
+WizardSmallImageFile=res\setup_wizard_small.bmp
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -133,4 +137,15 @@ begin
         'QuietUninstallString', UninstStr + ' /SILENT');
     end;
   end;
+end;
+
+{ 让安装 / 卸载窗口用应用同款浅色底（浅灰 #f3f4f6，TColor 是 BGR 顺序） }
+procedure InitializeWizard();
+begin
+  WizardForm.Color := $00F6F4F3;
+end;
+
+procedure InitializeUninstallProgressForm();
+begin
+  UninstallProgressForm.Color := $00F6F4F3;
 end;
