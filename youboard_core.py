@@ -343,6 +343,11 @@ if IS_WIN:
     # 只有 FileGroupDescriptorW（文件清单）+ FileContents（按需取内容）。
     CF_FILEGROUPDESCRIPTORW = user32.RegisterClipboardFormatW("FileGroupDescriptorW")
     CF_FILECONTENTS = user32.RegisterClipboardFormatW("FileContents")
+    # 其它常见的"复制文件"格式（不同程序发布文件时用的格式名不一样）
+    CF_FILENAMEW = user32.RegisterClipboardFormatW("FileNameW")
+    CF_FILENAME = user32.RegisterClipboardFormatW("FileName")
+    CF_SHELLIDLIST = user32.RegisterClipboardFormatW("Shell IDList Array")
+    CF_PREFERREDDROPEFFECT = user32.RegisterClipboardFormatW("Preferred DropEffect")
 
 
 # ===========================================================================
@@ -743,23 +748,38 @@ def _mac_get_clipboard_content():
     return (None, None)
 
 
-def get_clipboard_content():
+def get_clipboard_content(known_file_names=None):
     """Returns (type, data) tuple.
     type is 'text', 'image', 'file', or None.
     data is: str for text, PIL.Image for image, list[str] for files.
+
+    known_file_names：本工具已记录过的文件名集合（可选）。用于识别
+    "复制文件时剪贴板里附带的那段文件名文本"，避免它被当成普通文本收录。
     """
     if IS_MAC:
         return _mac_get_clipboard_content()
 
+    file_intent = _clipboard_file_intent()
+    has_hdrop = bool(user32.IsClipboardFormatAvailable(CF_HDROP))
     if HAS_PIL and (user32.IsClipboardFormatAvailable(CF_DIB)
                     or user32.IsClipboardFormatAvailable(2)          # CF_BITMAP
-                    or user32.IsClipboardFormatAvailable(CF_HDROP)):
+                    or has_hdrop):
         from PIL import Image, ImageGrab   # 懒加载：仅图片/文件拖放场景才载入 PIL
         result = ImageGrab.grabclipboard()
         if isinstance(result, Image.Image):
             return ("image", result)
         if isinstance(result, list):
             return ("file", result)
+
+    # 剪贴板里带着文件列表（CF_HDROP）时，绝不能再把它当文本收录：
+    # 否则"复制一个文件"会额外生成一条内容是文件名的文本记录。
+    # ImageGrab 偶尔取不到文件列表（硬件/虚拟文件、剪贴板被占用等），
+    # 这里自己解析一次 CF_HDROP 兜底。
+    if has_hdrop:
+        files = _read_hdrop_files()
+        if files:
+            return ("file", files)
+        return (None, None)
 
     # 压缩包/压缩文件夹内部复制：无 CF_HDROP，走 FileGroupDescriptor 物化
     try:
@@ -769,14 +789,131 @@ def get_clipboard_content():
     if fgd_files:
         return ("file", fgd_files)
 
+    # 剪贴板里带有"文件类"格式（FileGroupDescriptorW / FileNameW / Shell ID List
+    # Array / Preferred DropEffect 等）却拿不到路径时，同样不能退化成文本，
+    # 否则资源管理器/压缩软件/网盘客户端复制文件时会多出一条文件名文本记录。
+    if file_intent:
+        return ("file", [])
+
     try:
         text = pyperclip.paste()
         if text and text.strip():
+            files = _text_as_files(text, known_file_names)
+            if files is not None:
+                # 是文件路径 → 按文件收录；是已知文件名 → 不收录（复制文件的附带文本）
+                return ("file", files)
             return ("text", text)
     except Exception:
         pass
 
     return (None, None)
+
+
+_MEDIA_LIKE_EXTS = {
+    # 媒体（视频/音频/图片/设计稿）
+    ".mp4", ".mkv", ".avi", ".mov", ".flv", ".wmv", ".webm", ".m4v", ".ts",
+    ".mp3", ".wav", ".flac", ".aac", ".m4a", ".ogg", ".wma",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff",
+    ".psd", ".psb", ".ai", ".eps", ".svg", ".ico", ".raw", ".cr2", ".nef",
+    # 压缩包 / 镜像 / 可执行
+    ".zip", ".rar", ".7z", ".z01", ".z02", ".tar", ".gz", ".bz2", ".xz",
+    ".iso", ".cab", ".exe", ".msi", ".dll", ".apk", ".dmg", ".pkg",
+}
+
+
+def _looks_like_file_name(name):
+    """名字看起来是不是"文件名"：有主名 + 扩展名，且不含路径分隔符/非法字符。"""
+    if not name:
+        return False
+    if any(ch in name for ch in '\\/:*?"<>|'):
+        return False
+    root, ext = os.path.splitext(name)
+    return bool(root.strip()) and 2 <= len(ext) <= 9 and ext[1:].isalnum()
+
+
+def _text_as_files(text, known_file_names=None):
+    """判断剪贴板文本是不是"文件路径 / 文件名列表"。
+
+    返回 路径列表（按文件收录） / 空列表（判定为复制文件的附带文本，不收录）
+    / None（普通文本，按文本收录）。
+    """
+    try:
+        lines = [ln.strip() for ln in str(text).splitlines()]
+        lines = [ln for ln in lines if ln]
+        if not lines or len(lines) > 50:
+            return None
+        # 1) 每一行都是真实存在的文件 → 这是"复制文件路径"
+        if all(os.path.isfile(ln) for ln in lines):
+            return lines
+        # 2) 内容是"一个或多个文件名"（可能用 " | " 连接、名字里可以有空格）
+        #    → 资源管理器/压缩软件/网盘客户端复制文件时附带的那段文件名文本，
+        #    别把它收进文本分类。
+        parts = []
+        for ln in lines:
+            parts.extend(p.strip() for p in ln.split("|") if p.strip())
+        if parts:
+            names = [os.path.basename(p) for p in parts]
+            if all(_looks_like_file_name(n) for n in names):
+                known = known_file_names or set()
+                if any(n in known for n in names):
+                    return []
+                # 没在历史里出现过，但扩展名都是"媒体/压缩包/可执行"这类
+                # 基本不可能出现在普通文字里的类型 → 同样判定为文件
+                if all(os.path.splitext(n)[1].lower() in _MEDIA_LIKE_EXTS
+                       for n in names):
+                    return []
+    except Exception:
+        pass
+    return None
+
+
+def _clipboard_file_intent():
+    """剪贴板里是否带有"复制文件"的迹象（除 CF_HDROP 之外的常见文件格式）。"""
+    if not IS_WIN:
+        return False
+    try:
+        if user32.IsClipboardFormatAvailable(CF_HDROP):
+            return True
+        for fmt in (CF_FILEGROUPDESCRIPTORW, CF_FILECONTENTS,
+                    CF_FILENAMEW, CF_FILENAME,
+                    CF_SHELLIDLIST, CF_PREFERREDDROPEFFECT):
+            if fmt and user32.IsClipboardFormatAvailable(fmt):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _read_hdrop_files():
+    """直接解析剪贴板里的 CF_HDROP 文件列表（不依赖 ImageGrab）。"""
+    if not IS_WIN:
+        return []
+    try:
+        if not user32.IsClipboardFormatAvailable(CF_HDROP):
+            return []
+        if not user32.OpenClipboard(None):
+            return []
+        try:
+            hdrop = user32.GetClipboardData(CF_HDROP)
+            if not hdrop:
+                return []
+            shell32 = ctypes.windll.shell32
+            # wFlags = 0xFFFFFFFF 时返回文件个数
+            count = int(shell32.DragQueryFileW(hdrop, 0xFFFFFFFF, None, 0))
+            out = []
+            for i in range(count):
+                need = int(shell32.DragQueryFileW(hdrop, i, None, 0))
+                if need <= 0:
+                    continue
+                buf = ctypes.create_unicode_buffer(need + 1)
+                shell32.DragQueryFileW(hdrop, i, buf, need + 1)
+                if buf.value:
+                    out.append(buf.value)
+            return out
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        return []
 
 
 # ===========================================================================
@@ -1435,6 +1572,26 @@ class ClipboardStore:
             if entry_type:
                 return len(self.categories.get(entry_type, {}).get("pinned", []))
             return sum(len(c["pinned"]) for c in self.categories.values())
+
+    def known_file_names(self, limit=300):
+        """已记录过的文件名集合。
+
+        资源管理器 / 压缩软件 / 网盘客户端"复制文件"时，剪贴板里常会附带
+        一段文件名文本；用它来判断那段文本其实是文件而不是普通文本。
+        """
+        names = set()
+        try:
+            with self._lock:
+                cat = self.categories.get("file", {}) or {}
+                entries = list(cat.get("pinned", [])) + list(cat.get("entries", []))
+            for e in entries[:limit]:
+                for p in self._norm_paths(e):
+                    n = os.path.basename(p)
+                    if n:
+                        names.add(n)
+        except Exception:
+            pass
+        return names
 
     def unpinned_count(self, entry_type=None):
         with self._lock:
@@ -2205,7 +2362,8 @@ class ClipboardMonitor(threading.Thread):
             ctype, data = None, None
         self._last_text = data if ctype == "text" else ""
         self._last_image_hash = self.store._image_hash(data) if (ctype == "image" and HAS_PIL) else ""
-        self._last_file_hash = self.store._files_hash(data) if ctype == "file" else ""
+        self._last_file_hash = (self.store._files_hash(data)
+                                if (ctype == "file" and data) else "")
 
     def _notify(self):
         self._change_event.set()
@@ -2225,7 +2383,7 @@ class ClipboardMonitor(threading.Thread):
             return True
 
         try:
-            ctype, data = get_clipboard_content()
+            ctype, data = get_clipboard_content(self.store.known_file_names())
         except Exception:
             return False
         if ctype is None:
@@ -2267,6 +2425,10 @@ class ClipboardMonitor(threading.Thread):
                 self._last_file_hash = ""
 
         elif ctype == "file":
+            if not data:
+                # 判定为"复制文件"（剪贴板里是文件格式，或只是附带的文件名文本），
+                # 但没有可用的路径：不收录，也不退化成文本记录。
+                return True
             h = self.store._files_hash(data)
             if h != self._last_file_hash:
                 # 如果全部是图片文件，尝试按图片收录

@@ -114,7 +114,7 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.2.0"
 LOGO_ICO = get_icon_path()
 # 四个数据分类；「全部」是 3.1.0 新增的聚合标签，只用于界面展示
 DATA_TYPES = ("text", "image", "file", "url")
@@ -1349,13 +1349,13 @@ STRINGS = {
         "m_clear_type": "清空「{t}」分类…", "m_clear_type_unpinned": "清除「{t}」非置顶…",
         "m_clear_unpinned": "清除全部非置顶…", "m_clear_all": "清空全部…",
         "settings_title": "YouBoard · 设置",
-        "set_language": "语言 / LANGUAGE", "set_lang_zh": "简体中文", "set_lang_en": "English",
+        "set_language": "语言", "set_lang_zh": "简体中文", "set_lang_en": "English",
         "set_lang_note": "切换语言后应用将立即重启",
-        "set_general": "通用 / GENERAL", "set_autostart": "开机自启动",
+        "set_general": "通用", "set_autostart": "开机自启动",
         "set_autostart_desc": "登录 Windows 后自动启动 YouBoard 并监听剪贴板",
-        "set_theme": "主题 / THEME", "set_theme_dark": "暗色", "set_theme_light": "亮色",
+        "set_theme": "主题", "set_theme_dark": "暗色", "set_theme_light": "亮色",
         "set_theme_note": "切换主题后应用将立即重启",
-        "set_skin": "皮肤 / SKIN",
+        "set_skin": "皮肤",
         "set_skin_note": "暗色、亮色和皮肤只能选一种；选皮肤后立即生效并重启应用",
         "skin_beige": "护眼米黄", "skin_beige_desc": "暖米黄底，长时间看更舒服",
         "skin_ocean": "深海蓝", "skin_ocean_desc": "深蓝海面色调，偏冷偏科技",
@@ -1369,7 +1369,7 @@ STRINGS = {
         "skin_dlg_accent": "强调色", "skin_dlg_hint":
             "选完点确定保存；正在使用自定义皮肤时会立即重启生效。文字与底色对比不够时会自动改成黑/白。",
         "skin_dlg_pick": "选择颜色",
-        "set_bg": "背景 / BACKGROUND", "set_bg_select": "选择背景图片",
+        "set_bg": "背景", "set_bg_select": "选择背景图片",
         "set_bg_wallpaper": "使用当前壁纸",
         "set_bg_history": "历史壁纸",
         "bg_h_use": "设为背景",
@@ -1378,7 +1378,7 @@ STRINGS = {
         "set_bg_clear": "恢复默认",
         "set_bg_hint": "推荐 1920×1080 或更大，支持 PNG / JPG / BMP / GIF（动态）",
         "set_bg_current": "当前背景：默认",
-        "set_about": "关于 / ABOUT", "set_data_location": "数据位置",
+        "set_about": "关于", "set_data_location": "数据位置",
         "btn_save": "保存", "btn_cancel": "取消",
         "ft_text": "文本文件", "ft_all": "所有文件",
         "cli_empty": "（空）没有剪贴板记录",
@@ -1398,7 +1398,7 @@ STRINGS = {
         "tray_phone_stop": "停止手机传输（端口 {port}）",
         "set_session_title": "临时会话",
         "set_session_desc": "开启期间照常记录；退出应用或关闭开关时清空本次记录",
-        "set_retention": "历史保留 / RETENTION",
+        "set_retention": "历史保留",
         "set_retention_open": "设置",
         "ret_title": "历史保留策略",
         "ret_sub": "让旧记录自动清理，或指定一个时间自动清空",
@@ -1447,7 +1447,7 @@ STRINGS = {
         "widget_history": "最近记录（点击可复制）",
         "widget_click_copy": "点击复制回剪贴板",
         "st_copied": "已复制回剪贴板",
-        "set_phone": "手机传输 / PHONE",
+        "set_phone": "手机传输",
         "set_phone_desc": "手机扫码即可查看 / 复制剪贴板历史，也能把手机文字发回电脑（同一 Wi-Fi）",
         "set_phone_open": "打开传输窗口",
         "phone_title": "发送到手机",
@@ -1473,7 +1473,7 @@ STRINGS = {
         "phone_received": "已收到来自手机的文字",
         "phone_image_received": "已收到来自手机的图片",
         "phone_file_received": "已收到来自手机的文件",
-        "set_sync": "云同步 / CLOUD SYNC",
+        "set_sync": "云同步",
         "set_sync_desc": "加密后同步到云端（GitHub Gist / WebDAV），换设备用同一密码恢复",
         "set_sync_open": "打开同步窗口",
         "set_sync_backend": "后端",
@@ -1528,7 +1528,7 @@ STRINGS = {
         "upd_rate_limit": "请求过于频繁，请稍后再试（GitHub 限流）",
         "type_all": "全部", "col_type": "类型",
         "chip_external": "正文已存本地文件",
-        "set_sound": "提示音 / SOUND",
+        "set_sound": "提示音",
         "set_sound_copy": "复制提示音",
         "set_sound_paste": "粘贴提示音",
         "set_sound_desc": "默认关闭；复制 / 粘贴可分别开关，并各自选择 YouBoard 音效或自定义音频文件",
@@ -1536,7 +1536,7 @@ STRINGS = {
         "set_sound_default": "系统默认提示音",
         "set_sound_builtin": "YouBoard 音效",
         "set_sound_custom": "自定义：{name}",
-        "set_quick": "快速面板 / QUICK PANEL",
+        "set_quick": "快速面板",
         "set_quick_desc": "按快捷键呼出搜索面板（再按一次收起），Enter 或单击即复制选中项，Esc 关闭",
         "set_quick_hotkey": "呼出快捷键",
         "set_quick_open": "打开快速面板",
@@ -1561,7 +1561,7 @@ STRINGS = {
         "set_winv_state_unknown": "系统剪贴板历史：读取失败",
         "set_winv_done": "已关闭系统剪贴板历史（Win+V 现在由本工具接管）",
         "set_winv_failed": "自动关闭失败，请手动到「设置 → 系统 → 剪贴板」关闭",
-        "set_port": "数据移植 / IMPORT",
+        "set_port": "数据移植",
         "set_port_desc": "自动识别本机其它 YouBoard 安装的历史，选择后合并到当前数据",
         "set_port_open": "扫描其它安装…",
         "port_title": "导入其它 YouBoard 数据",
@@ -1672,13 +1672,13 @@ STRINGS = {
         "m_clear_type": "Clear '{t}'…", "m_clear_type_unpinned": "Remove unpinned '{t}'…",
         "m_clear_unpinned": "Remove all unpinned…", "m_clear_all": "Clear all…",
         "settings_title": "YouBoard · Settings",
-        "set_language": "Language / 语言", "set_lang_zh": "简体中文", "set_lang_en": "English",
+        "set_language": "Language", "set_lang_zh": "简体中文", "set_lang_en": "English",
         "set_lang_note": "The app restarts immediately after switching language",
-        "set_general": "General / 通用", "set_autostart": "Start with Windows",
+        "set_general": "General", "set_autostart": "Start with Windows",
         "set_autostart_desc": "Automatically start YouBoard and monitor the clipboard when you sign in",
-        "set_theme": "Theme / 主题", "set_theme_dark": "Dark", "set_theme_light": "Light",
+        "set_theme": "Theme", "set_theme_dark": "Dark", "set_theme_light": "Light",
         "set_theme_note": "The app restarts immediately after switching theme",
-        "set_skin": "Skin / 皮肤",
+        "set_skin": "Skin",
         "set_skin_note": "Dark, Light and skins are mutually exclusive; picking a skin applies immediately and restarts the app",
         "skin_beige": "Warm Beige", "skin_beige_desc": "Warm beige background, easier for long reading",
         "skin_ocean": "Deep Ocean", "skin_ocean_desc": "Cool deep-blue tones with a techy feel",
@@ -1692,7 +1692,7 @@ STRINGS = {
         "skin_dlg_accent": "Accent", "skin_dlg_hint":
             "Click OK to save; if the custom skin is active the app restarts right away. Text is auto-switched to black/white when contrast is too low.",
         "skin_dlg_pick": "Pick color",
-        "set_bg": "Background / 背景", "set_bg_select": "Choose background image",
+        "set_bg": "Background", "set_bg_select": "Choose background image",
         "set_bg_wallpaper": "Use current wallpaper",
         "set_bg_history": "Wallpaper history",
         "bg_h_use": "Use as background",
@@ -1701,7 +1701,7 @@ STRINGS = {
         "set_bg_clear": "Reset to default",
         "set_bg_hint": "Recommended 1920×1080 or larger, PNG / JPG / BMP / GIF (animated)",
         "set_bg_current": "Current: Default",
-        "set_about": "About / 关于", "set_data_location": "Data location",
+        "set_about": "About", "set_data_location": "Data location",
         "btn_save": "Save", "btn_cancel": "Cancel",
         "ft_text": "Text files", "ft_all": "All files",
         "cli_empty": "(empty) No clipboard records",
@@ -1794,8 +1794,8 @@ STRINGS = {
         "phone_no_qr": "qrcode component missing, cannot generate QR",
         "phone_start_failed": "Failed to start transfer server: {err}",
         "phone_received": "Received text from phone",
-        "phone_image_received": "Received image from phone\n已收到来自手机的图片",
-        "phone_file_received": "Received file from phone\n已收到来自手机的文件",
+        "phone_image_received": "Received image from phone",
+        "phone_file_received": "Received file from phone",
         "set_sync": "Cloud Sync / CLOUD SYNC",
         "set_sync_desc": "Sync encrypted history to the cloud (GitHub Gist / WebDAV); restore elsewhere with the same passphrase",
         "set_sync_open": "Open Sync Window",
@@ -1819,11 +1819,11 @@ STRINGS = {
         "sync_gist_id": "Linked Gist: {gid}",
         "set_check_update": "Check Update",
         "upd_title": "Check Update",
-        "upd_latest": "已是最新版本 v{v}\nAlready on the latest version v{v}",
+        "upd_latest": "Already on the latest version v{v}",
         "upd_latest_title": "You're up to date",
         "upd_latest_meta": "YouBoard v{v} is the latest version.",
         "upd_new_title": "New version available",
-        "upd_new_msg": "当前版本: v{cur}\n最新版本: v{new} ({name})\n是否立即更新？（将下载并替换当前程序）\n\nCurrent: v{cur} → Latest: v{new} ({name})\nUpdate now? (Will download and replace the program)",
+        "upd_new_msg": "Current: v{cur} → Latest: v{new} ({name})\nUpdate now? (Will download and replace the program)",
         "upd_found_meta": "Current v{cur}  →  Latest v{new}",
         "upd_ready_hint": "Choose Update now to start downloading",
         "upd_download": "Downloading ({pct}%)",
@@ -1846,62 +1846,62 @@ STRINGS = {
         "upd_replacing_status": "Replacing files {pct}%",
         "upd_finishing_status": "Finishing {pct}%",
         "upd_restarting": "Update complete. Starting the new version…",
-        "upd_failed": "检查失败: {e}\nCheck failed: {e}",
-        "upd_network_err": "Cannot connect to update server. Please check your network and try again.\n无法连接到更新服务器，请检查网络后重试",
-        "upd_rate_limit": "Too many requests. Please try again later (GitHub rate limit).\n请求过于频繁，请稍后再试（GitHub 限流）",
-        "type_all": "All\n全部", "col_type": "Type\n类型",
-        "chip_external": "Body stored locally\n正文已存本地文件",
-        "set_sound": "Sound / 提示音",
-        "set_sound_copy": "Copy sound\n复制提示音",
-        "set_sound_paste": "Paste sound\n粘贴提示音",
-        "set_sound_desc": "Off by default; copy / paste each can be toggled and set to YouBoard sound or a custom audio file\n默认关闭；复制 / 粘贴可分别开关，并各自选择 YouBoard 音效或自定义音频文件",
-        "set_sound_pick": "Choose sound file…\n选择提示音文件…",
-        "set_sound_default": "System default\n系统默认提示音",
-        "set_sound_builtin": "YouBoard sound\nYouBoard 音效",
-        "set_sound_custom": "Custom: {name}\n自定义：{name}",
-        "set_quick": "Quick Panel / 快速面板",
-        "set_quick_desc": "Press the hotkey to open a search panel (press again to hide); Enter or a click copies the selected item\n按快捷键呼出搜索面板（再按一次收起），Enter 或单击即复制选中项",
-        "set_quick_hotkey": "Panel hotkey\n呼出快捷键",
-        "set_quick_open": "Open Quick Panel\n打开快速面板",
+        "upd_failed": "Check failed: {e}",
+        "upd_network_err": "Cannot connect to update server. Please check your network and try again.",
+        "upd_rate_limit": "Too many requests. Please try again later (GitHub rate limit).",
+        "type_all": "All", "col_type": "Type",
+        "chip_external": "Body stored locally",
+        "set_sound": "Sound",
+        "set_sound_copy": "Copy sound",
+        "set_sound_paste": "Paste sound",
+        "set_sound_desc": "Off by default; copy / paste each can be toggled and set to YouBoard sound or a custom audio file",
+        "set_sound_pick": "Choose sound file…",
+        "set_sound_default": "System default",
+        "set_sound_builtin": "YouBoard sound",
+        "set_sound_custom": "Custom: {name}",
+        "set_quick": "Quick Panel",
+        "set_quick_desc": "Press the hotkey to open a search panel (press again to hide); Enter or a click copies the selected item",
+        "set_quick_hotkey": "Panel hotkey",
+        "set_quick_open": "Open Quick Panel",
         "quick_title": "YouBoard Quick Panel",
         "quick_placeholder": "Type to search, Enter to paste…",
-        "quick_empty": "No matching records\n没有匹配的记录",
+        "quick_empty": "No matching records",
         "quick_hint": "↑↓ Select · Enter / Click to copy · Ctrl+Enter Paste to window · Alt+0~9 Copy top 10 · Esc Close",
-        "quick_copied": "Copied\n已复制",
-        "quick_pasted": "Pasted into the previous window\n已粘贴到之前的窗口",
-        "quick_paste_fail": "Copied, but auto-paste failed (target window may run as administrator)\n已复制，但无法自动粘贴（目标窗口可能以管理员身份运行）",
-        "quick_only_pin": "Pinned only\n仅置顶",
-        "quick_filter_all": "All\n全部",
+        "quick_copied": "Copied",
+        "quick_pasted": "Pasted into the previous window",
+        "quick_paste_fail": "Copied, but auto-paste failed (target window may run as administrator)",
+        "quick_only_pin": "Pinned only",
+        "quick_filter_all": "All",
         "set_winv": "Win+V",
-        "set_winv_takeover": "Take over Win+V to open / hide YouBoard\n接管 Win+V 打开 / 收起 YouBoard",
-        "set_winv_desc": "Once on, Win+V opens or hides this tool (press again to hide); turning off Windows clipboard history first is recommended, otherwise both will respond\n开启后按 Win+V 直接打开或收起本工具（再按一次即收起）；开启前建议先关闭系统剪贴板历史，否则两者会同时响应",
-        "set_winv_disable": "Turn off Windows clipboard history\n关闭系统剪贴板历史",
-        "set_winv_on": "On\n已开启",
-        "set_winv_off": "Off\n未开启",
-        "set_winv_already_off": "Windows clipboard history is already off\n系统剪贴板历史已关闭",
-        "set_winv_state_on": "Windows clipboard history: ON\n系统剪贴板历史：已开启",
-        "set_winv_state_off": "Windows clipboard history: OFF\n系统剪贴板历史：已关闭",
-        "set_winv_state_unknown": "Windows clipboard history: unknown\n系统剪贴板历史：读取失败",
-        "set_winv_done": "Windows clipboard history disabled (Win+V now handled by YouBoard)\n已关闭系统剪贴板历史（Win+V 现在由本工具接管）",
-        "set_winv_failed": "Failed to disable automatically; do it manually in Settings → System → Clipboard\n自动关闭失败，请手动到「设置 → 系统 → 剪贴板」关闭",
-        "set_port": "Import / 数据移植",
-        "set_port_desc": "Detect other YouBoard installations on this PC and merge their history\n自动识别本机其它 YouBoard 安装的历史，选择后合并到当前数据",
-        "set_port_open": "Scan other installations…\n扫描其它安装…",
+        "set_winv_takeover": "Take over Win+V to open / hide YouBoard",
+        "set_winv_desc": "Once on, Win+V opens or hides this tool (press again to hide); turning off Windows clipboard history first is recommended, otherwise both will respond",
+        "set_winv_disable": "Turn off Windows clipboard history",
+        "set_winv_on": "On",
+        "set_winv_off": "Off",
+        "set_winv_already_off": "Windows clipboard history is already off",
+        "set_winv_state_on": "Windows clipboard history: ON",
+        "set_winv_state_off": "Windows clipboard history: OFF",
+        "set_winv_state_unknown": "Windows clipboard history: unknown",
+        "set_winv_done": "Windows clipboard history disabled (Win+V now handled by YouBoard)",
+        "set_winv_failed": "Failed to disable automatically; do it manually in Settings → System → Clipboard",
+        "set_port": "Import",
+        "set_port_desc": "Detect other YouBoard installations on this PC and merge their history",
+        "set_port_open": "Scan other installations…",
         "port_title": "Import data from another YouBoard",
-        "port_scanning": "Scanning…\n正在扫描…",
-        "port_none": "No other installation found (you can pick a folder manually)\n没有找到其它安装（可手动选择目录）",
-        "port_browse": "Choose folder…\n手动选择目录…",
-        "port_import": "Import selected\n导入选中",
-        "port_rescan": "Rescan\n重新扫描",
-        "port_found": "Found {n} installations\n找到 {n} 个可导入的安装",
+        "port_scanning": "Scanning…",
+        "port_none": "No other installation found (you can pick a folder manually)",
+        "port_browse": "Choose folder…",
+        "port_import": "Import selected",
+        "port_rescan": "Rescan",
+        "port_found": "Found {n} installations",
         "port_col_path": "Location", "port_col_count": "Records", "port_col_time": "Modified",
-        "port_unreadable": "Unreadable (key file missing)\n无法读取（缺少密钥文件）",
+        "port_unreadable": "Unreadable (key file missing)",
         "port_confirm": "Import the data of this installation?\n\nLocation: {path}\nRecords: {n}\n\nDuplicates are skipped.",
-        "port_done": "Import finished: {n} new records\n导入完成：新增 {n} 条记录",
-        "port_nothing": "Nothing new to import\n没有新的记录可导入",
-        "port_failed": "Read failed; please pick a YouBoard data folder\n读取失败，请确认选择的是 YouBoard 数据目录",
-        "tray_quick": "Quick Panel\n快速面板",
-        "tray_import": "Import data from another install…\n导入其它安装的数据…",
+        "port_done": "Import finished: {n} new records",
+        "port_nothing": "Nothing new to import",
+        "port_failed": "Read failed; please pick a YouBoard data folder",
+        "tray_quick": "Quick Panel",
+        "tray_import": "Import data from another install…",
     },
 }
 
@@ -1931,12 +1931,18 @@ def apply_language(lang):
 
 
 def fmt_size(n):
-    """Format a byte count into a human-readable string."""
-    if n < 1024:
-        return f"{n} B"
-    elif n < 1024 * 1024:
-        return f"{n / 1024:.1f} KB"
-    return f"{n / (1024 * 1024):.1f} MB"
+    """Format a byte count into a human-readable string (B / KB / MB / GB / TB)."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "?"
+    if n < 0:
+        n = 0.0
+    for unit, step in (("TB", 1024.0 ** 4), ("GB", 1024.0 ** 3),
+                       ("MB", 1024.0 ** 2), ("KB", 1024.0)):
+        if n >= step:
+            return f"{n / step:.1f} {unit}"
+    return f"{int(n)} B"
 
 
 def fmt_image_type(fmt_str):
@@ -4409,6 +4415,8 @@ class YouBoardApp(QMainWindow):
         self._tab_layouts = []
         # 每个标签页里“按内容撑开”的那一列（横向滚动条靠它才能左右拖动看全文）
         self._flex_cols = {}
+        # 需要按内容自适应宽度的小列（数量 / 格式 / 尺寸 / 大小）
+        self._auto_width_cols = {"image": (4, 5, 6), "file": (4, 5, 6)}
         self._iid_to_hash = {t: {} for t in TAB_TYPES}
         self._search_edits = {}
         self._search_timers = {}
@@ -4435,6 +4443,7 @@ class YouBoardApp(QMainWindow):
         self.restart_flag = False
         self._bg_movie = None
         self._bg_pixmap = None
+        self._bg_source = None          # 背景原图（缩放时反复重铺用，避免变形）
         self._bg_resize_timer = None
         self._image_loader = None
         self._pending_image = None
@@ -4528,6 +4537,8 @@ class YouBoardApp(QMainWindow):
         self.setCentralWidget(central)
         self._bg_label = QLabel(central)
         self._bg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 注意：不能用 setScaledContents（那是"不管比例强行拉伸"，会把背景拉变形），
+        # 缩放时改由 _scale_bg(smooth=False) 按比例重铺，见 resizeEvent
         self._bg_label.setGeometry(0, 0, 9999, 9999)
         self._bg_label.lower()
 
@@ -4700,6 +4711,7 @@ class YouBoardApp(QMainWindow):
             self._bg_is_gif = False
             self._bg_image_path = bg_path
             self._bg_pixmap = QPixmap(bg_path)
+            self._bg_source = self._bg_pixmap      # 原图（用于反复重铺，避免变形）
             self._scale_bg()
 
     def _on_bg_frame(self):
@@ -4707,8 +4719,20 @@ class YouBoardApp(QMainWindow):
             self._bg_pixmap = self._bg_movie.currentPixmap()
             self._scale_bg()
 
-    def _scale_bg(self):
-        pm = self._bg_pixmap
+    def _scale_bg(self, smooth=True):
+        """把背景图按"保持比例、铺满窗口（超出部分裁掉）"绘制。
+
+        smooth=True 用高质量平滑缩放（默认，静止时用）；
+        smooth=False 用快速缩放（拖动窗口过程中用，保证不卡、也不露底）。
+        两种方式都保持宽高比，绝不会把背景拉伸变形。
+        """
+        is_gif = getattr(self, "_bg_is_gif", False)
+        pm = self._bg_source if not is_gif else self._bg_pixmap
+        if pm is None or pm.isNull():
+            pm = self._bg_pixmap
+        return self._scale_bg_with(pm, smooth)
+
+    def _scale_bg_with(self, pm, smooth=True):
         is_gif = getattr(self, "_bg_is_gif", False)
         path = getattr(self, "_bg_image_path", "")
         # 静态图：缓存比窗口小（窗口放大）或缓存丢失时，从磁盘重新加载
@@ -4716,10 +4740,12 @@ class YouBoardApp(QMainWindow):
                 and (pm is None or pm.isNull()
                      or self.width() > pm.width() or self.height() > pm.height())):
             pm = QPixmap(path)
+            self._bg_source = pm
         if pm and not pm.isNull():
             scaled = pm.scaled(
                 self.size(), Qt.AspectRatioMode.KeepAspectRatioByExpanding,
-                Qt.TransformationMode.SmoothTransformation)
+                Qt.TransformationMode.SmoothTransformation if smooth
+                else Qt.TransformationMode.FastTransformation)
             self._bg_label.setPixmap(scaled)
             self._bg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self._bg_label.setGeometry(self.rect())
@@ -4738,16 +4764,28 @@ class YouBoardApp(QMainWindow):
         if hasattr(self, '_bg_label'):
             self._bg_label.setGeometry(self.rect())
             if self._bg_pixmap and not self._bg_pixmap.isNull():
+                # 立刻按比例"快速重铺"一次：比例不变形、不会露底，而且几乎不耗时
+                try:
+                    self._scale_bg(smooth=False)
+                except Exception:
+                    pass
                 if self._bg_resize_timer:
                     self._bg_resize_timer.stop()
                 self._bg_resize_timer = QTimer()
                 self._bg_resize_timer.setSingleShot(True)
                 self._bg_resize_timer.timeout.connect(self._scale_bg)
-                self._bg_resize_timer.start(30)
-        # Re-render preview image on resize (label's own resizeEvent also handles this)
-        if hasattr(self, '_cached_qpixmap') and self._cached_qpixmap and not self._cached_qpixmap.isNull():
-            self._last_render_key = None
-            self._render_preview_image()
+                self._bg_resize_timer.start(60)   # 停手后再做一次高质量平滑缩放
+        # 预览图不在拖动过程中重绘：改成"缩放停下来之后再重绘一次"。
+        # 之前每次 resize 事件都清缓存键并做一次平滑缩放，拖动时明显卡顿。
+        if (hasattr(self, '_cached_qpixmap') and self._cached_qpixmap
+                and not self._cached_qpixmap.isNull()):
+            t = getattr(self, '_preview_resize_timer', None)
+            if t is None:
+                t = QTimer(self)
+                t.setSingleShot(True)
+                t.timeout.connect(self._on_preview_resize_settled)
+                self._preview_resize_timer = t
+            t.start(90)
         # Reposition resize grip to bottom-right corner
         if hasattr(self, '_resize_grip'):
             if self.isMaximized():
@@ -4764,14 +4802,12 @@ class YouBoardApp(QMainWindow):
             self._edge_right.setGeometry(w - t, t, t, h - 2 * t)
             self._edge_top.setGeometry(t, 0, w - 2 * t, t)
             self._edge_bottom.setGeometry(t, h - t, w - 2 * t, t)
-            self._edge_left.show()
-            self._edge_right.show()
-            self._edge_top.show()
-            self._edge_bottom.show()
-            self._edge_left.raise_()
-            self._edge_right.raise_()
-            self._edge_top.raise_()
-            self._edge_bottom.raise_()
+            # 已经显示/在最上层时不再重复 show/raise，避免每次都触发重绘
+            for _h in (self._edge_left, self._edge_right,
+                       self._edge_top, self._edge_bottom):
+                if not _h.isVisible():
+                    _h.show()
+                    _h.raise_()
         # Reposition corner resize handles (top-left / top-right / bottom-left)
         if hasattr(self, '_corner_tl'):
             w, h = self.width(), self.height()
@@ -5083,9 +5119,10 @@ class YouBoardApp(QMainWindow):
             table.setColumnWidth(2, 30)
             table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
             self._flex_cols[etype] = 3
-            table.setColumnWidth(4, 58)
-            table.setColumnWidth(5, 92)
-            table.setColumnWidth(6, 74)
+            # 格式 / 尺寸 / 大小：按实际最长内容留够宽度（"AI, PSD" / "2560x1440" / "2109.5 MB"）
+            table.setColumnWidth(4, 104)
+            table.setColumnWidth(5, 132)
+            table.setColumnWidth(6, 132)
         else:
             # 文件分类：内容列（文件列表）紧跟时间列，其后才是数量/格式/大小
             table.setColumnCount(7)
@@ -5097,8 +5134,9 @@ class YouBoardApp(QMainWindow):
             table.setColumnWidth(2, 30)
             table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
             table.setColumnWidth(4, 46)
-            table.setColumnWidth(5, 62)
-            table.setColumnWidth(6, 74)
+            # 格式 / 大小：留够宽度，避免 "AI, PSD" / "2109.5 MB" 被截断成 "…"
+            table.setColumnWidth(5, 108)
+            table.setColumnWidth(6, 132)
             self._flex_cols[etype] = 3
 
         # 内容列的标题靠左（该列会被内容撑得很宽，居中会跑到很右边去）
@@ -5495,13 +5533,28 @@ class YouBoardApp(QMainWindow):
                         _extract_extensions(paths),
                         fmt_size(total_sz) if total_sz > 0 else "?"]
             if etype == "all":
-                # 混合列表：类型用圆角标签画在内容前面，内容列起绘位置不变
+                # 混合列表：类型用圆角标签画在内容前面，内容列起绘位置不变。
+                # 文件 / 图片行把 格式、大小（图片还有尺寸）一并带上，这样
+                # "文件列表里的内容"在「全部」里也看得到。
                 badge = self._type_label(row_type)
                 if row_type == "text":
                     html_flex = _text_preview_html(
                         entry.get("content", "") or "", 120)
                 else:
-                    html_flex = _html_escape(str(vals[3]))
+                    detail = str(vals[3])
+                    if row_type == "image":
+                        extra = [str(vals[5]), str(vals[4]), str(vals[6])]
+                    elif row_type == "file":
+                        extra = [str(vals[5]), str(vals[6])]
+                        _n = str(vals[4])
+                        if _n and _n != "1":
+                            extra.append(f"{tr('col_count')} {_n}")
+                    else:
+                        extra = []
+                    detail = "  ·  ".join(
+                        [p for p in [detail] + extra if p and p != "?"] or [detail])
+                    vals[3] = detail
+                    html_flex = _html_escape(detail)
             elif etype == "text":
                 html_flex = preview_html
                 badge = None
@@ -5517,7 +5570,9 @@ class YouBoardApp(QMainWindow):
                 if (_flex_col is not None and col == _flex_col
                         and etype == "all"):
                     item.setData(_InlineImageDelegate.BADGE_ROLE, badge)
-                if col in (0, 1, 2):
+                # 序号 / 时间 / 状态居中；数量·格式·尺寸·大小 这几个小列也跟着表头居中，
+                # 否则表头居中、数值左对齐，看上去就"没对上"
+                if col in (0, 1, 2) or (etype in ("image", "file") and col >= 4):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if is_pin:
                     item.setBackground(pin_color)
@@ -5528,6 +5583,17 @@ class YouBoardApp(QMainWindow):
                 table.setItem(i, col, item)
             iid_map[i] = entry["hash"]
         self._iid_to_hash[etype] = iid_map
+        # 数量 / 格式 / 尺寸 / 大小 这几个小列按实际内容自适应（带上下限），
+        # 避免出现 "2109.5 MB"、"AI, PSD"、"1200x2238" 被截断成 "…"
+        for _col in self._auto_width_cols.get(etype, ()):
+            if _col >= table.columnCount():
+                continue
+            try:
+                table.resizeColumnToContents(_col)
+                _w = max(46, min(table.columnWidth(_col) + 8, 200))
+                table.setColumnWidth(_col, _w)
+            except Exception:
+                pass
         # 内容列按内容撑开（不窄于剩余宽度）：这样横向滚动条才有可拖动的范围，
         # 长内容可以左右拖动看全
         flex_col = getattr(self, "_flex_cols", {}).get(etype)
@@ -6059,6 +6125,14 @@ class YouBoardApp(QMainWindow):
         self._render_preview_image()
         # Delayed re-render in case label size wasn't final yet
         QTimer.singleShot(100, self._render_preview_image)
+
+    def _on_preview_resize_settled(self):
+        """缩放结束（短暂停顿）后再重绘预览图，避免拖动时每帧做平滑缩放。"""
+        try:
+            self._last_render_key = None
+            self._render_preview_image()
+        except Exception:
+            pass
 
     def _render_preview_image(self):
         if not hasattr(self, '_preview_img_lbl'):
@@ -6670,6 +6744,7 @@ class YouBoardApp(QMainWindow):
             self._remove_paste_sound_hook()
         except Exception:
             pass
+        self._stop_sounds()          # 停掉异步提示音，别让它占住打包临时目录
         try:
             self.store.flush()      # 防抖写盘：退出前把未落盘的历史写完
         except Exception:
@@ -6699,6 +6774,7 @@ class YouBoardApp(QMainWindow):
             self._remove_paste_sound_hook()
         except Exception:
             pass
+        self._stop_sounds()          # 停掉异步提示音，别让它占住打包临时目录
         try:
             self.store.flush()
         except Exception:
@@ -6713,6 +6789,20 @@ class YouBoardApp(QMainWindow):
         if hasattr(self, '_tray') and self._tray:
             self._tray.hide()
         QApplication.quit()
+
+    def _stop_sounds(self):
+        """退出前停掉还在异步播放的提示音。
+
+        winsound 的 SND_ASYNC 播放期间会一直持有 wav 文件句柄；onefile 打包时
+        那个 wav 位于 PyInstaller 的临时目录里，句柄不释放就会导致退出时
+        "Failed to remove temporary directory: ...\\_MEIxxxx" 警告。
+        """
+        try:
+            if IS_WIN:
+                import winsound
+                winsound.PlaySound(None, winsound.SND_PURGE)
+        except Exception:
+            pass
 
     def _wait_aux_workers(self):
         """等待短时后台任务收尾，避免退出时销毁运行中的 QThread。"""
@@ -9986,6 +10076,14 @@ class SettingsDialog(QDialog):
         import urllib.request
         import json as _json
 
+        html_url = "https://github.com/cloudxys/YouBoard/releases"
+        tag = ""
+        name = ""
+        body = ""
+        dl_url = None
+        got_info = False
+
+        # 1) 首选 GitHub API：能同时拿到版本号与更新说明正文
         try:
             url = "https://api.github.com/repos/cloudxys/YouBoard/releases/latest"
             req = urllib.request.Request(url, headers={"User-Agent": "YouBoard"})
@@ -9993,57 +10091,70 @@ class SettingsDialog(QDialog):
                 data = _json.loads(resp.read().decode())
             tag = data.get("tag_name", "").lstrip("v")
             name = data.get("name", tag)
-            # Only update if remote version is actually newer
-            def _ver_tuple(v):
-                try:
-                    return tuple(int(x) for x in v.split(".")[:3])
-                except (ValueError, AttributeError):
-                    return (0,)
-            if not tag or _ver_tuple(tag) <= _ver_tuple(APP_VERSION):
-                _UpdateStatusDialog(
-                    self, self.app, APP_VERSION).exec()
-                return
-            # Find the portable EXE asset
-            assets = data.get("assets", [])
-            dl_url = None
-            for a in assets:
-                if a["name"] == "YouBoard.exe":
-                    dl_url = a["browser_download_url"]
+            body = data.get("body", "") or ""
+            html_url = data.get("html_url", html_url)
+            for a in data.get("assets", []):
+                if a.get("name") == "YouBoard.exe":
+                    dl_url = a.get("browser_download_url")
                     break
-            if not dl_url:
-                html_url = data.get("html_url", "https://github.com/cloudxys/YouBoard/releases")
-                import webbrowser
-                webbrowser.open(html_url)
-                return
-            if IS_MAC:
-                # macOS 版暂不支持应用内替换可执行文件：直接打开 Releases 页面
-                import webbrowser
-                webbrowser.open(data.get(
-                    "html_url", "https://github.com/cloudxys/YouBoard/releases"))
-                return
-            # Download new EXE with the custom update card.
-            self._do_update(dl_url, tag, name, data.get("body", ""))
-        except Exception as e:
-            import urllib.error
-            err_str = str(e)
-            if isinstance(e, urllib.error.HTTPError) and e.code == 403:
-                _UpdateStatusDialog(
-                    self, self.app, APP_VERSION,
-                    title=tr("upd_title"),
-                    detail=tr("upd_rate_limit"),
-                    kind="warning").exec()
-            elif isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError, OSError)):
-                _UpdateStatusDialog(
-                    self, self.app, APP_VERSION,
-                    title=tr("upd_title"),
-                    detail=tr("upd_network_err"),
-                    kind="warning").exec()
-            else:
-                _UpdateStatusDialog(
-                    self, self.app, APP_VERSION,
-                    title=tr("upd_title"),
-                    detail=tr("upd_failed", e=err_str),
-                    kind="warning").exec()
+            got_info = bool(tag)
+        except Exception:
+            got_info = False
+
+        # 2) API 被限流 / 被网络拦时的兜底：改用 Releases 页面的跳转拿最新版本号。
+        #    未认证的 API 每小时只有 60 次额度（同一出口 IP 共享），外国用户在公司 /
+        #    学校 / VPN 网络下很容易撞上限流，这一步保证他们仍能检查到更新。
+        if not got_info:
+            try:
+                req = urllib.request.Request(
+                    "https://github.com/cloudxys/YouBoard/releases/latest",
+                    headers={"User-Agent": ("Mozilla/5.0 (Windows NT 10.0; "
+                                            "Win64; x64) YouBoard-Updater")})
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    final_url = resp.geturl() or ""
+                m = re.search(r"/tag/v?([0-9]+(?:\.[0-9]+)+)", final_url)
+                if m:
+                    tag = m.group(1)
+                    name = "v" + tag
+                    html_url = ("https://github.com/cloudxys/YouBoard/releases/"
+                                "tag/v" + tag)
+                    # 直接用官方直链：外国网络走 GitHub CDN 即可，国内仍会自动
+                    # 在下载环节按速度切换到加速镜像
+                    dl_url = ("https://github.com/cloudxys/YouBoard/releases/"
+                              "download/v" + tag + "/YouBoard.exe")
+                    got_info = True
+            except Exception:
+                got_info = False
+
+        if not got_info:
+            _UpdateStatusDialog(
+                self, self.app, APP_VERSION,
+                title=tr("upd_title"),
+                detail=tr("upd_network_err"),
+                kind="warning").exec()
+            return
+
+        # Only update if remote version is actually newer
+        def _ver_tuple(v):
+            try:
+                return tuple(int(x) for x in v.split(".")[:3])
+            except (ValueError, AttributeError):
+                return (0,)
+        if not tag or _ver_tuple(tag) <= _ver_tuple(APP_VERSION):
+            _UpdateStatusDialog(self, self.app, APP_VERSION).exec()
+            return
+
+        if not dl_url:
+            import webbrowser
+            webbrowser.open(html_url)
+            return
+        if IS_MAC:
+            # macOS 版暂不支持应用内替换可执行文件：直接打开 Releases 页面
+            import webbrowser
+            webbrowser.open(html_url)
+            return
+        # Download new EXE with the custom update card.
+        self._do_update(dl_url, tag, name, body)
 
     def _do_update(self, dl_url, new_version, release_name, release_body):
         """Download new EXE in-app with live progress, then replace + restart."""
