@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import struct
 import sys
 import threading
@@ -57,8 +58,18 @@ CONFIG_FILE = os.path.join(_BASE_DIR, "youboard_config.json")
 IMAGES_DIR = os.path.join(_BASE_DIR, "images")
 # 压缩包内部复制的文件物化目录（FileGroupDescriptor 内容落地缓存）
 FILE_CACHE_DIR = os.path.join(_BASE_DIR, "file_cache")
+# 大文本正文外置目录：超大内容不再塞进历史 JSON，避免每次复制都重写整份文件
+CONTENT_DIR = os.path.join(_BASE_DIR, "content")
 # 单个物化文件大小上限：超过则跳过，避免一次性占用过大内存
 MAX_FGD_FILE_SIZE = 500 * 1024 * 1024
+# 超过该长度的文本改为「正文外置 + 历史只留头部」：历史文件保持小巧，复制不再卡顿
+LARGE_TEXT_THRESHOLD = 256 * 1024
+# 外置正文在历史里保留的头部长度（用于列表预览与关键词搜索）
+CONTENT_HEAD_CHARS = 4096
+# 历史写盘防抖：连续复制合并成一次落盘，且写盘放到后台线程，不阻塞界面
+SAVE_DEBOUNCE_SEC = 0.8
+# 关键词搜索时，外置正文超过该大小就不再逐字读取（避免搜索卡顿）
+SEARCH_READ_LIMIT = 8 * 1024 * 1024
 MAX_ENTRIES = None          # 无上限：不限制历史记录条数
 POLL_INTERVAL = 0.5
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -879,6 +890,72 @@ def set_clipboard_files(file_paths):
 # ClipboardStore — 3 categories, each max 10000, + snapshot history
 # ===========================================================================
 
+# ---- 大文本正文外置 -------------------------------------------------------
+# 背景：超大文本若整段塞进历史 JSON，每次复制都要把整份历史重新序列化 + 加密，
+# 几十 MB 的内容就会让界面明显卡顿。解决办法是把正文单独写成一个文件，
+# 历史里只留「头部片段 + 正文引用 + 长度」，复制时再按需读回全文。
+
+
+def content_file_path(ref):
+    """把正文引用（文件名或绝对路径）解析成实际文件路径。"""
+    if not ref:
+        return ""
+    ref = str(ref)
+    if os.path.isabs(ref):
+        return ref
+    return os.path.join(CONTENT_DIR, os.path.basename(ref))
+
+
+def write_external_content(entry_hash, text):
+    """把正文写到 content/<hash>.txt，返回引用名；失败返回空串。"""
+    if not entry_hash:
+        return ""
+    try:
+        os.makedirs(CONTENT_DIR, exist_ok=True)
+        name = f"{entry_hash}.txt"
+        _atomic_write(os.path.join(CONTENT_DIR, name),
+                      text.encode("utf-8", "replace"))
+        return name
+    except (IOError, OSError):
+        return ""
+
+
+def read_external_content(ref):
+    """读回外置正文；读不到返回空串。"""
+    path = content_file_path(ref)
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except (IOError, OSError, UnicodeDecodeError):
+        return ""
+
+
+def read_external_head(ref, limit):
+    """只读外置正文的前 limit 个字符（大内容预览/发送用，避免整文件读入）。"""
+    path = content_file_path(ref)
+    if not path or not os.path.exists(path) or limit <= 0:
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read(limit)
+    except (IOError, OSError, UnicodeDecodeError):
+        return ""
+
+
+def entry_full_text(entry):
+    """取一条记录的完整文本：外置记录读正文文件，普通记录直接返回内容。"""
+    if not isinstance(entry, dict):
+        return ""
+    ref = entry.get("content_ref")
+    if ref:
+        body = read_external_content(ref)
+        if body:
+            return body
+    return entry.get("content", "") or ""
+
+
 class ClipboardStore:
     def __init__(self, path=HISTORY_FILE, max_entries=MAX_ENTRIES):
         self.path = path
@@ -888,6 +965,11 @@ class ClipboardStore:
         self._snapshots = None            # 懒加载：首次访问时才读盘，降低常驻内存
         self._lock = threading.Lock()
         self._self_copy_time = 0.0      # 应用内复制时间戳（防重复收录）
+        # 写盘防抖 + 后台落盘：避免每次复制都同步重写整份历史
+        self._save_timer = None
+        self._save_timer_lock = threading.Lock()
+        self._save_lock = threading.Lock()
+        self._dirty = False
         self._init_empty()
         self._load()
 
@@ -930,7 +1012,7 @@ class ClipboardStore:
                 "file":  {"pinned": [], "entries": []},
                 "url":   {"pinned": [], "entries": []},
             }
-            self._save()
+            self._save_now()
             return
 
         cats = data.get("categories", {})
@@ -940,14 +1022,81 @@ class ClipboardStore:
             "file":  cats.get("file",  {"pinned": [], "entries": []}),
             "url":   cats.get("url",   {"pinned": [], "entries": []}),
         }
+        # 旧数据迁移：历史里存着的超大文本转移到 content/ 正文文件
+        self._migrate_large_content()
 
     def _save(self):
-        try:
-            raw = json.dumps({"version": 2, "categories": self.categories},
-                             ensure_ascii=False, indent=2).encode("utf-8")
-            _atomic_write(self.path, _encrypt_data(raw))
-        except (IOError, OSError):
-            pass
+        """请求落盘：防抖合并 + 后台线程写，界面线程不再被加密写盘阻塞。"""
+        self._dirty = True
+        with self._save_timer_lock:
+            if self._save_timer is not None:
+                try:
+                    self._save_timer.cancel()
+                except Exception:
+                    pass
+            timer = threading.Timer(SAVE_DEBOUNCE_SEC, self._save_now)
+            timer.daemon = True
+            self._save_timer = timer
+            try:
+                timer.start()
+            except RuntimeError:
+                self._save_timer = None
+                self._save_now()
+
+    def _save_now(self):
+        """立即落盘（内部方法，可在任意线程调用）。"""
+        with self._save_lock:
+            try:
+                with self._lock:
+                    payload = {"version": 2, "categories": self.categories}
+                    raw = json.dumps(payload, ensure_ascii=False,
+                                     indent=2).encode("utf-8")
+                # 加密与写文件放在锁外，缩短其它线程的等待时间
+                data = _encrypt_data(raw)
+                _atomic_write(self.path, data)
+                self._dirty = False
+            except (IOError, OSError, TypeError, ValueError):
+                pass
+
+    def flush(self):
+        """取消未触发的防抖任务并立刻落盘（退出程序前调用）。"""
+        with self._save_timer_lock:
+            if self._save_timer is not None:
+                try:
+                    self._save_timer.cancel()
+                except Exception:
+                    pass
+                self._save_timer = None
+        self._save_now()
+
+    def _migrate_large_content(self):
+        """历史迁移：把超大文本正文搬到 content/，历史里只留头部 + 引用。"""
+        changed = False
+        for key in ("text", "url"):
+            cat = self.categories.get(key) or {}
+            for lst_name in ("pinned", "entries"):
+                for e in cat.get(lst_name, []) or []:
+                    if not isinstance(e, dict) or e.get("content_ref"):
+                        continue
+                    body = e.get("content", "") or ""
+                    if len(body) < LARGE_TEXT_THRESHOLD:
+                        continue
+                    ref = write_external_content(
+                        e.get("hash") or self._text_hash(body), body)
+                    if not ref:
+                        continue
+                    e["content"] = body[:CONTENT_HEAD_CHARS]
+                    e["content_ref"] = ref
+                    e["content_external"] = True
+                    e["content_size"] = len(body)
+                    changed = True
+        if changed:
+            self._save_now()
+        return changed
+
+    def get_text(self, entry):
+        """取一条记录的完整文本：外置正文按需读回，普通记录直接返回。"""
+        return entry_full_text(entry)
 
     # ---- snapshots ----
 
@@ -995,7 +1144,7 @@ class ClipboardStore:
             if snap["id"] == snapshot_id:
                 with self._lock:
                     self.categories = copy.deepcopy(snap["state"])
-                    self._save()
+                self.flush()
                 return True
         return False
 
@@ -1038,13 +1187,22 @@ class ClipboardStore:
         if not text:
             return False
         h = self._text_hash(text)
+        entry = {
+            "hash": h, "type": "text", "content": text,
+            "timestamp": datetime.now().isoformat(), "length": len(text),
+        }
+        # 超大文本：正文单独落盘，历史里只保留头部，避免整份历史被反复重写
+        if len(text) >= LARGE_TEXT_THRESHOLD:
+            ref = write_external_content(h, text)
+            if ref:
+                entry["content"] = text[:CONTENT_HEAD_CHARS]
+                entry["content_ref"] = ref
+                entry["content_external"] = True
+                entry["content_size"] = len(text)
         with self._lock:
             cat = self.categories["text"]
             cat["entries"] = [e for e in cat["entries"] if e["hash"] != h]
-            cat["entries"].insert(0, {
-                "hash": h, "type": "text", "content": text,
-                "timestamp": datetime.now().isoformat(), "length": len(text),
-            })
+            cat["entries"].insert(0, entry)
             if self.max_entries and len(cat["entries"]) > self.max_entries:
                 cat["entries"] = cat["entries"][:self.max_entries]
             self._save()
@@ -1259,8 +1417,8 @@ class ClipboardStore:
                 self._snapshots = sorted(by_id.values(),
                                          key=lambda x: x.get("time", "") or "",
                                          reverse=True)
-            self._save()
             self._save_snapshots()
+        self.flush()
         return True
 
     # ---- counts ----
@@ -1380,8 +1538,9 @@ class ClipboardStore:
             return False
 
     @staticmethod
-    def _collect_entry_cache_refs(entry, image_refs, cache_refs):
-        """收集单个条目引用的图片文件和物化文件缓存。"""
+    def _collect_entry_cache_refs(entry, image_refs, cache_refs,
+                                  content_refs=None):
+        """收集单个条目引用的图片文件、物化文件缓存与外置正文。"""
         filename = entry.get("filename", "") if isinstance(entry, dict) else ""
         if filename:
             name = os.path.basename(str(filename))
@@ -1392,9 +1551,14 @@ class ClipboardStore:
             for path in ClipboardStore._norm_paths(entry):
                 if ClipboardStore._cache_path_in_dir(path, FILE_CACHE_DIR):
                     cache_refs.add(os.path.normcase(os.path.abspath(path)))
+        if isinstance(entry, dict) and content_refs is not None:
+            ref = entry.get("content_ref")
+            if ref:
+                content_refs.add(os.path.basename(str(ref)))
 
     @staticmethod
-    def _collect_state_cache_refs(state, image_refs, cache_refs):
+    def _collect_state_cache_refs(state, image_refs, cache_refs,
+                                  content_refs=None):
         """收集分类状态（历史或快照）中的全部缓存引用。"""
         if not isinstance(state, dict):
             return
@@ -1404,7 +1568,7 @@ class ClipboardStore:
             for list_name in ("pinned", "entries"):
                 for entry in cat.get(list_name, []) or []:
                     ClipboardStore._collect_entry_cache_refs(
-                        entry, image_refs, cache_refs)
+                        entry, image_refs, cache_refs, content_refs)
 
     def garbage_collect(self):
         """删除不再被当前历史或快照引用的图片与物化文件缓存。
@@ -1418,10 +1582,12 @@ class ClipboardStore:
         with self._lock:
             image_refs = set()
             cache_refs = set()
-            self._collect_state_cache_refs(self.categories, image_refs, cache_refs)
+            content_refs = set()
+            self._collect_state_cache_refs(self.categories, image_refs,
+                                           cache_refs, content_refs)
             for snap in self._ensure_snapshots():
                 self._collect_state_cache_refs(
-                    snap.get("state", {}), image_refs, cache_refs)
+                    snap.get("state", {}), image_refs, cache_refs, content_refs)
             # 用户选择的背景图可能也落在 images/，同样不能被回收
             try:
                 cfg = load_config()
@@ -1477,6 +1643,28 @@ class ClipboardStore:
                             os.rmdir(os.path.join(root, name))
                         except OSError:
                             pass
+
+            # 外置正文：没有任何记录（含快照）引用时回收
+            if os.path.isdir(CONTENT_DIR):
+                try:
+                    content_names = os.listdir(CONTENT_DIR)
+                except OSError:
+                    content_names = []
+                for name in content_names:
+                    if name in content_refs or not name.lower().endswith(".txt"):
+                        continue
+                    path = os.path.join(CONTENT_DIR, name)
+                    try:
+                        if not os.path.isfile(path):
+                            continue
+                        size = os.path.getsize(path)
+                        if now - os.path.getmtime(path) < CACHE_GC_MIN_AGE:
+                            continue
+                        os.remove(path)
+                    except OSError:
+                        continue
+                    removed_files += 1
+                    removed_bytes += size
         return removed_files, removed_bytes
 
     @staticmethod
@@ -1566,8 +1754,20 @@ class ClipboardStore:
                 for lst_name in ("pinned", "entries"):
                     for e in cat[lst_name]:
                         if key in ("text", "url"):
-                            if kw in e.get("content", "").lower():
+                            head = e.get("content", "") or ""
+                            if kw in head.lower():
                                 result.append(e)
+                                continue
+                            # 外置正文：只在文件不大的时候深入读取，避免搜索卡顿
+                            ref = e.get("content_ref")
+                            if ref:
+                                try:
+                                    size = os.path.getsize(content_file_path(ref))
+                                except OSError:
+                                    size = 0
+                                if 0 < size <= SEARCH_READ_LIMIT:
+                                    if kw in read_external_content(ref).lower():
+                                        result.append(e)
                         elif key == "image":
                             fn = e.get("filename", "").lower()
                             fmt = e.get("original_format", "").lower()
@@ -1578,6 +1778,358 @@ class ClipboardStore:
                             if kw in paths:
                                 result.append(e)
         return result
+
+
+# ===========================================================================
+# 其它 YouBoard 安装的数据识别与移植（用户主动选择后才执行）
+# ===========================================================================
+
+_HISTORY_NAMES = (".youboard.json", ".clipboard_history.json")
+_KEY_NAMES = ("youboard.key", ".clipboard.key")
+
+
+def _foreign_history_path(folder):
+    for name in _HISTORY_NAMES:
+        path = os.path.join(folder, name)
+        if os.path.exists(path):
+            return path
+    return ""
+
+
+def _foreign_key(folder):
+    for name in _KEY_NAMES:
+        path = os.path.join(folder, name)
+        try:
+            if os.path.exists(path):
+                with open(path, "rb") as f:
+                    key = f.read().strip()
+                if key:
+                    return key
+        except Exception:
+            continue
+    return None
+
+
+def read_foreign_history(folder):
+    """解密另一个 YouBoard 安装的历史文件，返回 categories（失败返回 None）。
+
+    该安装可能使用自己的 youboard.key，因此这里显式用它的密钥解密。
+    """
+    if not folder:
+        return None
+    folder = os.path.abspath(str(folder))
+    if os.path.isfile(folder):
+        folder = os.path.dirname(folder)
+    hist_path = _foreign_history_path(folder)
+    if not hist_path:
+        return None
+    try:
+        with open(hist_path, "rb") as f:
+            blob = f.read()
+    except (IOError, OSError):
+        return None
+    data = None
+    if blob.startswith(b"gAAAA") and _HAS_FERNET:
+        key = _foreign_key(folder)
+        if key:
+            try:
+                data = json.loads(Fernet(key).decrypt(blob).decode("utf-8"))
+            except Exception:
+                data = None
+        if data is None:
+            return None
+    else:
+        try:
+            data = json.loads(blob.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, TypeError):
+            return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("version", 1) == 1:
+        return {
+            "text": {"pinned": data.get("pinned", []),
+                     "entries": [e for e in (data.get("entries") or [])
+                                 if isinstance(e, dict)]},
+            "image": {"pinned": [], "entries": []},
+            "file": {"pinned": [], "entries": []},
+            "url": {"pinned": [], "entries": []},
+        }
+    cats = data.get("categories")
+    if not isinstance(cats, dict):
+        return None
+    out = {}
+    for key in ("text", "image", "file", "url"):
+        cat = cats.get(key) or {}
+        if not isinstance(cat, dict):
+            cat = {}
+        pinned = [e for e in (cat.get("pinned") or []) if isinstance(e, dict)]
+        entries = [e for e in (cat.get("entries") or []) if isinstance(e, dict)]
+        out[key] = {"pinned": pinned, "entries": entries}
+    return out
+
+
+def inspect_installation(folder):
+    """检查一个目录是否是可移植的 YouBoard 数据目录，返回统计信息或 None。"""
+    if not folder:
+        return None
+    folder = os.path.abspath(str(folder))
+    if os.path.isfile(folder):
+        folder = os.path.dirname(folder)
+    if not _foreign_history_path(folder):
+        return None
+    cats = read_foreign_history(folder)
+    if cats is None:
+        return {
+            "path": folder, "readable": False, "total": 0,
+            "counts": {}, "images": 0, "content": 0,
+            "modified": 0.0, "has_key": bool(_foreign_key(folder)),
+        }
+    counts = {k: len(v["pinned"]) + len(v["entries"]) for k, v in cats.items()}
+    images_dir = os.path.join(folder, "images")
+    content_dir = os.path.join(folder, "content")
+
+    def _count(dir_path, suffix=None):
+        if not os.path.isdir(dir_path):
+            return 0
+        try:
+            names = os.listdir(dir_path)
+        except OSError:
+            return 0
+        if suffix:
+            names = [n for n in names if n.lower().endswith(suffix)]
+        return len(names)
+
+    try:
+        modified = os.path.getmtime(_foreign_history_path(folder))
+    except OSError:
+        modified = 0.0
+    return {
+        "path": folder,
+        "readable": True,
+        "total": sum(counts.values()),
+        "counts": counts,
+        "images": _count(images_dir, ".png"),
+        "content": _count(content_dir, ".txt"),
+        "modified": modified,
+        "has_key": bool(_foreign_key(folder)),
+        "categories": cats,
+    }
+
+
+def find_installations(extra_dirs=None):
+    """扫描本机可能存在的其它 YouBoard 数据目录（只做识别，不做任何修改）。"""
+    registry_dirs = []
+    home = os.path.expanduser("~")
+    scan_roots = []
+    # 1) 注册表卸载项里的安装位置（覆盖安装版）
+    if IS_WIN:
+        try:
+            import winreg
+            roots = [
+                (winreg.HKEY_CURRENT_USER,
+                 r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+                (winreg.HKEY_LOCAL_MACHINE,
+                 r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+                (winreg.HKEY_LOCAL_MACHINE,
+                 r"Software\WOW6432Node\Microsoft\Windows"
+                 r"\CurrentVersion\Uninstall"),
+            ]
+            for hive, sub in roots:
+                try:
+                    with winreg.OpenKey(hive, sub) as root_key:
+                        for i in range(winreg.QueryInfoKey(root_key)[0]):
+                            try:
+                                name = winreg.EnumKey(root_key, i)
+                                with winreg.OpenKey(root_key, name) as sub_key:
+                                    disp = ""
+                                    try:
+                                        disp = str(winreg.QueryValueEx(
+                                            sub_key, "DisplayName")[0])
+                                    except OSError:
+                                        pass
+                                    if "youboard" not in disp.lower():
+                                        continue
+                                    for value_name in ("InstallLocation",
+                                                       "UninstallString",
+                                                       "DisplayIcon"):
+                                        try:
+                                            val = str(winreg.QueryValueEx(
+                                                sub_key, value_name)[0])
+                                        except OSError:
+                                            continue
+                                        if not val:
+                                            continue
+                                        val = val.strip('"').strip()
+                                        if value_name == "InstallLocation":
+                                            registry_dirs.append(val)
+                                        else:
+                                            registry_dirs.append(
+                                                os.path.dirname(val))
+                            except OSError:
+                                continue
+                except OSError:
+                    continue
+        except Exception:
+            pass
+    # 2) 常见目录与盘符根目录（便携版解压位置）
+    common = list(registry_dirs) + [
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        os.path.join(home, "Desktop"), os.path.join(home, "Downloads"),
+        os.path.join(home, "Documents"),
+        os.path.join(home, "AppData", "Local", "Programs"),
+        os.path.join(home, "AppData", "Roaming"),
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     "YouBoard"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                     "YouBoard"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "YouBoard"),
+    ]
+    if IS_WIN:
+        try:
+            import string
+            for letter in string.ascii_uppercase:
+                drive = f"{letter}:\\"
+                if os.path.isdir(drive):
+                    common.append(os.path.join(drive, "YouBoard"))
+                    scan_roots.append(drive)
+        except Exception:
+            pass
+    # 盘符根目录做一次浅层扫描（限制深度 + 时间预算），覆盖「解压到别处」的便携副本
+    common.extend(_shallow_scan_data_dirs(scan_roots))
+    for item in (extra_dirs or []):
+        if item:
+            common.append(item)
+
+    seen = set()
+    results = []
+    current = os.path.normcase(os.path.abspath(_BASE_DIR))
+    for base in common:
+        if not base:
+            continue
+        try:
+            base = os.path.abspath(base)
+        except (OSError, ValueError):
+            continue
+        probes = [base]
+        # 目标目录本身、以及它下面一层的同名子目录都检查一遍
+        try:
+            if os.path.isdir(base):
+                for name in os.listdir(base)[:400]:
+                    full = os.path.join(base, name)
+                    if os.path.isdir(full) and "youboard" in name.lower():
+                        probes.append(full)
+        except OSError:
+            pass
+        for probe in probes:
+            key = os.path.normcase(os.path.abspath(probe))
+            if key in seen:
+                continue
+            seen.add(key)
+            if key == current:
+                continue
+            info = inspect_installation(probe)
+            if info and info.get("readable"):
+                results.append(info)
+    results.sort(key=lambda x: (-int(x.get("total", 0)),
+                                -(x.get("modified") or 0)))
+    return results
+
+
+def _shallow_scan_data_dirs(roots, max_depth=3, budget_sec=8.0):
+    """在各盘符里浅层查找含 .youboard.json 的目录（限深度和时间，避免拖慢启动）。"""
+    found = []
+    if not roots:
+        return found
+    skip = {"windows", "program files", "program files (x86)", "programdata",
+            "$recycle.bin", "system volume information", "recovery",
+            "perflogs", "msocache", "$windows.~ws", "$windows.~bt",
+            "python312", "python311", "python310", "node_modules",
+            "windowsapps", "packages", "steam", "steamapps", "epic games",
+            "venv", ".venv", "env", "site-packages", "__pycache__",
+            "temp", "tmp", "cache", "caches", "logs"}
+    deadline = time.time() + budget_sec
+    for root in roots:
+        try:
+            base_depth = os.path.abspath(root).rstrip("\\/").count(os.sep)
+        except (OSError, ValueError):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root):
+            if time.time() > deadline:
+                return found
+            dirnames[:] = [d for d in dirnames
+                           if not d.startswith(".")
+                           and d.lower() not in skip]
+            try:
+                depth = os.path.abspath(dirpath).count(os.sep) - base_depth
+            except (OSError, ValueError):
+                depth = 0
+            if any(f.lower() in _HISTORY_NAMES for f in filenames):
+                found.append(dirpath)
+            if depth >= max_depth:
+                dirnames[:] = []
+    return found
+
+
+def copy_installation_assets(folder, categories, progress=None):
+    """把另一个安装里被引用到的图片与正文文件复制过来，返回复制数量。"""
+    if not folder or not categories:
+        return 0
+    folder = os.path.abspath(str(folder))
+    src_images = os.path.join(folder, "images")
+    src_content = os.path.join(folder, "content")
+    copied = 0
+    try:
+        os.makedirs(IMAGES_DIR, exist_ok=True)
+        os.makedirs(CONTENT_DIR, exist_ok=True)
+    except OSError:
+        pass
+    for key in ("image", "text", "url"):
+        cat = categories.get(key) or {}
+        for lst in ("pinned", "entries"):
+            for e in cat.get(lst) or []:
+                if not isinstance(e, dict):
+                    continue
+                if key == "image":
+                    names = [os.path.basename(str(e.get("filename") or ""))]
+                    if not names[0]:
+                        continue
+                    names.append("thumb_" + names[0])
+                    for name in names:
+                        if not name:
+                            continue
+                        if os.path.basename(name) != name:
+                            continue
+                        dst = os.path.join(IMAGES_DIR, name)
+                        if os.path.exists(dst):
+                            continue
+                        src = os.path.join(src_images, name)
+                        if os.path.isfile(src):
+                            try:
+                                shutil.copy2(src, dst)
+                                copied += 1
+                            except (IOError, OSError):
+                                pass
+                else:
+                    ref = e.get("content_ref")
+                    if not ref:
+                        continue
+                    name = os.path.basename(str(ref))
+                    dst = os.path.join(CONTENT_DIR, name)
+                    if os.path.exists(dst):
+                        continue
+                    src = os.path.join(src_content, name)
+                    if os.path.isfile(src):
+                        try:
+                            shutil.copy2(src, dst)
+                            copied += 1
+                        except (IOError, OSError):
+                            pass
+                if progress is not None:
+                    try:
+                        progress()
+                    except Exception:
+                        pass
+    return copied
 
 
 # ===========================================================================

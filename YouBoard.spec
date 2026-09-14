@@ -19,6 +19,8 @@ a = Analysis(
            ('res/anse.ico', 'res'),
            ('res/liangse.ico', 'res'),
            ('res/jinggao.ico', 'res'),
+           ('res/youboard_copy.wav', 'res'),
+           ('res/youboard_paste.wav', 'res'),
            ('res/huiche.png', 'res'),
            ('res/huiche.ico', 'res')],
     hiddenimports=['PyQt6', 'PyQt6.QtWidgets', 'PyQt6.QtCore', 'PyQt6.QtGui',

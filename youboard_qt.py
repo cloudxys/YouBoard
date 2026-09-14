@@ -63,7 +63,8 @@ from PyQt6.QtWidgets import (
     QGraphicsOpacityEffect, QSpacerItem, QGroupBox,
     QCheckBox, QTextEdit, QListView, QListWidget, QListWidgetItem,
     QStyle, QProgressDialog, QProgressBar, QStyledItemDelegate,
-    QStyleOptionViewItem, QGridLayout, QSpinBox, QDateTimeEdit, QSizeGrip,
+    QStyleOptionViewItem, QStyleOptionHeader, QGridLayout, QSpinBox,
+    QDateTimeEdit, QSizeGrip,
     QColorDialog,
 )
 from PyQt6.QtCore import (
@@ -74,7 +75,7 @@ from PyQt6.QtCore import (
 from PyQt6.QtGui import (
     QIcon, QPixmap, QImage, QPainter, QColor, QFont,
     QAction, QActionGroup, QKeySequence, QShortcut, QBrush, QPen,
-    QPalette, QPainterPath, QCursor, QMovie, QTextDocument,
+    QPalette, QPainterPath, QCursor, QMovie, QTextDocument, QFontMetrics,
     QTextCharFormat, QTextCursor,
     QRegion,
 )
@@ -97,6 +98,8 @@ from youboard_core import (
     set_clipboard_text, set_clipboard_image, set_clipboard_files,
     load_config, save_config, get_autostart, set_autostart,
     get_icon_path, get_app_icon,
+    CONTENT_DIR, entry_full_text, read_external_head,
+    find_installations, copy_installation_assets, read_foreign_history,
 )
 from youboard_phone import (
     PhoneTransferServer, get_lan_ip, get_lan_ips, make_qr_pil,
@@ -111,14 +114,41 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "3.0.0"
+APP_VERSION = "3.1.0"
 LOGO_ICO = get_icon_path()
+# 四个数据分类；「全部」是 3.1.0 新增的聚合标签，只用于界面展示
+DATA_TYPES = ("text", "image", "file", "url")
+TAB_TYPES = ("all", "text", "image", "file", "url")
+# 表头文字的左内边距：内容列文字按这个值对齐表头（与 build_qss 里的
+# QHeaderView::section padding 保持一致，改一处必须改另一处）
+HEADER_TEXT_PAD = 10
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
 PREVIEW_MAX = 1600
 TAB_ICONS = {"text": "\u270e", "image": "\u25a3", "file": "\u25a0", "url": "\u25c9"}
 TAB_ICON_FILES = {"text": "wenben.ico", "image": "tupian.ico",
                   "file": "wenjian.ico", "url": "wangzhi.ico"}
+
+
+def _all_tab_icon(size=18):
+    """「全部」分类图标：运行时绘制的四宫格小方块（不新增资源文件）。"""
+    try:
+        pm = QPixmap(size, size)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(C.get("TEXT_SEC", "#c9d1d9")))
+        cell = size / 2.0 - 1.0
+        for dx in (0, 1):
+            for dy in (0, 1):
+                p.drawRoundedRect(
+                    QRectF(dx * (size / 2.0), dy * (size / 2.0), cell, cell),
+                    2.0, 2.0)
+        p.end()
+        return QIcon(pm)
+    except Exception:
+        return QIcon()
 
 
 def _res_icon(name):
@@ -162,13 +192,50 @@ def _text_preview_html(text, max_len=120):
 
 
 class _InlineImageDelegate(QStyledItemDelegate):
-    """在单元格里渲染带内联图片的 HTML（文本预览的换行图标）。"""
+    """内容列渲染：文本预览的内联换行图标 + 普通文本。
+
+    关键点是起绘 x 统一取「同一列表头文字的左边缘」，这样表头「内容预览」
+    和它下面的文字在「全部」「文本」等分类里都从同一个位置开始。
+    """
 
     HTML_ROLE = Qt.ItemDataRole.UserRole + 1
+    # 内容列开头的类型标签（只有「全部」分类用）
+    BADGE_ROLE = Qt.ItemDataRole.UserRole + 2
+    BADGE_GAP = 8
+    BADGE_H = 18
+
+    @staticmethod
+    def _header_text_left(widget, column):
+        """算出同一列表头文字的左边缘 x（拿不到时返回 None）。"""
+        try:
+            header = widget.horizontalHeader()
+            item = widget.horizontalHeaderItem(column)
+            opt = QStyleOptionHeader()
+            opt.initFrom(header)
+            opt.rect = QRect(header.sectionViewportPosition(column), 0,
+                             header.sectionSize(column), header.height())
+            opt.section = column
+            opt.orientation = Qt.Orientation.Horizontal
+            opt.text = item.text() if item is not None else ""
+            if item is not None:
+                # PyQt6 下 textAlignment() 返回 int，需要转回枚举
+                opt.textAlignment = Qt.AlignmentFlag(int(item.textAlignment()))
+            else:
+                opt.textAlignment = (Qt.AlignmentFlag.AlignLeft |
+                                     Qt.AlignmentFlag.AlignVCenter)
+            rect = header.style().subElementRect(
+                QStyle.SubElement.SE_HeaderLabel, opt, header)
+            # 该矩形已经包含 QSS 表头的左内边距，直接作为文字起绘位置
+            return rect.left()
+        except Exception:
+            return None
 
     def paint(self, painter, option, index):
         html = index.data(self.HTML_ROLE)
-        if not html:
+        widget = option.widget
+        target_left = (self._header_text_left(widget, index.column())
+                       if widget is not None else None)
+        if not html and target_left is None:
             opt = QStyleOptionViewItem(option)
             # 去掉“获得焦点”状态：否则单元格文字外面会出现一圈细直角框
             opt.state &= ~QStyle.StateFlag.State_HasFocus
@@ -177,31 +244,71 @@ class _InlineImageDelegate(QStyledItemDelegate):
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
         opt.state &= ~QStyle.StateFlag.State_HasFocus
+        display = opt.text or ""
         opt.text = ""
         opt.icon = QIcon()
-        widget = option.widget
         style = widget.style() if widget is not None else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem,
                           opt, painter, widget)
+        if target_left is None:
+            target_left = option.rect.left() + 3
+        left = target_left
+        width = max(1, option.rect.left() + option.rect.width() - left)
         painter.save()
-        doc = QTextDocument()
-        doc.setDefaultFont(opt.font)
-        doc.setDocumentMargin(0)
-        doc.addResource(QTextDocument.ResourceType.ImageResource,
-                        QUrl("huiche"), _huiche_pixmap())
-        doc.setHtml(html)
-        # 文字颜色跟随主题（QTextDocument 默认黑字，不继承 QSS）
-        fmt = QTextCharFormat()
-        fmt.setForeground(QBrush(QColor(C['TEXT'])))
-        cursor = QTextCursor(doc)
-        cursor.select(QTextCursor.SelectionType.Document)
-        cursor.mergeCharFormat(fmt)
-        doc.setTextWidth(100000.0)  # 保持单行，超宽交给视图裁剪
-        doc_h = doc.size().height()
-        y = option.rect.top() + max(0.0, (option.rect.height() - doc_h) / 2.0)
-        painter.translate(option.rect.left() + 3, y)
-        doc.drawContents(painter, QRectF(
-            0, 0, max(1.0, option.rect.width() - 6), option.rect.height()))
+        badge = index.data(self.BADGE_ROLE)
+        if badge:
+            # 圆角实心标签：半透明、比行底色更深一点，文字用次要色
+            fm = QFontMetrics(opt.font)
+            bw = fm.horizontalAdvance(str(badge)) + 16
+            bh = min(self.BADGE_H, max(12, option.rect.height() - 8))
+            by = option.rect.top() + (option.rect.height() - bh) / 2.0
+            badge_bg = (QColor(0, 0, 0, 42) if _is_light_theme()
+                        else QColor(0, 0, 0, 104))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(badge_bg)
+            painter.drawRoundedRect(QRectF(float(left), float(by),
+                                          float(bw), float(bh)),
+                                   bh / 2.0, bh / 2.0)
+            painter.setPen(QPen(QColor(C['TEXT_SEC'])))
+            painter.drawText(QRectF(float(left), float(by), float(bw),
+                                    float(bh)),
+                             Qt.AlignmentFlag.AlignCenter, str(badge))
+            left += bw + self.BADGE_GAP
+            width = max(1, option.rect.left() + option.rect.width() - left)
+        if html:
+            doc = QTextDocument()
+            doc.setDefaultFont(opt.font)
+            doc.setDocumentMargin(0)
+            doc.addResource(QTextDocument.ResourceType.ImageResource,
+                            QUrl("huiche"), _huiche_pixmap())
+            doc.setHtml(html)
+            # 文字颜色跟随主题（QTextDocument 默认黑字，不继承 QSS）
+            fmt = QTextCharFormat()
+            fmt.setForeground(QBrush(QColor(C['TEXT'])))
+            cursor = QTextCursor(doc)
+            cursor.select(QTextCursor.SelectionType.Document)
+            cursor.mergeCharFormat(fmt)
+            doc.setTextWidth(100000.0)  # 保持单行，超宽交给视图裁剪
+            doc_h = doc.size().height()
+            y = option.rect.top() + max(
+                0.0, (option.rect.height() - doc_h) / 2.0)
+            painter.translate(left, y)
+            doc.drawContents(painter, QRectF(0, 0, float(width),
+                                             float(option.rect.height())))
+        else:
+            # 普通文本：与表头对齐、按列宽省略
+            metrics = QFontMetrics(opt.font)
+            elided = metrics.elidedText(display, Qt.TextElideMode.ElideRight,
+                                        width)
+            color = opt.palette.color(
+                QPalette.ColorRole.HighlightedText
+                if (opt.state & QStyle.StateFlag.State_Selected)
+                else QPalette.ColorRole.Text)
+            painter.setPen(QPen(color))
+            painter.drawText(
+                QRect(left, option.rect.top(), width, option.rect.height()),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                elided)
         painter.restore()
 
 
@@ -1088,8 +1195,8 @@ def build_qss(theme_name="dark", flush=False):
     QTableWidget::item {{ padding: 8px 10px; border-bottom: 1px solid {c['BORDER']}; }}
     /* 横竖滚动条交汇处的小方块（角控件）不要 */
     QAbstractScrollArea::corner {{ background: transparent; border: none; }}
-    QHeaderView::section {{ background: transparent; color: {c['TEXT_MUTED']};
-        padding: 7px 10px; border: none; border-bottom: 1px solid {c['BORDER']};
+            QHeaderView::section {{ background: transparent; color: {c['TEXT_MUTED']};
+                padding: 7px {HEADER_TEXT_PAD}px; border: none; border-bottom: 1px solid {c['BORDER']};
         font-weight: 600; font-size: 11px; }}
     QPushButton {{ background: {c['SURFACE2']}; color: {c['TEXT_SEC']}; border: 1px solid transparent;
         border-radius: 8px; padding: 7px 14px; font-size: 12px; font-weight: 600; }}
@@ -1173,10 +1280,11 @@ STRINGS = {
         "count_total": "共 {total} 条 · 置顶 {pinned}",
         "count_shown": "显示 {shown} / {total} 条 · 置顶 {pinned}",
         "count_match": "匹配 {n} 条", "selected_n": "已选 {n} 项", "no_ext": "无后缀",
-        "hint_text": "Enter/双击 复制 · Space 置顶 · Del 删除 · Ctrl+A 全选 · F5 刷新",
-        "hint_image": "Enter 复制图片 · Ctrl+O 打开 · Ctrl+E 导出",
-        "hint_file": "双击 打开文件 · Enter 复制文件 · Ctrl+O 打开 · 右键查看更多",
-        "hint_url": "双击/Enter 在浏览器打开 · Space 置顶 · Del 删除 · Ctrl+A 全选",
+        "hint_text": "{copy}/双击 复制 · {pin} 置顶 · {delete} 删除 · Ctrl+A 全选 · F5 刷新",
+        "hint_image": "{copy} 复制图片 · Ctrl+O 打开 · Ctrl+E 导出",
+        "hint_file": "双击 打开文件 · {copy} 复制文件 · Ctrl+O 打开 · 右键查看更多",
+        "hint_url": "双击/{copy} 在浏览器打开 · {pin} 置顶 · {delete} 删除 · Ctrl+A 全选",
+        "hint_all": "全部记录：{copy}/双击 复制 · {pin} 置顶 · {delete} 删除 · Ctrl+A 全选 · F5 刷新",
         "st_refreshed": "已刷新", "st_captured": "捕获到新的剪贴板内容",
         "st_nothing_to_copy": "没有可复制的记录",
         "st_copied_chars": "已复制（{n} 字符）", "st_image_copied": "图片已复制到剪贴板",
@@ -1323,10 +1431,15 @@ STRINGS = {
         "hk_pin": "置顶 / 取消置顶",
         "hk_next_tab": "下一个分类",
         "hk_prev_tab": "上一个分类",
+        "hk_quick_paste": "快速面板 · 粘贴回窗口",
+        "hk_quick_copy": "快速面板 · 复制",
         "hk_change": "更改",
         "hk_dialog_title": "设置快捷键",
         "hk_dialog_hint": "点击下方按钮后，按下新的快捷键组合（支持 Ctrl/Alt/Shift/Win + 字母、数字、F1-F12 及 Tab/Enter/Del/Space）",
         "btn_ok": "确定",
+        "btn_confirm_delete": "删除",
+        "btn_confirm_clear": "清空",
+        "btn_confirm_restore": "还原",
         "set_widget_title": "桌面小组件",
         "set_widget_desc": "在桌面显示一个置顶小窗口，实时更新当前剪贴板内容与最近记录，点击条目即可复制（默认开启）",
         "widget_title": "剪贴板 · 实时",
@@ -1358,6 +1471,8 @@ STRINGS = {
         "phone_no_qr": "缺少 qrcode 组件，无法生成二维码",
         "phone_start_failed": "传输服务启动失败：{err}",
         "phone_received": "已收到来自手机的文字",
+        "phone_image_received": "已收到来自手机的图片",
+        "phone_file_received": "已收到来自手机的文件",
         "set_sync": "云同步 / CLOUD SYNC",
         "set_sync_desc": "加密后同步到云端（GitHub Gist / WebDAV），换设备用同一密码恢复",
         "set_sync_open": "打开同步窗口",
@@ -1411,6 +1526,59 @@ STRINGS = {
         "upd_failed": "检查失败: {e}",
         "upd_network_err": "无法连接到更新服务器，请检查网络后重试",
         "upd_rate_limit": "请求过于频繁，请稍后再试（GitHub 限流）",
+        "type_all": "全部", "col_type": "类型",
+        "chip_external": "正文已存本地文件",
+        "set_sound": "提示音 / SOUND",
+        "set_sound_copy": "复制提示音",
+        "set_sound_paste": "粘贴提示音",
+        "set_sound_desc": "默认关闭；复制 / 粘贴可分别开关，并各自选择 YouBoard 音效或自定义音频文件",
+        "set_sound_pick": "选择提示音文件…",
+        "set_sound_default": "系统默认提示音",
+        "set_sound_builtin": "YouBoard 音效",
+        "set_sound_custom": "自定义：{name}",
+        "set_quick": "快速面板 / QUICK PANEL",
+        "set_quick_desc": "按快捷键呼出搜索面板（再按一次收起），Enter 或单击即复制选中项，Esc 关闭",
+        "set_quick_hotkey": "呼出快捷键",
+        "set_quick_open": "打开快速面板",
+        "quick_title": "YouBoard 快速面板",
+        "quick_placeholder": "输入关键词搜索，Enter 粘贴…",
+        "quick_empty": "没有匹配的记录",
+        "quick_hint": "↑↓ 选择 · Enter / 单击 复制 · Ctrl+Enter 粘贴回窗口 · Alt+0~9 复制前 10 条 · Esc 关闭",
+        "quick_copied": "已复制",
+        "quick_pasted": "已粘贴到之前的窗口",
+        "quick_paste_fail": "已复制，但无法自动粘贴（目标窗口可能以管理员身份运行）",
+        "quick_only_pin": "仅置顶",
+        "quick_filter_all": "全部",
+        "set_winv": "Win+V",
+        "set_winv_takeover": "接管 Win+V 打开 / 收起 YouBoard",
+        "set_winv_desc": "开启后按 Win+V 直接打开或收起本工具（再按一次即收起）；开启前建议先关闭系统剪贴板历史，否则两者会同时响应",
+        "set_winv_disable": "关闭系统剪贴板历史",
+        "set_winv_on": "已开启",
+        "set_winv_off": "未开启",
+        "set_winv_already_off": "系统剪贴板历史已关闭",
+        "set_winv_state_on": "系统剪贴板历史：已开启",
+        "set_winv_state_off": "系统剪贴板历史：已关闭",
+        "set_winv_state_unknown": "系统剪贴板历史：读取失败",
+        "set_winv_done": "已关闭系统剪贴板历史（Win+V 现在由本工具接管）",
+        "set_winv_failed": "自动关闭失败，请手动到「设置 → 系统 → 剪贴板」关闭",
+        "set_port": "数据移植 / IMPORT",
+        "set_port_desc": "自动识别本机其它 YouBoard 安装的历史，选择后合并到当前数据",
+        "set_port_open": "扫描其它安装…",
+        "port_title": "导入其它 YouBoard 数据",
+        "port_scanning": "正在扫描…",
+        "port_none": "没有找到其它安装（可手动选择目录）",
+        "port_browse": "手动选择目录…",
+        "port_import": "导入选中",
+        "port_rescan": "重新扫描",
+        "port_found": "找到 {n} 个可导入的安装",
+        "port_col_path": "位置", "port_col_count": "记录", "port_col_time": "最后修改",
+        "port_unreadable": "无法读取（缺少密钥文件）",
+        "port_confirm": "确定导入这个安装的数据吗？\n\n位置：{path}\n记录：{n} 条\n\n条目按内容去重，已有的不会重复添加。",
+        "port_done": "导入完成：新增 {n} 条记录",
+        "port_nothing": "没有新的记录可导入",
+        "port_failed": "读取失败，请确认选择的是 YouBoard 数据目录",
+        "tray_quick": "快速面板",
+        "tray_import": "导入其它安装的数据…",
     },
     "en": {
         "win_title": "YouBoard · Clipboard History", "brand_sub": "Clipboard History",
@@ -1434,10 +1602,11 @@ STRINGS = {
         "count_total": "{total} records · {pinned} pinned",
         "count_shown": "Showing {shown} / {total} · {pinned} pinned",
         "count_match": "{n} matched", "selected_n": "{n} selected", "no_ext": "no ext",
-        "hint_text": "Enter/double-click copy · Space pin · Del delete · Ctrl+A select all · F5 refresh",
-        "hint_image": "Enter copy image · Ctrl+O open · Ctrl+E export",
-        "hint_file": "Double-click open file · Enter copy files · Ctrl+O open · Right-click for more",
-        "hint_url": "Double-click/Enter open in browser · Space pin · Del delete · Ctrl+A select all",
+        "hint_text": "{copy}/double-click copy · {pin} pin · {delete} delete · Ctrl+A select all · F5 refresh",
+        "hint_image": "{copy} copy image · Ctrl+O open · Ctrl+E export",
+        "hint_file": "Double-click open file · {copy} copy files · Ctrl+O open · Right-click for more",
+        "hint_url": "Double-click/{copy} open in browser · {pin} pin · {delete} delete · Ctrl+A select all",
+        "hint_all": "All records: {copy}/double-click copy · {pin} pin · {delete} delete · Ctrl+A select all · F5 refresh",
         "st_refreshed": "Refreshed", "st_captured": "New clipboard content captured",
         "st_nothing_to_copy": "Nothing to copy",
         "st_copied_chars": "Copied ({n} chars)", "st_image_copied": "Image copied to clipboard",
@@ -1585,10 +1754,15 @@ STRINGS = {
         "hk_pin": "Pin / Unpin",
         "hk_next_tab": "Next tab",
         "hk_prev_tab": "Previous tab",
+        "hk_quick_paste": "Quick panel · Paste to window",
+        "hk_quick_copy": "Quick panel · Copy",
         "hk_change": "Change",
         "hk_dialog_title": "Set Shortcut",
         "hk_dialog_hint": "Click below, then press the new key combination (Ctrl/Alt/Shift/Win + letter, digit, F1-F12, Tab/Enter/Del/Space)",
         "btn_ok": "OK",
+        "btn_confirm_delete": "Delete",
+        "btn_confirm_clear": "Clear",
+        "btn_confirm_restore": "Restore",
         "set_widget_title": "Desktop Widget",
         "set_widget_desc": "Show a small always-on-top window with live clipboard content and recent history; click an item to copy it (on by default)",
         "widget_title": "Clipboard · Live",
@@ -1620,6 +1794,8 @@ STRINGS = {
         "phone_no_qr": "qrcode component missing, cannot generate QR",
         "phone_start_failed": "Failed to start transfer server: {err}",
         "phone_received": "Received text from phone",
+        "phone_image_received": "Received image from phone\n已收到来自手机的图片",
+        "phone_file_received": "Received file from phone\n已收到来自手机的文件",
         "set_sync": "Cloud Sync / CLOUD SYNC",
         "set_sync_desc": "Sync encrypted history to the cloud (GitHub Gist / WebDAV); restore elsewhere with the same passphrase",
         "set_sync_open": "Open Sync Window",
@@ -1673,6 +1849,59 @@ STRINGS = {
         "upd_failed": "检查失败: {e}\nCheck failed: {e}",
         "upd_network_err": "Cannot connect to update server. Please check your network and try again.\n无法连接到更新服务器，请检查网络后重试",
         "upd_rate_limit": "Too many requests. Please try again later (GitHub rate limit).\n请求过于频繁，请稍后再试（GitHub 限流）",
+        "type_all": "All\n全部", "col_type": "Type\n类型",
+        "chip_external": "Body stored locally\n正文已存本地文件",
+        "set_sound": "Sound / 提示音",
+        "set_sound_copy": "Copy sound\n复制提示音",
+        "set_sound_paste": "Paste sound\n粘贴提示音",
+        "set_sound_desc": "Off by default; copy / paste each can be toggled and set to YouBoard sound or a custom audio file\n默认关闭；复制 / 粘贴可分别开关，并各自选择 YouBoard 音效或自定义音频文件",
+        "set_sound_pick": "Choose sound file…\n选择提示音文件…",
+        "set_sound_default": "System default\n系统默认提示音",
+        "set_sound_builtin": "YouBoard sound\nYouBoard 音效",
+        "set_sound_custom": "Custom: {name}\n自定义：{name}",
+        "set_quick": "Quick Panel / 快速面板",
+        "set_quick_desc": "Press the hotkey to open a search panel (press again to hide); Enter or a click copies the selected item\n按快捷键呼出搜索面板（再按一次收起），Enter 或单击即复制选中项",
+        "set_quick_hotkey": "Panel hotkey\n呼出快捷键",
+        "set_quick_open": "Open Quick Panel\n打开快速面板",
+        "quick_title": "YouBoard Quick Panel",
+        "quick_placeholder": "Type to search, Enter to paste…",
+        "quick_empty": "No matching records\n没有匹配的记录",
+        "quick_hint": "↑↓ Select · Enter / Click to copy · Ctrl+Enter Paste to window · Alt+0~9 Copy top 10 · Esc Close",
+        "quick_copied": "Copied\n已复制",
+        "quick_pasted": "Pasted into the previous window\n已粘贴到之前的窗口",
+        "quick_paste_fail": "Copied, but auto-paste failed (target window may run as administrator)\n已复制，但无法自动粘贴（目标窗口可能以管理员身份运行）",
+        "quick_only_pin": "Pinned only\n仅置顶",
+        "quick_filter_all": "All\n全部",
+        "set_winv": "Win+V",
+        "set_winv_takeover": "Take over Win+V to open / hide YouBoard\n接管 Win+V 打开 / 收起 YouBoard",
+        "set_winv_desc": "Once on, Win+V opens or hides this tool (press again to hide); turning off Windows clipboard history first is recommended, otherwise both will respond\n开启后按 Win+V 直接打开或收起本工具（再按一次即收起）；开启前建议先关闭系统剪贴板历史，否则两者会同时响应",
+        "set_winv_disable": "Turn off Windows clipboard history\n关闭系统剪贴板历史",
+        "set_winv_on": "On\n已开启",
+        "set_winv_off": "Off\n未开启",
+        "set_winv_already_off": "Windows clipboard history is already off\n系统剪贴板历史已关闭",
+        "set_winv_state_on": "Windows clipboard history: ON\n系统剪贴板历史：已开启",
+        "set_winv_state_off": "Windows clipboard history: OFF\n系统剪贴板历史：已关闭",
+        "set_winv_state_unknown": "Windows clipboard history: unknown\n系统剪贴板历史：读取失败",
+        "set_winv_done": "Windows clipboard history disabled (Win+V now handled by YouBoard)\n已关闭系统剪贴板历史（Win+V 现在由本工具接管）",
+        "set_winv_failed": "Failed to disable automatically; do it manually in Settings → System → Clipboard\n自动关闭失败，请手动到「设置 → 系统 → 剪贴板」关闭",
+        "set_port": "Import / 数据移植",
+        "set_port_desc": "Detect other YouBoard installations on this PC and merge their history\n自动识别本机其它 YouBoard 安装的历史，选择后合并到当前数据",
+        "set_port_open": "Scan other installations…\n扫描其它安装…",
+        "port_title": "Import data from another YouBoard",
+        "port_scanning": "Scanning…\n正在扫描…",
+        "port_none": "No other installation found (you can pick a folder manually)\n没有找到其它安装（可手动选择目录）",
+        "port_browse": "Choose folder…\n手动选择目录…",
+        "port_import": "Import selected\n导入选中",
+        "port_rescan": "Rescan\n重新扫描",
+        "port_found": "Found {n} installations\n找到 {n} 个可导入的安装",
+        "port_col_path": "Location", "port_col_count": "Records", "port_col_time": "Modified",
+        "port_unreadable": "Unreadable (key file missing)\n无法读取（缺少密钥文件）",
+        "port_confirm": "Import the data of this installation?\n\nLocation: {path}\nRecords: {n}\n\nDuplicates are skipped.",
+        "port_done": "Import finished: {n} new records\n导入完成：新增 {n} 条记录",
+        "port_nothing": "Nothing new to import\n没有新的记录可导入",
+        "port_failed": "Read failed; please pick a YouBoard data folder\n读取失败，请确认选择的是 YouBoard 数据目录",
+        "tray_quick": "Quick Panel\n快速面板",
+        "tray_import": "Import data from another install…\n导入其它安装的数据…",
     },
 }
 
@@ -2542,16 +2771,21 @@ class _UpdateStatusDialog(_UpdateDialog):
     """更新结果状态卡片，复用更新卡片的完整视觉风格。"""
 
     def __init__(self, owner, app, version, title=None, detail=None,
-                 kind="latest"):
+                 kind="latest", meta=None, ok_text=None):
         super().__init__(
             owner, app, version, version, "", [], [], "")
         version = str(version or APP_VERSION)
         title = title or f"{tr('upd_latest_title')}  v{version}"
         detail = detail or tr("upd_latest_meta", v=version)
         self._state = "status"
-        self._card.setMinimumHeight(360)
+        self._card.setMinimumHeight(360 if meta is None else 330)
         self._title.setText(title)
-        self._meta.setText(f"{APP_NAME} v{version}")
+        if meta is None:
+            self._meta.setText(f"{APP_NAME} v{version}")
+        elif meta:
+            self._meta.setText(str(meta))
+        else:
+            self._meta.hide()
         self._detail.setText(detail)
         if kind == "warning":
             self._badge.setText("!")
@@ -2568,9 +2802,61 @@ class _UpdateStatusDialog(_UpdateDialog):
                 " border-radius: 3px; }")
         self._notes.hide()
         self._secondary_btn.hide()
-        self._primary_btn.setText(tr("btn_ok"))
+        self._primary_btn.setText(ok_text or tr("btn_ok"))
         self._primary_btn.clicked.connect(self.accept)
         self.setWindowTitle(title)
+
+
+def _card_host(parent):
+    """找到卡片弹窗的宿主（主窗口），拿不到就退回传入的窗口。"""
+    for attr in ("app", "_app"):
+        w = getattr(parent, attr, None)
+        if w is not None and hasattr(w, "store"):
+            return w
+    w = parent
+    try:
+        while w is not None:
+            if hasattr(w, "store") and hasattr(w, "_tabs"):
+                return w
+            w = w.parentWidget()
+    except Exception:
+        return None
+    return None
+
+
+def _info_card(parent, title, detail, kind="latest", ok_text=None):
+    """主题一致的提示卡片，替代系统原生 QMessageBox.information / warning。"""
+    host = _card_host(parent)
+    try:
+        dlg = _UpdateStatusDialog(host or parent, host, APP_VERSION,
+                                  title=title, detail=detail, kind=kind,
+                                  ok_text=ok_text)
+        dlg.exec()
+    except Exception:
+        try:
+            QMessageBox.information(parent, title, detail)
+        except Exception:
+            pass
+
+
+def _confirm_card(parent, title, detail, ok_text=None, cancel_text=None,
+                  kind="warning"):
+    """主题一致的确认卡片，替代 QMessageBox.question；确定返回 True。"""
+    host = _card_host(parent)
+    try:
+        dlg = _UpdateStatusDialog(host or parent, host, APP_VERSION,
+                                  title=title, detail=detail, kind=kind,
+                                  meta="",
+                                  ok_text=ok_text or tr("btn_ok"))
+        dlg._secondary_btn.setText(cancel_text or tr("btn_cancel"))
+        dlg._secondary_btn.show()
+        dlg._secondary_btn.setEnabled(True)
+        return dlg.exec() == QDialog.DialogCode.Accepted
+    except Exception:
+        ret = QMessageBox.question(
+            parent, title, detail,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        return ret == QMessageBox.StandardButton.Yes
 
 
 def _retention_summary(policy):
@@ -4117,16 +4403,17 @@ class YouBoardApp(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.store = store
         self.monitor = monitor
-        self._active_type = "text"
+        # 默认落在第一个标签（3.1.0 起是「全部」），与 QTabWidget 的初始索引保持一致
+        self._active_type = TAB_TYPES[0]
         self._tables = {}
         self._tab_layouts = []
         # 每个标签页里“按内容撑开”的那一列（横向滚动条靠它才能左右拖动看全文）
         self._flex_cols = {}
-        self._iid_to_hash = {"text": {}, "image": {}, "file": {}, "url": {}}
+        self._iid_to_hash = {t: {} for t in TAB_TYPES}
         self._search_edits = {}
         self._search_timers = {}
         self._count_labels = {}
-        self._sort_orders = {"text": "default", "image": "default", "file": "default", "url": "default"}
+        self._sort_orders = {t: "default" for t in TAB_TYPES}
         self._sort_combos = {}
         self._entry_index = {}
         self._pinned_hashes = set()
@@ -4142,6 +4429,8 @@ class YouBoardApp(QMainWindow):
         self._status_timer = None
         self._dot_phase = 0
         self._last_self_copy = 0.0
+        # 3.1.0：提示音事件队列（钩子线程 → 界面线程）
+        self._paste_sound_q = queue.Queue()
         self._hist_ids = []
         self.restart_flag = False
         self._bg_movie = None
@@ -4287,11 +4576,13 @@ class YouBoardApp(QMainWindow):
 
         self._tabs.blockSignals(True)
         self._tabs.setIconSize(QSize(18, 18))
-        for etype in ("text", "image", "file", "url"):
+        for etype in TAB_TYPES:
             tab_w = QWidget()
             self._tabs.addTab(tab_w, f"  {self._type_label(etype)}  0  ")
-            self._tabs.setTabIcon(self._tabs.count() - 1,
-                                  QIcon(_res_icon(TAB_ICON_FILES[etype])))
+            _icon_file = TAB_ICON_FILES.get(etype)
+            self._tabs.setTabIcon(
+                self._tabs.count() - 1,
+                QIcon(_res_icon(_icon_file)) if _icon_file else _all_tab_icon())
             self._build_tab(tab_w, etype)
         self._tabs.blockSignals(False)
 
@@ -4662,8 +4953,9 @@ class YouBoardApp(QMainWindow):
     # ------------------------------------------------------------------
     @staticmethod
     def _type_label(etype):
-        return {"text": tr("type_text"), "image": tr("type_image"),
-                "file": tr("type_file"), "url": tr("type_url")}[etype]
+        return {"all": tr("type_all"), "text": tr("type_text"),
+                "image": tr("type_image"), "file": tr("type_file"),
+                "url": tr("type_url")}.get(etype, str(etype))
 
     def _build_tab(self, parent, etype):
         lay = QVBoxLayout(parent)
@@ -4690,7 +4982,7 @@ class YouBoardApp(QMainWindow):
         self._count_labels[etype] = count_lbl
         search_row.addWidget(count_lbl)
 
-        sort_ids = (["default", "oldest"] if etype in ("text", "url") else
+        sort_ids = (["default", "oldest"] if etype in ("all", "text", "url") else
                     ["default", "oldest", "name_az", "name_za",
                      "fmt_az", "fmt_za", "size_desc", "size_asc"])
         combo = _SortMenuButton()
@@ -4715,7 +5007,7 @@ class YouBoardApp(QMainWindow):
             btn.clicked.connect(slot)
             act_row.addWidget(btn)
         act_row.addStretch()
-        if etype in ("image", "file", "url"):
+        if etype in ("all", "image", "file", "url"):
             open_btn = QPushButton(tr("btn_open"))
             open_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             open_btn.clicked.connect(self._open_selected)
@@ -4753,7 +5045,19 @@ class YouBoardApp(QMainWindow):
         table.itemSelectionChanged.connect(
             lambda t=etype: self._on_selection_changed(t))
 
-        if etype == "text":
+        if etype == "all":
+            # 全部标签：混合展示四类记录；类型以「[文本] 内容」前缀显示，
+            # 这样「内容预览」列和别的分类一样从同一位置开始
+            table.setColumnCount(4)
+            table.setHorizontalHeaderLabels(
+                ["#", tr("col_time"), "", tr("col_preview")])
+            table.setColumnWidth(0, 58)
+            table.setColumnWidth(1, 186)
+            table.setColumnWidth(2, 30)
+            table.horizontalHeader().setSectionResizeMode(
+                3, QHeaderView.ResizeMode.Interactive)
+            self._flex_cols[etype] = 3
+        elif etype == "text":
             table.setColumnCount(4)
             table.setHorizontalHeaderLabels(["#", tr("col_time"), "", tr("col_preview")])
             table.setColumnWidth(0, 58)
@@ -4783,18 +5087,19 @@ class YouBoardApp(QMainWindow):
             table.setColumnWidth(5, 92)
             table.setColumnWidth(6, 74)
         else:
+            # 文件分类：内容列（文件列表）紧跟时间列，其后才是数量/格式/大小
             table.setColumnCount(7)
             table.setHorizontalHeaderLabels(
-                ["#", tr("col_time"), "", tr("col_count"), tr("col_format"),
-                 tr("col_size"), tr("col_files")])
+                ["#", tr("col_time"), "", tr("col_files"), tr("col_count"),
+                 tr("col_format"), tr("col_size")])
             table.setColumnWidth(0, 58)
             table.setColumnWidth(1, 186)
             table.setColumnWidth(2, 30)
-            table.setColumnWidth(3, 46)
-            table.setColumnWidth(4, 62)
-            table.setColumnWidth(5, 74)
-            table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
-            self._flex_cols[etype] = 6
+            table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+            table.setColumnWidth(4, 46)
+            table.setColumnWidth(5, 62)
+            table.setColumnWidth(6, 74)
+            self._flex_cols[etype] = 3
 
         # 内容列的标题靠左（该列会被内容撑得很宽，居中会跑到很右边去）
         _flex = self._flex_cols.get(etype)
@@ -4809,11 +5114,13 @@ class YouBoardApp(QMainWindow):
             _time_head.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(table, 1)
         self._tables[etype] = table
-        if etype == "text":
-            # 文本预览列：换行处渲染内联 huiche 图标
+        if etype in TAB_TYPES:
+            # 内容列统一由该委托绘制：起点严格对齐本列表头文字，
+            # 文本预览还会把换行渲染成内联 huiche 图标
             if not hasattr(self, "_text_preview_delegate"):
                 self._text_preview_delegate = _InlineImageDelegate(table)
-            table.setItemDelegateForColumn(3, self._text_preview_delegate)
+            table.setItemDelegateForColumn(self._flex_cols[etype],
+                                           self._text_preview_delegate)
 
     def _build_preview_panel(self, parent_split):
         pf = QFrame()
@@ -4913,7 +5220,7 @@ class YouBoardApp(QMainWindow):
         bar.setFixedHeight(34)
         bar.setStyleSheet(
             f"background: {surface_bg(glass_key='GLASS_HEADER')};"
-            f" border-top: 1px solid {C['BORDER']};")
+            f" border: none;")     # 去掉提示条上方那根分隔横杠
         bl = QHBoxLayout(bar)
         bl.setContentsMargins(12, 0, 12, 0)
         self._hint_lbl = QLabel()
@@ -5003,7 +5310,7 @@ class YouBoardApp(QMainWindow):
         self._pinned_hashes = pinned
 
     def _initial_refresh(self):
-        for etype in ("text", "image", "file", "url"):
+        for etype in TAB_TYPES:
             self._refresh_tab(etype)
         self._refresh_history_list()
         self._update_hint()
@@ -5017,7 +5324,7 @@ class YouBoardApp(QMainWindow):
             pass
 
     def _refresh_all(self):
-        for etype in ("text", "image", "file", "url"):
+        for etype in TAB_TYPES:
             self._refresh_tab(etype)
         self._refresh_history_list()
         self._update_preview()
@@ -5132,7 +5439,13 @@ class YouBoardApp(QMainWindow):
             return
         self._rebuild_index()
         kw = self._search_edits.get(etype, QLineEdit()).text().strip().lower()
-        entries = self.store.search(kw, etype) if kw else self.store.get_by_type(etype)
+        if etype == "all":
+            # 全部标签：跨分类检索（搜索留空时按时间汇总四类）
+            entries = (self.store.search(kw, None) if kw
+                       else self.store.get_all())
+        else:
+            entries = (self.store.search(kw, etype) if kw
+                       else self.store.get_by_type(etype))
         entries = self._apply_sort(etype, entries)
         total_all = len(entries)
         shown = entries[:DISPLAY_LIMIT]
@@ -5140,25 +5453,28 @@ class YouBoardApp(QMainWindow):
         iid_map = {}
         pin_color = QColor(C['PIN_BG'])
         for i, entry in enumerate(shown):
+            row_type = entry.get("type") or etype
+            if row_type not in DATA_TYPES:
+                row_type = "text"
             ts = entry.get("timestamp", "")
             try:
                 time_str = datetime.fromisoformat(ts).strftime(TIME_FORMAT)
             except ValueError:
                 time_str = ts[:19] if len(ts) >= 19 else ts
             is_pin = entry["hash"] in self._pinned_hashes
-            missing = (etype == "file" and
+            missing = (row_type == "file" and
                        self._file_missing.get(entry.get("hash", ""), False))
             status = "\U0001f4cc" if is_pin else ""
-            if etype == "text":
+            if row_type == "text":
                 content = entry.get("content", "")
                 preview = content[:120].replace("\n", " ⏎ ").replace("\t", "  ")
                 preview_html = _text_preview_html(content, 120)
                 if len(content) > 120:
                     preview += "…"
                 vals = [str(i + 1), time_str, status, preview]
-            elif etype == "url":
+            elif row_type == "url":
                 vals = [str(i + 1), time_str, status, entry.get("content", "")]
-            elif etype == "image":
+            elif row_type == "image":
                 src = entry.get("source_name", "")
                 fn = src if src else os.path.basename(entry.get("filename", ""))
                 vals = [str(i + 1), time_str, status, fn,
@@ -5174,21 +5490,40 @@ class YouBoardApp(QMainWindow):
                     fp += f"  …(+{len(paths) - 6})"
                 if missing:
                     fp += f"  {tr('file_missing')}"
-                vals = [str(i + 1), time_str, status,
+                vals = [str(i + 1), time_str, status, fp,
                         str(entry.get("file_count", len(paths))),
                         _extract_extensions(paths),
-                        fmt_size(total_sz) if total_sz > 0 else "?", fp]
+                        fmt_size(total_sz) if total_sz > 0 else "?"]
+            if etype == "all":
+                # 混合列表：类型用圆角标签画在内容前面，内容列起绘位置不变
+                badge = self._type_label(row_type)
+                if row_type == "text":
+                    html_flex = _text_preview_html(
+                        entry.get("content", "") or "", 120)
+                else:
+                    html_flex = _html_escape(str(vals[3]))
+            elif etype == "text":
+                html_flex = preview_html
+                badge = None
+            else:
+                html_flex = None
+                badge = None
+            _flex_col = self._flex_cols.get(etype)
             for col, val in enumerate(vals):
                 item = QTableWidgetItem(val)
-                if etype == "text" and col == 3:
-                    item.setData(_InlineImageDelegate.HTML_ROLE, preview_html)
+                if (_flex_col is not None and col == _flex_col
+                        and html_flex is not None):
+                    item.setData(_InlineImageDelegate.HTML_ROLE, html_flex)
+                if (_flex_col is not None and col == _flex_col
+                        and etype == "all"):
+                    item.setData(_InlineImageDelegate.BADGE_ROLE, badge)
                 if col in (0, 1, 2):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if is_pin:
                     item.setBackground(pin_color)
                 if missing:
                     item.setForeground(QColor(C['TEXT_MUTED']))
-                    if col == len(vals) - 1:
+                    if _flex_col is not None and col == _flex_col:
                         item.setIcon(self._missing_icon())
                 table.setItem(i, col, item)
             iid_map[i] = entry["hash"]
@@ -5207,7 +5542,8 @@ class YouBoardApp(QMainWindow):
                     table.setColumnWidth(flex_col, target)
             except Exception:
                 pass
-        pin_n = self.store.pinned_count(etype)
+        pin_n = (self.store.pinned_count(None) if etype == "all"
+                 else self.store.pinned_count(etype))
         cl = self._count_labels.get(etype)
         if cl:
             if kw:
@@ -5280,7 +5616,7 @@ class YouBoardApp(QMainWindow):
     def _on_cache_cleanup_done(self, removed_entries, removed_files, freed):
         # 保留策略删除历史后静默刷新列表；缓存文件回收不改变界面。
         if removed_entries and self.isVisible() and not self.isMinimized():
-            for etype in ("text", "image", "file", "url"):
+            for etype in TAB_TYPES:
                 self._refresh_tab(etype)
             self._refresh_history_list()
             self._update_desk_widget()
@@ -5320,8 +5656,8 @@ class YouBoardApp(QMainWindow):
         self._schedule_retention_deadline()
 
     def _update_tab_badge(self, etype):
-        n = self.store.count(etype)
-        idx = ("text", "image", "file", "url").index(etype)
+        n = self.store.count(None) if etype == "all" else self.store.count(etype)
+        idx = TAB_TYPES.index(etype)
         self._tabs.setTabText(idx, f"  {self._type_label(etype)}  {n}  ")
 
     def _update_header_stats(self):
@@ -5382,10 +5718,10 @@ class YouBoardApp(QMainWindow):
         if not snap:
             return
         ts = snap.get("time", "")[:19]
-        ret = QMessageBox.question(self, tr("dlg_confirm_restore"),
-            tr("msg_restore_confirm", ts=ts, desc=snap.get("desc", "?")),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
+        if not _confirm_card(
+                self, tr("dlg_confirm_restore"),
+                tr("msg_restore_confirm", ts=ts, desc=snap.get("desc", "?")),
+                ok_text=tr("btn_confirm_restore")):
             return
         self.store.save_snapshot(tr("snap_before_restore"))
         self.store.restore_snapshot(sid)
@@ -5397,10 +5733,10 @@ class YouBoardApp(QMainWindow):
         if not snaps:
             self._set_status(tr("snap_empty"))
             return
-        ret = QMessageBox.question(self, tr("dlg_confirm_clear"),
-            tr("msg_clear_history", n=len(snaps)),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
+        if not _confirm_card(
+                self, tr("dlg_confirm_clear"),
+                tr("msg_clear_history", n=len(snaps)),
+                ok_text=tr("btn_confirm_clear")):
             return
         self.store.clear_snapshots()
         self._refresh_history_list()
@@ -5411,9 +5747,8 @@ class YouBoardApp(QMainWindow):
     # Tab switching / shortcuts / status bar
     # ------------------------------------------------------------------
     def _on_tab_changed(self, idx):
-        types = ("text", "image", "file", "url")
-        if 0 <= idx < len(types):
-            self._active_type = types[idx]
+        if 0 <= idx < len(TAB_TYPES):
+            self._active_type = TAB_TYPES[idx]
             self._refresh_tab(self._active_type)
             self._update_preview()
             self._update_hint()
@@ -5456,9 +5791,26 @@ class YouBoardApp(QMainWindow):
             lb.surge(hue, 0.85 if kind in ("ok", "err") else 0.5)
 
     def _update_hint(self):
+        """底部提示按当前快捷键配置生成（改了快捷键后要跟着变）。"""
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = {}
+        copy_hk = _hotkey_display(cfg.get(
+            "hk_copy", _ACTION_HOTKEY_DEFAULTS["hk_copy"]))
+        pin_hk = _hotkey_display(cfg.get(
+            "hk_pin", _ACTION_HOTKEY_DEFAULTS["hk_pin"]))
+        del_hk = _hotkey_display(cfg.get(
+            "hk_delete", _ACTION_HOTKEY_DEFAULTS["hk_delete"]))
         hints = {"text": tr("hint_text"), "image": tr("hint_image"),
-                 "file": tr("hint_file"), "url": tr("hint_url")}
-        self._hint_lbl.setText(hints.get(self._active_type, ""))
+                 "file": tr("hint_file"), "url": tr("hint_url"),
+                 "all": tr("hint_all")}
+        tpl = hints.get(self._active_type, "")
+        try:
+            self._hint_lbl.setText(
+                tpl.format(copy=copy_hk, pin=pin_hk, delete=del_hk))
+        except Exception:
+            self._hint_lbl.setText(tpl)
 
     # ------------------------------------------------------------------
     # Preview panel
@@ -5519,6 +5871,13 @@ class YouBoardApp(QMainWindow):
         self._cur_text_entry = entry
         self._clear_preview()
         content = entry.get("content", "")
+        # 大内容外置：正文存在 content/ 里，预览只读头部，避免把整份大文本读进界面
+        full_len = entry.get("content_size") or len(content)
+        is_external = bool(entry.get("content_ref"))
+        if is_external:
+            head = read_external_head(entry["content_ref"], 20000)
+            if len(head) > len(content):
+                content = head
         url_pat = re.compile(r'https?://\S+|www\.\S+')
         urls = url_pat.findall(content)
         stripped = url_pat.sub('', content).strip()
@@ -5539,16 +5898,21 @@ class YouBoardApp(QMainWindow):
             txt = QTextEdit()
             txt.setReadOnly(True)
             shown = content[:20000]
-            txt.setPlainText(shown + (tr("preview_truncated") if len(content) > 20000 else ""))
+            txt.setPlainText(shown + (tr("preview_truncated")
+                                     if full_len > len(shown) else ""))
             self._preview_layout.addWidget(txt, 1)
         info_row = QHBoxLayout()
         n_lines = content.count("\n") + 1
-        chip1 = QLabel(tr("chip_chars", n=f"{len(content):,}"))
+        chip1 = QLabel(tr("chip_chars", n=f"{full_len:,}"))
         chip1.setStyleSheet(f"background: {C['ACCENT_DIM']}; color: {C['ACCENT']}; border-radius: 4px; padding: 2px 8px; font-size: 11px;")
         info_row.addWidget(chip1)
-        chip2 = QLabel(tr("chip_lines", n=f"{n_lines:,}"))
+        chip2 = QLabel(tr("chip_lines", n=f"{'≈' if is_external else ''}{n_lines:,}"))
         chip2.setStyleSheet(f"background: {C['SURFACE3']}; color: {C['TEXT_SEC']}; border-radius: 4px; padding: 2px 8px; font-size: 11px;")
         info_row.addWidget(chip2)
+        if is_external:
+            chip3 = QLabel(tr("chip_external"))
+            chip3.setStyleSheet(f"background: {C['SURFACE3']}; color: {C['TEXT_MUTED']}; border-radius: 4px; padding: 2px 8px; font-size: 11px;")
+            info_row.addWidget(chip3)
         info_row.addStretch()
         self._preview_layout.addLayout(info_row)
 
@@ -5750,7 +6114,8 @@ class YouBoardApp(QMainWindow):
         if os.path.exists(path):
             _open_path(path)
         else:
-            QMessageBox.information(self, tr("dlg_info"), tr("msg_file_not_found", path=path))
+            _info_card(self, tr("dlg_info"),
+                       tr("msg_file_not_found", path=path), kind="warning")
 
     def _open_url(self, url):
         if not url.startswith(("http://", "https://")):
@@ -5790,7 +6155,8 @@ class YouBoardApp(QMainWindow):
         self._last_self_copy = time.time()
         self.store.mark_self_copy()
         if etype in ("text", "url"):
-            set_clipboard_text(entry.get("content", ""))
+            # 大内容外置：复制时读回完整正文
+            set_clipboard_text(entry_full_text(entry))
         elif etype == "image":
             img_path = self._image_full_path(entry)
             if os.path.exists(img_path) and HAS_PIL:
@@ -5813,8 +6179,9 @@ class YouBoardApp(QMainWindow):
         self.store.mark_self_copy()
         try:
             if etype in ("text", "url"):
-                set_clipboard_text(entry["content"])
-                self._set_status(tr("st_copied_chars", n=f"{len(entry['content']):,}"), "ok")
+                body = entry_full_text(entry)
+                set_clipboard_text(body)
+                self._set_status(tr("st_copied_chars", n=f"{len(body):,}"), "ok")
             elif etype == "image":
                 img_path = self._image_full_path(entry)
                 if os.path.exists(img_path) and HAS_PIL:
@@ -5836,8 +6203,10 @@ class YouBoardApp(QMainWindow):
                     return
             self._update_desk_widget(entry)
             self._flash_selected()
+            self._play_sound("copy")
         except Exception as ex:
-            QMessageBox.critical(self, tr("dlg_error"), tr("msg_copy_failed", err=ex))
+            _info_card(self, tr("dlg_error"),
+                       tr("msg_copy_failed", err=ex), kind="warning")
 
     def _flash_selected(self):
         table = self._tables.get(self._active_type)
@@ -5882,7 +6251,8 @@ class YouBoardApp(QMainWindow):
             else:
                 self._copy_selected()
         except Exception as ex:
-            QMessageBox.critical(self, tr("dlg_error"), tr("msg_open_failed", err=ex))
+            _info_card(self, tr("dlg_error"),
+                       tr("msg_open_failed", err=ex), kind="warning")
 
     @staticmethod
     def _reveal_in_explorer(path):
@@ -5936,10 +6306,10 @@ class YouBoardApp(QMainWindow):
         hashes = self._get_selected_hashes()
         if not hashes:
             return
-        ret = QMessageBox.question(self, tr("dlg_confirm_delete"),
-            tr("msg_delete_confirm", n=len(hashes)),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
+        if not _confirm_card(
+                self, tr("dlg_confirm_delete"),
+                tr("msg_delete_confirm", n=len(hashes)),
+                ok_text=tr("btn_confirm_delete")):
             return
         self.store.save_snapshot(tr("snap_delete", n=len(hashes), t=self._type_label(self._active_type)))
         self.store.delete_many(hashes)
@@ -5960,10 +6330,10 @@ class YouBoardApp(QMainWindow):
         if count == 0:
             self._set_status(tr("st_no_type_records", t=label))
             return
-        ret = QMessageBox.question(self, tr("dlg_confirm_clear"),
-            tr("msg_clear_type", t=label, n=count),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
+        if not _confirm_card(
+                self, tr("dlg_confirm_clear"),
+                tr("msg_clear_type", t=label, n=count),
+                ok_text=tr("btn_confirm_clear")):
             return
         self.store.save_snapshot(tr("snap_clear_type", t=label, n=count))
         self.store.clear_type(etype)
@@ -5975,10 +6345,10 @@ class YouBoardApp(QMainWindow):
         if unpinned == 0:
             self._set_status(tr("st_no_unpinned_type", t=label))
             return
-        ret = QMessageBox.question(self, tr("dlg_confirm_remove"),
-            tr("msg_clear_type_unpinned", t=label, n=unpinned),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
+        if not _confirm_card(
+                self, tr("dlg_confirm_remove"),
+                tr("msg_clear_type_unpinned", t=label, n=unpinned),
+                ok_text=tr("btn_confirm_clear")):
             return
         self.store.save_snapshot(tr("snap_clear_type_unpinned", t=label, n=unpinned))
         self.store.clear_type_unpinned(etype)
@@ -5989,10 +6359,10 @@ class YouBoardApp(QMainWindow):
         if unpinned == 0:
             self._set_status(tr("st_no_unpinned"))
             return
-        ret = QMessageBox.question(self, tr("dlg_confirm_remove"),
-            tr("msg_clear_unpinned", n=unpinned),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
+        if not _confirm_card(
+                self, tr("dlg_confirm_remove"),
+                tr("msg_clear_unpinned", n=unpinned),
+                ok_text=tr("btn_confirm_clear")):
             return
         self.store.save_snapshot(tr("snap_clear_unpinned", n=unpinned))
         self.store.clear_unpinned()
@@ -6005,10 +6375,10 @@ class YouBoardApp(QMainWindow):
         if total == 0:
             self._set_status(tr("st_nothing_to_clear"))
             return
-        ret = QMessageBox.question(self, tr("dlg_confirm_clear"),
-            tr("msg_clear_all", n=total),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if ret != QMessageBox.StandardButton.Yes:
+        if not _confirm_card(
+                self, tr("dlg_confirm_clear"),
+                tr("msg_clear_all", n=total),
+                ok_text=tr("btn_confirm_clear")):
             return
         self.store.save_snapshot(tr("snap_clear_all", n=total))
         self.store.clear()
@@ -6028,7 +6398,7 @@ class YouBoardApp(QMainWindow):
                 self, tr("btn_export"), "", f"{tr('ft_text')} (*.txt);;{tr('ft_all')} (*.*)")
             if path:
                 with open(path, "w", encoding="utf-8") as f:
-                    f.write(entry["content"])
+                    f.write(entry_full_text(entry))
                 self._set_status(tr("st_exported", name=os.path.basename(path)), "ok")
         elif etype == "image":
             img_path = self._image_full_path(entry)
@@ -6070,8 +6440,11 @@ class YouBoardApp(QMainWindow):
         entry = self._get_selected_entry()
         if not entry:
             return
+        if etype == "all":
+            # 全部标签：右键菜单按记录自身的类型来给
+            etype = entry.get("type") or "text"
         n = len(table.selectionModel().selectedRows())
-        menu = QMenu(self)
+        menu = _RoundMenu(self)
         if etype == "text":
             menu.addAction(tr("m_copy_content"), self._copy_selected)
             menu.addAction(tr("m_export_txt"), self._export_selected)
@@ -6101,12 +6474,15 @@ class YouBoardApp(QMainWindow):
     # Manage menu (header)
     # ------------------------------------------------------------------
     def _show_manage_menu(self):
-        menu = QMenu(self)
+        menu = _RoundMenu(self)
         menu.addAction(tr("m_refresh"), self._refresh_all)
         menu.addSeparator()
-        menu.addAction(tr("m_clear_type", t=self._type_label(self._active_type)), self._clear_type)
-        menu.addAction(tr("m_clear_type_unpinned", t=self._type_label(self._active_type)),
-                       self._clear_type_unpinned)
+        if self._active_type != "all":
+            menu.addAction(tr("m_clear_type", t=self._type_label(self._active_type)),
+                           self._clear_type)
+            menu.addAction(tr("m_clear_type_unpinned",
+                              t=self._type_label(self._active_type)),
+                           self._clear_type_unpinned)
         menu.addAction(tr("m_clear_unpinned"), self._clear_unpinned)
         menu.addSeparator()
         menu.addAction(tr("m_clear_all"), self._clear_all)
@@ -6153,7 +6529,7 @@ class YouBoardApp(QMainWindow):
 
     def _on_clip_changed(self):
         self._refresh_tab(self._active_type)
-        for etype in ("text", "image", "file", "url"):
+        for etype in TAB_TYPES:
             if etype != self._active_type:
                 self._update_tab_badge(etype)
         self._update_header_stats()
@@ -6164,6 +6540,14 @@ class YouBoardApp(QMainWindow):
             pass
         if time.time() - self._last_self_copy > 1.2:
             self._set_status(tr("st_captured"), "ok")
+        # 静默挂后台时，在别的程序里 Ctrl+C 也能听到复制提示音。
+        # 只判断"是不是本程序自己写进剪贴板的"，外部复制每次都出声。
+        try:
+            own_copy = self.store.is_self_copy()
+        except Exception:
+            own_copy = False
+        if not own_copy:
+            self._play_sound("copy")
 
     # ------------------------------------------------------------------
     # Header breathing dot
@@ -6189,7 +6573,7 @@ class YouBoardApp(QMainWindow):
         dlg.exec()
         # 设置窗口关闭后静默刷新：保证期间复制的新内容立即显示（不弹状态提示）
         try:
-            for etype in ("text", "image", "file", "url"):
+            for etype in TAB_TYPES:
                 self._refresh_tab(etype)
             self._refresh_history_list()
             self._update_desk_widget()
@@ -6220,6 +6604,8 @@ class YouBoardApp(QMainWindow):
         self._register_hotkey()
         # 重新绑定动作快捷键（设置中修改后立即生效）
         self._bind_shortcuts()
+        # 底部提示条里的快捷键说明也要跟着变
+        self._update_hint()
         # Optional desktop widget — apply live
         self._apply_desktop_widget()
         if need_restart:
@@ -6279,6 +6665,15 @@ class YouBoardApp(QMainWindow):
         self._save_window_geometry()
         self._end_session()  # 临时会话：退出即清空本次记录
         self._unregister_hotkey()
+        try:
+            self._stop_winv_takeover()
+            self._remove_paste_sound_hook()
+        except Exception:
+            pass
+        try:
+            self.store.flush()      # 防抖写盘：退出前把未落盘的历史写完
+        except Exception:
+            pass
         if hasattr(self, '_desk_widget') and self._desk_widget:
             self._desk_widget.save_geometry()
             self._desk_widget.close()
@@ -6299,6 +6694,15 @@ class YouBoardApp(QMainWindow):
         self._end_session()  # 临时会话：退出即清空本次记录
         if hasattr(self, '_unregister_hotkey'):
             self._unregister_hotkey()
+        try:
+            self._stop_winv_takeover()
+            self._remove_paste_sound_hook()
+        except Exception:
+            pass
+        try:
+            self.store.flush()
+        except Exception:
+            pass
         if hasattr(self, '_desk_widget') and self._desk_widget:
             self._desk_widget.save_geometry()
         if self.monitor:
@@ -6433,6 +6837,8 @@ class YouBoardApp(QMainWindow):
         tray_menu = _RoundMenu()
         show_act = QAction(tr("tray_show"), self)
         show_act.triggered.connect(self._tray_show)
+        import_act = QAction(tr("tray_import"), self)
+        import_act.triggered.connect(self._open_import_dialog)
         self._tray_session_act = QAction(tr("tray_session"), self)
         self._tray_session_act.setCheckable(True)
         self._tray_session_act.setChecked(
@@ -6450,6 +6856,8 @@ class YouBoardApp(QMainWindow):
         tray_menu.addAction(self._tray_session_act)
         tray_menu.addAction(phone_act)
         tray_menu.addAction(self._phone_stop_act)
+        tray_menu.addSeparator()
+        tray_menu.addAction(import_act)
         tray_menu.addSeparator()
         tray_menu.addAction(quit_act)
         self._tray.setContextMenu(tray_menu)
@@ -6667,6 +7075,9 @@ class YouBoardApp(QMainWindow):
         self._init_tray()
         # Register global hotkey
         self._register_hotkey()
+        # 3.1.0：Win+V 接管（按配置启用，直接开关主窗口）
+        self._apply_winv_takeover()
+        self._apply_paste_sound_hook()
         # Fade-in animation
         self._fade_in()
         if getattr(self, "_restore_maximized", False):
@@ -6820,6 +7231,171 @@ class YouBoardApp(QMainWindow):
     def _tray_show(self):
         self._show_preserving_state()
 
+    # ---- 3.1.0：快速面板 / 提示音 / Win+V 接管 / 数据移植 ----
+
+    def _play_sound(self, kind="copy"):
+        """按设置播放提示音（默认关闭；任何异常都不影响主流程）。"""
+        try:
+            cfg = load_config()
+            if kind == "copy" and not cfg.get("snd_copy", False):
+                return
+            if kind == "paste" and not cfg.get("snd_paste", False):
+                return
+            source = cfg.get("snd_%s_src" % kind, SOUND_SRC_SYSTEM)
+            if source not in (SOUND_SRC_BUILTIN, SOUND_SRC_CUSTOM):
+                # 旧配置里的「系统默认」统一按 YouBoard 音效处理
+                source = SOUND_SRC_BUILTIN
+            custom = cfg.get("snd_%s_file" % kind, "") or ""
+            if not custom:
+                custom = cfg.get("snd_custom", "") or ""
+            play_notify_sound(kind, source, custom)
+        except Exception:
+            pass
+
+    def _open_import_dialog(self):
+        try:
+            ImportDialog(self).exec()
+        except Exception:
+            pass
+
+    def _apply_paste_sound_hook(self):
+        """粘贴提示音需要知道「在任意程序里按了 Ctrl+V」，这里挂一个全局监听。
+
+        优先用底层键盘钩子（ctypes）：它不会被 Win+V 接管的 suppress 钩子压掉；
+        失败时才回退到 keyboard 库。只在开启粘贴提示音时挂载，关闭立即卸载，
+        两种方式都不拦截按键。
+        """
+        try:
+            want = bool(load_config().get("snd_paste", False))
+        except Exception:
+            want = False
+        hook = getattr(self, "_paste_kbd_hook", None)
+        name = getattr(self, "_paste_hook_name", None)
+        if want and hook is None and name is None:
+            if IS_WIN:
+                try:
+                    h = _CtrlVHook(self._on_global_paste)
+                    h.start()
+                    time.sleep(0.08)
+                    if getattr(h, "ok", False):
+                        self._paste_kbd_hook = h
+                    else:
+                        h.stop()
+                except Exception:
+                    self._paste_kbd_hook = None
+            if getattr(self, "_paste_kbd_hook", None) is None and HAS_KEYBOARD:
+                try:
+                    self._paste_hook_name = _keyboard_lib.add_hotkey(
+                        "ctrl+v", self._on_global_paste)
+                except Exception:
+                    self._paste_hook_name = None
+        elif not want and (hook is not None or name is not None):
+            self._remove_paste_sound_hook()
+        if want:
+            timer = getattr(self, "_paste_sound_timer", None)
+            if timer is None:
+                try:
+                    self._paste_sound_timer = QTimer(self)
+                    self._paste_sound_timer.timeout.connect(
+                        self._poll_paste_sounds)
+                    self._paste_sound_timer.start(80)
+                except Exception:
+                    self._paste_sound_timer = None
+
+    def _remove_paste_sound_hook(self):
+        hook = getattr(self, "_paste_kbd_hook", None)
+        if hook is not None:
+            try:
+                hook.stop()
+            except Exception:
+                pass
+            self._paste_kbd_hook = None
+        name = getattr(self, "_paste_hook_name", None)
+        if name is not None and HAS_KEYBOARD:
+            try:
+                _keyboard_lib.remove_hotkey(name)
+            except Exception:
+                pass
+        self._paste_hook_name = None
+        timer = getattr(self, "_paste_sound_timer", None)
+        if timer is not None:
+            try:
+                timer.stop()
+            except Exception:
+                pass
+            self._paste_sound_timer = None
+
+    def _on_global_paste(self):
+        """全局 Ctrl+V 回调（在钩子线程里）→ 交给界面线程播提示音。"""
+        try:
+            self._paste_sound_q.put_nowait(1)
+        except Exception:
+            pass
+
+    def _poll_paste_sounds(self):
+        """界面线程定时消费粘贴提示音事件（钩子线程只负责投递）。"""
+        queued = 0
+        while True:
+            try:
+                self._paste_sound_q.get_nowait()
+            except Exception:
+                break
+            queued += 1
+        if not queued:
+            return
+        try:
+            if time.time() < getattr(self, "_mute_paste_sound_until", 0.0):
+                return
+        except Exception:
+            pass
+        self._play_sound("paste")
+
+    def _apply_winv_takeover(self):
+        """按配置启用 / 停用 Win+V 接管（默认关闭，需用户主动开启）。"""
+        try:
+            want = bool(load_config().get("takeover_winv", False))
+        except Exception:
+            want = False
+        hook = getattr(self, "_winv_hook", None)
+        if want and hook is None:
+            if HAS_KEYBOARD:
+                try:
+                    # Win+V 直接开关整个工具窗口（与 Alt+Q 同一套显隐逻辑）
+                    self._winv_name = _keyboard_lib.add_hotkey(
+                        "windows+v", self._on_hotkey_threadsafe,
+                        suppress=True)
+                    self._winv_hook = "keyboard"
+                    return
+                except Exception:
+                    pass
+            hook = _WinVHook(self._on_hotkey_threadsafe)
+            hook.start()
+            time.sleep(0.12)
+            if hook.ok:
+                self._winv_hook = hook
+            else:
+                self._winv_hook = None
+        elif not want and hook is not None:
+            self._stop_winv_takeover()
+
+    def _stop_winv_takeover(self):
+        hook = getattr(self, "_winv_hook", None)
+        if hook is None:
+            return
+        if hook == "keyboard" and HAS_KEYBOARD:
+            try:
+                _keyboard_lib.remove_hotkey(
+                    getattr(self, "_winv_name", None))
+            except Exception:
+                pass
+            self._winv_name = None
+        else:
+            try:
+                hook.stop()
+            except Exception:
+                pass
+        self._winv_hook = None
+
     def _show_preserving_state(self):
         """显示窗口时保持它原来的大小状态（最大化就还是最大化）。"""
         if self._is_window_maximized() or getattr(self, "_max_before_hide", False):
@@ -6912,6 +7488,82 @@ def _hotkey_to_sequence(hk):
 
 def _hotkey_display(hk):
     return _canon_hotkey(hk).upper().replace("+", " + ")
+
+
+def _event_hotkey(event):
+    """把一次按键事件转成 'ctrl+enter' 这类规范字符串（与 _canon_hotkey 一致）。"""
+    parts = []
+    m = event.modifiers()
+    if m & Qt.KeyboardModifier.ControlModifier:
+        parts.append("ctrl")
+    if m & Qt.KeyboardModifier.AltModifier:
+        parts.append("alt")
+    if m & Qt.KeyboardModifier.ShiftModifier:
+        parts.append("shift")
+    if m & Qt.KeyboardModifier.MetaModifier:
+        parts.append("win")
+    key = event.key()
+    if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+        parts.append("enter")
+    elif key == Qt.Key.Key_Delete:
+        parts.append("delete")
+    elif key == Qt.Key.Key_Space:
+        parts.append("space")
+    elif key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+        parts.append("tab")
+    elif key == Qt.Key.Key_Escape:
+        parts.append("esc")
+    elif key == Qt.Key.Key_Backspace:
+        parts.append("backspace")
+    elif Qt.Key.Key_F1 <= key <= Qt.Key.Key_F12:
+        parts.append("f%d" % (key - Qt.Key.Key_F1 + 1))
+    elif Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+        parts.append(chr(key - Qt.Key.Key_A + ord("a")))
+    elif Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+        parts.append(str(key - Qt.Key.Key_0))
+    else:
+        try:
+            name = QKeySequence(key).toString().lower()
+        except Exception:
+            name = ""
+        parts.append(name if name else "?")
+    return "+".join(parts)
+
+
+_VK_NAMED = {
+    "enter": 0x0D, "space": 0x20, "tab": 0x09, "esc": 0x1B,
+    "escape": 0x1B, "backspace": 0x08, "delete": 0x2E, "del": 0x2E,
+    "home": 0x24, "end": 0x23, "up": 0x26, "down": 0x28,
+    "left": 0x25, "right": 0x27,
+}
+
+
+def _spec_to_vk(hk):
+    """把 'ctrl+enter' 这类字符串转成 (需要的修饰键集合, 主键 vk)；失败返回 None。"""
+    mods = set()
+    vk = 0
+    for p in _canon_hotkey(hk).split("+"):
+        if p in ("ctrl", "control"):
+            mods.add("ctrl")
+        elif p == "alt":
+            mods.add("alt")
+        elif p == "shift":
+            mods.add("shift")
+        elif p in ("win", "super"):
+            mods.add("win")
+        elif p in _VK_NAMED:
+            vk = _VK_NAMED[p]
+        elif len(p) == 1 and p.isalpha():
+            vk = ord(p.upper())
+        elif len(p) == 1 and p.isdigit():
+            vk = ord(p)
+        elif p.startswith("f") and p[1:].isdigit():
+            n = int(p[1:])
+            if 1 <= n <= 12:
+                vk = 0x70 + n - 1
+    if not vk:
+        return None
+    return mods, vk
 
 
 def _tab_event_hotkey(event):
@@ -7439,6 +8091,8 @@ class PhoneTransferDialog(QDialog):
                 base_port = 8765
             self._server = PhoneTransferServer(
                 app.store, on_receive_text=self._queue_text,
+                on_receive_image=self._queue_image,
+                on_receive_file=self._queue_file,
                 port=pick_free_port(base_port))
             app._phone_server = self._server
         self._server_was_running = self._server.running
@@ -7666,13 +8320,75 @@ class PhoneTransferDialog(QDialog):
     def _queue_text(self, text):
         self._inbox.put(text)
 
+    def _queue_image(self, pil_image, name=""):
+        """手机上传的图片（在服务线程里回调，丢进队列由界面线程入库）。"""
+        self._inbox.put(("image", pil_image, name))
+
+    def _queue_file(self, path, name=""):
+        self._inbox.put(("file", path, name))
+
     def _drain_inbox(self):
         while True:
             try:
-                text = self._inbox.get_nowait()
+                item = self._inbox.get_nowait()
             except queue.Empty:
                 break
-            self._handle_phone_text(text)
+            if isinstance(item, tuple) and item:
+                kind = item[0]
+                if kind == "image" and len(item) >= 2:
+                    self._handle_phone_image(item[1], item[2] if len(item) > 2 else "")
+                    continue
+                if kind == "file" and len(item) >= 2:
+                    self._handle_phone_file(item[1], item[2] if len(item) > 2 else "")
+                    continue
+            self._handle_phone_text(item)
+
+    def _handle_phone_image(self, pil_image, name=""):
+        """手机上传的图片进「图片」分类，并写入系统剪贴板。"""
+        try:
+            from PIL import Image as PILImage  # noqa: F401
+        except Exception:
+            pass
+        try:
+            h = self.app.store._image_hash(pil_image)
+            self.app.store.mark_self_copy()
+            self.app.store.add_image(pil_image, h, source_name=name or None)
+            try:
+                set_clipboard_image(pil_image)
+            except Exception:
+                pass
+            self.app._refresh_all()
+            self.app._update_desk_widget()
+            self.app._set_status(tr("phone_image_received"), "ok")
+            tray = getattr(self.app, "_tray", None)
+            if tray is not None:
+                try:
+                    tray.showMessage("YouBoard", tr("phone_image_received"),
+                                     QSystemTrayIcon.MessageIcon.Information, 3000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _handle_phone_file(self, path, name=""):
+        """手机上传的普通文件：落到缓存目录后进「文件」分类。"""
+        try:
+            if not path or not os.path.exists(path):
+                return
+            self.app.store.mark_self_copy()
+            self.app.store.add_files([path], self.app.store._files_hash([path]))
+            self.app._refresh_all()
+            self.app._update_desk_widget()
+            self.app._set_status(tr("phone_file_received"), "ok")
+            tray = getattr(self.app, "_tray", None)
+            if tray is not None:
+                try:
+                    tray.showMessage("YouBoard", tr("phone_file_received"),
+                                     QSystemTrayIcon.MessageIcon.Information, 3000)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _handle_phone_text(self, text):
         try:
@@ -7711,6 +8427,610 @@ class PhoneTransferDialog(QDialog):
             except Exception:
                 pass
         event.accept()
+
+
+# ===========================================================================
+# 3.1.0 新增：提示音 / Win+V 接管 / 快速呼出面板 / 其它安装数据移植
+# ===========================================================================
+
+# 提示音来源：系统默认 / YouBoard 自带音效 / 用户自定义文件
+SOUND_SRC_SYSTEM = "system"
+SOUND_SRC_BUILTIN = "builtin"
+SOUND_SRC_CUSTOM = "custom"
+SOUND_BUILTIN_FILES = {"copy": "youboard_copy.wav",
+                       "paste": "youboard_paste.wav"}
+
+
+def builtin_sound_path(kind):
+    """YouBoard 自带音效文件路径（打包后从 _MEIPASS/res 读取）。"""
+    name = SOUND_BUILTIN_FILES.get(kind, SOUND_BUILTIN_FILES["copy"])
+    path = _res_icon(name)
+    return path if path and os.path.exists(path) else ""
+
+
+def sound_source_label(kind, source, custom_path=""):
+    """音效来源的显示名。"""
+    if source == SOUND_SRC_CUSTOM and custom_path and os.path.exists(custom_path):
+        return tr("set_sound_custom", name=os.path.basename(custom_path))
+    return tr("set_sound_builtin")
+
+
+def play_notify_sound(kind="copy", source=SOUND_SRC_BUILTIN, custom_path=""):
+    """播放复制 / 粘贴提示音（只用 YouBoard 音效或用户自定义文件）。
+
+    提示音属于锦上添花，任何失败都静默忽略，也不回退到系统提示音。
+    """
+    try:
+        path = ""
+        if source == SOUND_SRC_CUSTOM and custom_path and os.path.exists(custom_path):
+            path = custom_path
+        if not path:
+            path = builtin_sound_path(kind)
+        if not path:
+            return False
+        if IS_WIN:
+            import winsound
+            try:
+                # 先停掉上一次可能还在播的提示音，保证连续复制 / 粘贴每次都重新响
+                winsound.PlaySound(None, winsound.SND_PURGE)
+            except Exception:
+                pass
+            winsound.PlaySound(path,
+                               winsound.SND_FILENAME | winsound.SND_ASYNC)
+            return True
+        if IS_MAC:
+            subprocess.Popen(["afplay", path],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return True
+        return False
+    except Exception as ex:
+        # 播放失败不再默默吞掉：写进 error log，便于排查"听不到提示音"
+        try:
+            log_path = os.path.join(os.path.dirname(os.path.abspath(
+                sys.executable if getattr(sys, "frozen", False) else __file__)),
+                "youboard_error.log")
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write("[%s] sound %s failed: %r\n"
+                        % (time.strftime("%Y-%m-%d %H:%M:%S"), kind, ex))
+        except Exception:
+            pass
+        return False
+
+
+def clipboard_history_enabled():
+    """读取 Windows 剪贴板历史开关状态：True / False / None（未知）。"""
+    if not IS_WIN:
+        return None
+    try:
+        import winreg
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Clipboard") as k:
+                value, _ = winreg.QueryValueEx(k, "EnableClipboardHistory")
+                return bool(int(value))
+        except FileNotFoundError:
+            # 键不存在代表系统默认（开启）
+            return True
+    except Exception:
+        return None
+
+
+def disable_windows_clipboard_history():
+    """关掉系统剪贴板历史（用户点按钮才会执行），返回是否成功。"""
+    if not IS_WIN:
+        return False
+    try:
+        import winreg
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Clipboard", 0,
+                                winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, "EnableClipboardHistory", 0,
+                              winreg.REG_DWORD, 0)
+            try:
+                winreg.SetValueEx(k, "EnableCloudClipboard", 0,
+                                  winreg.REG_DWORD, 0)
+            except OSError:
+                pass
+        return True
+    except Exception:
+        return False
+
+
+def foreground_window():
+    """记录当前前台窗口句柄（用于粘贴回原窗口）。"""
+    if not IS_WIN:
+        return 0
+    try:
+        return int(ctypes.windll.user32.GetForegroundWindow())
+    except Exception:
+        return 0
+
+
+def _send_paste_shortcut():
+    """发送一次粘贴快捷键（Windows: Ctrl+V，macOS: Cmd+V）。"""
+    if IS_WIN:
+        user32 = ctypes.windll.user32
+        vk_control, vk_v, key_up = 0x11, 0x56, 0x0002
+        user32.keybd_event(vk_control, 0, 0, 0)
+        user32.keybd_event(vk_v, 0, 0, 0)
+        user32.keybd_event(vk_v, 0, key_up, 0)
+        user32.keybd_event(vk_control, 0, key_up, 0)
+        return True
+    if IS_MAC:
+        script = ('tell application "System Events" to keystroke "v" '
+                  'using command down')
+        subprocess.Popen(["osascript", "-e", script],
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL)
+        return True
+    return False
+
+
+def paste_into_window(hwnd):
+    """把焦点交还给之前的窗口并粘贴；返回是否已发出粘贴动作。"""
+    try:
+        if IS_WIN and hwnd:
+            user32 = ctypes.windll.user32
+            try:
+                user32.ShowWindow(hwnd, 9)      # SW_RESTORE
+            except Exception:
+                pass
+            try:
+                user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+            time.sleep(0.09)
+            return _send_paste_shortcut()
+        if IS_MAC:
+            return _send_paste_shortcut()
+    except Exception:
+        return False
+    return False
+
+
+class _WinVHook(threading.Thread):
+    """底层键盘钩子：拦截 Win+V 并抑制系统剪贴板历史（ctypes 实现，无额外依赖）。"""
+
+    WH_KEYBOARD_LL = 13
+    WM_KEYDOWN = 0x0100
+    WM_SYSKEYDOWN = 0x0104
+    WM_KEYUP = 0x0101
+    WM_SYSKEYUP = 0x0105
+    VK_V = 0x56
+    VK_LWIN = 0x5B
+    VK_RWIN = 0x5C
+
+    def __init__(self, callback):
+        super().__init__(daemon=True, name="YouBoardWinVHook")
+        self.callback = callback
+        self.hook = None
+        self.ok = False
+        self._win_down = False
+        self._suppress_up = False
+        self._proc_ref = None
+        self._stop = threading.Event()
+
+    def run(self):
+        if not IS_WIN:
+            return
+        from ctypes import wintypes
+
+        class _KBDLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [("vkCode", wintypes.DWORD),
+                        ("scanCode", wintypes.DWORD),
+                        ("flags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.c_void_p)]
+
+        user32 = ctypes.windll.user32
+        HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int,
+                                      wintypes.WPARAM, wintypes.LPARAM)
+        try:
+            user32.GetMessageW.argtypes = [
+                ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+                wintypes.UINT, wintypes.UINT]
+            user32.GetMessageW.restype = ctypes.c_int
+            user32.CallNextHookEx.argtypes = [
+                ctypes.c_void_p, ctypes.c_int,
+                wintypes.WPARAM, wintypes.LPARAM]
+            user32.CallNextHookEx.restype = ctypes.c_ssize_t
+        except Exception:
+            pass
+
+        def _proc(code, wparam, lparam):
+            if code == 0:
+                try:
+                    kb = ctypes.cast(lparam,
+                                     ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
+                    vk = int(kb.vkCode)
+                    if vk in (self.VK_LWIN, self.VK_RWIN):
+                        self._win_down = wparam in (self.WM_KEYDOWN,
+                                                    self.WM_SYSKEYDOWN)
+                    elif vk == self.VK_V and self._win_down:
+                        if wparam in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN):
+                            self._suppress_up = True
+                            try:
+                                self.callback()
+                            except Exception:
+                                pass
+                            return 1
+                        if wparam in (self.WM_KEYUP, self.WM_SYSKEYUP):
+                            self._suppress_up = False
+                            return 1
+                    elif vk == self.VK_V and self._suppress_up:
+                        return 1
+                except Exception:
+                    pass
+            return int(user32.CallNextHookEx(None, code, wparam, lparam))
+
+        self._proc_ref = HOOKPROC(_proc)   # 保持引用，避免回调被回收
+        try:
+            self.hook = user32.SetWindowsHookExW(self.WH_KEYBOARD_LL,
+                                                  self._proc_ref, None, 0)
+        except Exception:
+            self.hook = None
+        if not self.hook:
+            return
+        self.ok = True
+        msg = wintypes.MSG()
+        while not self._stop.is_set():
+            ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret in (0, -1):
+                break
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        try:
+            user32.UnhookWindowsHookEx(self.hook)
+        except Exception:
+            pass
+        self.hook = None
+        self.ok = False
+
+    def stop(self):
+        self._stop.set()
+        if IS_WIN:
+            try:
+                ctypes.windll.user32.PostThreadMessageW(self.ident, 0x0012, 0, 0)
+            except Exception:
+                pass
+
+
+class _LLKeyboardHook(threading.Thread):
+    """底层键盘钩子的公共骨架：只观察按键，不拦截（子类可自行选择抑制）。"""
+
+    WH_KEYBOARD_LL = 13
+    WM_KEYDOWN = 0x0100
+    WM_SYSKEYDOWN = 0x0104
+    WM_KEYUP = 0x0101
+    WM_SYSKEYUP = 0x0105
+    LLKHF_INJECTED = 0x10
+    VK_V = 0x56
+
+    def __init__(self, name="YouBoardKbdHook"):
+        super().__init__(daemon=True, name=name)
+        self.hook = None
+        self.ok = False
+        self._proc_ref = None
+        self._stop = threading.Event()
+        self._down = set()
+        if IS_WIN:
+            # 显式声明原型，避免 ctypes 把 MSG 指针当成别的类型报错
+            try:
+                from ctypes import wintypes as _wt
+                _u32 = ctypes.windll.user32
+                _u32.GetMessageW.argtypes = [
+                    ctypes.POINTER(_wt.MSG), _wt.HWND,
+                    _wt.UINT, _wt.UINT]
+                _u32.GetMessageW.restype = ctypes.c_int
+                _u32.CallNextHookEx.argtypes = [
+                    ctypes.c_void_p, ctypes.c_int, _wt.WPARAM, _wt.LPARAM]
+                _u32.CallNextHookEx.restype = ctypes.c_ssize_t
+            except Exception:
+                pass
+
+    def handle(self, vk, is_down, injected):
+        """子类实现：返回 True 表示已处理（按键会被抑制）。"""
+        return False
+
+    def mods_down(self):
+        """当前按住的修饰键（由钩子自己维护，不依赖系统查询）。"""
+        d = self._down
+        return {
+            "ctrl": any(v in d for v in (0x11, 0xA2, 0xA3)),
+            "alt": any(v in d for v in (0x12, 0xA4, 0xA5)),
+            "shift": any(v in d for v in (0x10, 0xA0, 0xA1)),
+            "win": any(v in d for v in (0x5B, 0x5C)),
+        }
+
+    def run(self):
+        if not IS_WIN:
+            return
+        from ctypes import wintypes
+
+        class _KBDLLHOOKSTRUCT(ctypes.Structure):
+            _fields_ = [("vkCode", wintypes.DWORD),
+                        ("scanCode", wintypes.DWORD),
+                        ("flags", wintypes.DWORD),
+                        ("time", wintypes.DWORD),
+                        ("dwExtraInfo", ctypes.c_void_p)]
+
+        user32 = ctypes.windll.user32
+        HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_int,
+                                      wintypes.WPARAM, wintypes.LPARAM)
+
+        def _proc(code, wparam, lparam):
+            if code == 0:
+                try:
+                    kb = ctypes.cast(lparam,
+                                     ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
+                    vk = int(kb.vkCode)
+                    injected = bool(int(kb.flags) & self.LLKHF_INJECTED)
+                    if wparam in (self.WM_KEYDOWN, self.WM_SYSKEYDOWN):
+                        self._down.add(vk)
+                        if self.handle(vk, True, injected):
+                            return 1
+                    elif wparam in (self.WM_KEYUP, self.WM_SYSKEYUP):
+                        self._down.discard(vk)
+                        if self.handle(vk, False, injected):
+                            return 1
+                except Exception:
+                    pass
+            return int(user32.CallNextHookEx(None, code, wparam, lparam))
+
+        self._proc_ref = HOOKPROC(_proc)   # 保持引用，避免回调被回收
+        try:
+            self.hook = user32.SetWindowsHookExW(self.WH_KEYBOARD_LL,
+                                                  self._proc_ref, None, 0)
+        except Exception:
+            self.hook = None
+        if not self.hook:
+            return
+        self.ok = True
+        msg = wintypes.MSG()
+        while not self._stop.is_set():
+            ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+            if ret in (0, -1):
+                break
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+        try:
+            user32.UnhookWindowsHookEx(self.hook)
+        except Exception:
+            pass
+        self.hook = None
+        self.ok = False
+
+    def stop(self):
+        self._stop.set()
+        if IS_WIN:
+            try:
+                ctypes.windll.user32.PostThreadMessageW(self.ident, 0x0012, 0, 0)
+            except Exception:
+                pass
+
+
+class _CtrlVHook(_LLKeyboardHook):
+    """全局监听 Ctrl+V（不拦截按键），用于粘贴提示音。
+
+    自己发出的模拟 Ctrl+V（粘贴回原窗口）带 injected 标记，直接跳过，
+    不会重复响；真实键盘按下则会回调。
+    """
+
+    def __init__(self, callback):
+        super().__init__("YouBoardCtrlVHook")
+        self.callback = callback
+
+    def handle(self, vk, is_down, injected):
+        if not is_down or injected or vk != self.VK_V:
+            return False
+        if self.mods_down()["ctrl"]:
+            try:
+                self.callback()
+            except Exception:
+                pass
+        return False
+
+
+class _ImportScanWorker(QThread):
+    """后台扫描其它 YouBoard 安装，避免阻塞界面。"""
+
+    done = pyqtSignal(list)
+
+    def run(self):
+        try:
+            found = find_installations()
+        except Exception:
+            found = []
+        self.done.emit(found)
+
+
+class ImportDialog(QDialog):
+    """自动识别本机其它 YouBoard 安装，由用户选择后把数据合并进来。"""
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        header = _make_frameless_dialog(self, tr("port_title"))
+        self.resize(620 if LANG == "en" else 540, 420)
+        self.setMinimumSize(460, 320)
+        if LOGO_ICO and os.path.exists(LOGO_ICO):
+            self.setWindowIcon(QIcon(LOGO_ICO))
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {C['DIALOG_BG']};
+                border: 2px solid {C['DIALOG_EDGE']}; }}
+            QLabel {{ background: transparent; color: {C['TEXT']}; }}
+            QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
+                border: 1px solid {C['BORDER']}; border-radius: 6px;
+                padding: 6px 14px; font-size: 12px; }}
+            QPushButton:hover {{ background: {C['SURFACE3']}; color: {C['TEXT']}; }}
+            QPushButton[cssClass="accent"] {{ background: {C['ACCENT']};
+                color: {_on_accent_color()}; border: none; font-weight: bold; }}
+        """)
+        self._installs = []
+        self._worker = None
+        self._closed = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(header)
+        _content = QWidget()
+        root.addWidget(_content, 1)
+        content_lay = QVBoxLayout(_content)
+        content_lay.setContentsMargins(14, 10, 14, 12)
+        content_lay.setSpacing(8)
+
+        self._status = QLabel(tr("port_scanning"))
+        self._status.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px;")
+        content_lay.addWidget(self._status)
+
+        self._list = QListWidget()
+        self._list.setStyleSheet(
+            f"QListWidget {{ background: {C['SURFACE2']};"
+            f" border: 1px solid {C['BORDER']}; border-radius: 8px;"
+            f" color: {C['TEXT']}; outline: none; }}"
+            f"QListWidget::item {{ padding: 8px; }}"
+            f"QListWidget::item:selected {{ background: {C['ACCENT_DIM']};"
+            f" color: {C['TEXT']}; }}")
+        self._list.itemDoubleClicked.connect(lambda _: self._do_import())
+        content_lay.addWidget(self._list, 1)
+
+        btns = QHBoxLayout()
+        browse = QPushButton(tr("port_browse"))
+        browse.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        browse.clicked.connect(self._browse)
+        btns.addWidget(browse)
+        rescan = QPushButton(tr("port_rescan"))
+        rescan.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        rescan.clicked.connect(lambda: self._scan())
+        btns.addWidget(rescan)
+        btns.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.clicked.connect(self.reject)
+        btns.addWidget(cancel)
+        self._import_btn = QPushButton(tr("port_import"))
+        self._import_btn.setProperty("cssClass", "accent")
+        self._import_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._import_btn.clicked.connect(self._do_import)
+        btns.addWidget(self._import_btn)
+        content_lay.addLayout(btns)
+
+        QTimer.singleShot(0, self._scan)
+
+    # ---- 扫描 ----
+
+    def _scan(self, extra=None):
+        if self._closed:
+            return
+        self._status.setText(tr("port_scanning"))
+        self._list.clear()
+        self._installs = []
+        self._worker = _ImportScanWorker(self)
+        self._worker.done.connect(self._on_scanned)
+        self._worker.start()
+
+    def _on_scanned(self, found):
+        self._worker = None
+        if self._closed:
+            return
+        self._installs = list(found or [])
+        self._fill()
+
+    def _fill(self):
+        self._list.clear()
+        for info in self._installs:
+            path = info.get("path", "")
+            if info.get("readable"):
+                ts = info.get("modified") or 0
+                try:
+                    when = (datetime.fromtimestamp(ts).strftime(TIME_FORMAT)
+                            if ts else "—")
+                except (OSError, OverflowError, ValueError):
+                    when = "—"
+                text = (f"{path}\n{tr('port_col_count')}: {info.get('total', 0)}"
+                        f"   ·   {tr('port_col_time')}: {when}")
+            else:
+                text = f"{path}\n{tr('port_unreadable')}"
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, info)
+            self._list.addItem(item)
+        if self._installs:
+            self._list.setCurrentRow(0)
+            self._status.setText(tr("port_found", n=len(self._installs)))
+        else:
+            self._status.setText(tr("port_none"))
+
+    def _browse(self):
+        folder = QFileDialog.getExistingDirectory(self, tr("port_browse"))
+        if not folder:
+            return
+        from youboard_core import inspect_installation as _inspect
+        info = _inspect(folder)
+        if not info:
+            _info_card(self, tr("port_title"), tr("port_failed"),
+                       kind="warning")
+            return
+        self._installs.append(info)
+        self._fill()
+        self._list.setCurrentRow(self._list.count() - 1)
+
+    # ---- 导入 ----
+
+    def _do_import(self):
+        item = self._list.currentItem()
+        if item is None:
+            return
+        info = item.data(Qt.ItemDataRole.UserRole) or {}
+        folder = info.get("path", "")
+        if not folder:
+            return
+        cats = read_foreign_history(folder)
+        if cats is None:
+            _info_card(self, tr("port_title"), tr("port_failed"),
+                       kind="warning")
+            return
+        if not _confirm_card(
+                self, tr("port_title"),
+                tr("port_confirm", path=folder, n=info.get("total", 0)),
+                ok_text=tr("btn_ok")):
+            return
+        before = self.app.store.count()
+        try:
+            # 先搬运图片与正文文件，再合并条目，避免记录指向不存在的资源
+            copy_installation_assets(folder, cats)
+            self.app.store.merge_history(cats)
+        except Exception:
+            _info_card(self, tr("port_title"), tr("port_failed"),
+                       kind="warning")
+            return
+        added = self.app.store.count() - before
+        try:
+            self.app._refresh_all()
+            self.app._update_desk_widget()
+            self.app._rebuild_index()
+        except Exception:
+            pass
+        _info_card(self, tr("port_title"),
+                   tr("port_done", n=added) if added else tr("port_nothing"),
+                   kind="latest" if added else "warning")
+
+    def closeEvent(self, event):
+        """关闭窗口时收好后台扫描线程，避免程序退出时线程仍在运行。"""
+        self._closed = True
+        worker = getattr(self, "_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.wait(8000)
+        self._worker = None
+        event.accept()
+
+    def reject(self):
+        self._closed = True
+        worker = getattr(self, "_worker", None)
+        if worker is not None and worker.isRunning():
+            worker.wait(8000)
+        self._worker = None
+        super().reject()
 
 
 class _SkinTile(QFrame):
@@ -7781,7 +9101,6 @@ class SettingsDialog(QDialog):
         header = _make_frameless_dialog(self, tr("settings_title"))
         self.resize(620 if LANG == "en" else 500, 740)
         self.setMinimumSize(560 if LANG == "en" else 460, 560)
-        self.setSizeGripEnabled(True)
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
 
@@ -7815,6 +9134,17 @@ class SettingsDialog(QDialog):
             QCheckBox::indicator:checked {{ background: {C['ACCENT']}; border-color: {C['ACCENT']}; }}
             QScrollBar:vertical {{ background: transparent; width: 8px; }}
             QScrollBar::handle:vertical {{ background: {C['BORDER_LT']}; border-radius: 4px; min-height: 30px; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0; width: 0; background: none; border: none; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+                background: transparent; border: none; }}
+            QScrollBar:horizontal {{ background: transparent; height: 8px; }}
+            QScrollBar::handle:horizontal {{ background: {C['BORDER_LT']};
+                border-radius: 4px; min-width: 30px; }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+                height: 0; width: 0; background: none; border: none; }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+                background: transparent; border: none; }}
         """)
 
         # Mini light bar
@@ -8026,6 +9356,72 @@ class SettingsDialog(QDialog):
         ph_open.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         ph_open.clicked.connect(lambda: PhoneTransferDialog(self.app).exec())
         self._lay.addWidget(ph_open)
+
+        # 提示音 card（默认关闭）
+        self._card(tr("set_sound"))
+        # 复制 / 粘贴各一行：开关 + 音效来源（YouBoard 音效 / 自定义）
+        self._snd_cbs = {}
+        self._snd_btns = {}
+        self._snd_src = {
+            "copy": cfg.get("snd_copy_src", SOUND_SRC_BUILTIN),
+            "paste": cfg.get("snd_paste_src", SOUND_SRC_BUILTIN),
+        }
+        self._snd_file = {
+            "copy": cfg.get("snd_copy_file", cfg.get("snd_custom", "")) or "",
+            "paste": cfg.get("snd_paste_file", "") or "",
+        }
+        for kind in ("copy", "paste"):
+            row = QHBoxLayout()
+            lbl = QLabel(tr("set_sound_" + kind))
+            lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+            row.addWidget(lbl, 1)
+            pick = QPushButton(self._snd_button_text(kind))
+            pick.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            pick.clicked.connect(lambda _, k=kind: self._pick_sound_source(k))
+            row.addWidget(pick)
+            cb = QCheckBox()
+            cb.setChecked(bool(cfg.get("snd_" + kind, False)))
+            row.addWidget(cb)
+            self._lay.addLayout(row)
+            self._snd_cbs[kind] = cb
+            self._snd_btns[kind] = pick
+
+        # Win+V 接管 card（默认关闭，带风险提示）
+        self._card(tr("set_winv"))
+        winv_row = QHBoxLayout()
+        winv_lbl = QLabel(tr("set_winv_takeover"))
+        winv_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        winv_row.addWidget(winv_lbl, 1)
+        winv_row.addStretch()
+        self._winv_onoff = QLabel("")
+        winv_row.addWidget(self._winv_onoff)
+        self._winv_cb = QCheckBox()
+        self._winv_cb.setChecked(bool(cfg.get("takeover_winv", False)))
+        self._winv_cb.stateChanged.connect(self._on_winv_toggled)
+        winv_row.addWidget(self._winv_cb)
+        self._lay.addLayout(winv_row)
+        self._winv_state = QLabel(self._winv_state_text())
+        self._winv_state.setStyleSheet(
+            f"color: {C['TEXT_MUTED']}; font-size: 11px;")
+        self._winv_state.setWordWrap(True)
+        self._lay.addWidget(self._winv_state)
+        self._winv_disable = QPushButton(tr("set_winv_disable"))
+        self._winv_disable.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._winv_disable.clicked.connect(self._disable_winv_history)
+        self._lay.addWidget(self._winv_disable, 0,
+                            Qt.AlignmentFlag.AlignLeft)
+        self._sync_winv_ui()
+
+        # 数据移植 card
+        self._card(tr("set_port"))
+        port_desc = QLabel(tr("set_port_desc"))
+        port_desc.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        port_desc.setWordWrap(True)
+        self._lay.addWidget(port_desc)
+        port_open = QPushButton(tr("set_port_open"))
+        port_open.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        port_open.clicked.connect(lambda: ImportDialog(self.app).exec())
+        self._lay.addWidget(port_open, 0, Qt.AlignmentFlag.AlignLeft)
 
         # Cloud sync card（简洁入口：详细配置在独立窗口中）
         self._card(tr("set_sync"))
@@ -8387,7 +9783,7 @@ class SettingsDialog(QDialog):
         path = item.data(Qt.ItemDataRole.UserRole)
         if not path:
             return
-        menu = QMenu(self)
+        menu = _RoundMenu(self)
         act_use = menu.addAction(tr("bg_h_use"))
         act_del = menu.addAction(tr("bg_h_del"))
         chosen = menu.exec(self._bg_history.mapToGlobal(pos))
@@ -8459,6 +9855,13 @@ class SettingsDialog(QDialog):
                 cfg["bg_history"] = hist[:12]
             cfg["desktop_widget"] = self._widget_cb.isChecked()
             cfg["hotkey"] = self._hotkey_values.get("hotkey", "alt+q")
+            cfg["snd_copy"] = self._snd_cbs["copy"].isChecked()
+            cfg["snd_paste"] = self._snd_cbs["paste"].isChecked()
+            cfg["snd_copy_src"] = self._snd_src.get("copy", SOUND_SRC_SYSTEM)
+            cfg["snd_paste_src"] = self._snd_src.get("paste", SOUND_SRC_SYSTEM)
+            cfg["snd_copy_file"] = self._snd_file.get("copy", "") or ""
+            cfg["snd_paste_file"] = self._snd_file.get("paste", "") or ""
+            cfg["takeover_winv"] = self._winv_cb.isChecked()
             cfg["temporary_session"] = self._session_cb.isChecked()
             for k, v in self._hotkey_values.items():
                 if k != "hotkey":
@@ -8470,6 +9873,11 @@ class SettingsDialog(QDialog):
                                     self._theme_sel, bg_changed,
                                     force_restart=bool(getattr(
                                         self, "_custom_skin_dirty", False)))
+            try:
+                self.app._apply_winv_takeover()
+                self.app._apply_paste_sound_hook()
+            except Exception:
+                pass
         except Exception:
             import traceback as _tb
             _tb.print_exc()
@@ -8478,13 +9886,97 @@ class SettingsDialog(QDialog):
             except Exception:
                 pass
 
+    # ---- 3.1.0：提示音 / Win+V 相关控件 ----
+
+    def _snd_button_text(self, kind):
+        return sound_source_label(kind, self._snd_src.get(kind),
+                                  self._snd_file.get(kind, ""))
+
+    def _refresh_snd_button(self, kind):
+        btn = self._snd_btns.get(kind)
+        if btn is not None:
+            btn.setText(self._snd_button_text(kind))
+
+    def _pick_sound_source(self, kind):
+        """选择该音效的来源：YouBoard 音效 / 自定义文件（不再提供系统默认音效）。"""
+        menu = _RoundMenu(self)
+        act_builtin = menu.addAction(tr("set_sound_builtin"))
+        act_custom = menu.addAction(tr("set_sound_pick"))
+        for act, src in ((act_builtin, SOUND_SRC_BUILTIN),
+                         (act_custom, SOUND_SRC_CUSTOM)):
+            if self._snd_src.get(kind) == src:
+                act.setCheckable(True)
+                act.setChecked(True)
+        picked = menu.exec(QCursor.pos())
+        if picked is act_builtin:
+            self._snd_src[kind] = SOUND_SRC_BUILTIN
+        elif picked is act_custom:
+            path, _ = QFileDialog.getOpenFileName(
+                self, tr("set_sound_pick"), "",
+                "WAV (*.wav);;Audio (*.wav *.mp3 *.aiff *.ogg);;All (*.*)")
+            if not path:
+                return
+            self._snd_file[kind] = path
+            self._snd_src[kind] = SOUND_SRC_CUSTOM
+        else:
+            return
+        self._refresh_snd_button(kind)
+        # 选完立即试听一次（不影响开关状态）
+        try:
+            play_notify_sound(kind, self._snd_src.get(kind),
+                              self._snd_file.get(kind, ""))
+        except Exception:
+            pass
+
+    def _winv_state_text(self):
+        state = clipboard_history_enabled()
+        if state is True:
+            return tr("set_winv_state_on")
+        if state is False:
+            return tr("set_winv_state_off")
+        return tr("set_winv_state_unknown")
+
+    def _on_winv_toggled(self, _state=None):
+        # 勾选接管时，顺手刷新一次系统剪贴板历史状态提示
+        self._winv_state.setText(self._winv_state_text())
+        self._sync_winv_ui()
+
+    def _sync_winv_ui(self):
+        """刷新 Win+V 卡片的开关状态文字与按钮可用性（避免"东一个西一个"）。"""
+        try:
+            on = self._winv_cb.isChecked()
+            self._winv_onoff.setText(
+                tr("set_winv_on") if on else tr("set_winv_off"))
+            self._winv_onoff.setStyleSheet(
+                f"color: {C['SUCCESS'] if on else C['TEXT_MUTED']};"
+                f" font-size: 11px; font-weight: bold;")
+        except Exception:
+            pass
+        try:
+            already_off = clipboard_history_enabled() is False
+            self._winv_disable.setEnabled(not already_off)
+            self._winv_disable.setText(
+                tr("set_winv_already_off") if already_off
+                else tr("set_winv_disable"))
+        except Exception:
+            pass
+
+    def _disable_winv_history(self):
+        ok = disable_windows_clipboard_history()
+        self._winv_state.setText(self._winv_state_text())
+        self._sync_winv_ui()
+        _info_card(self, tr("set_winv"),
+                   tr("set_winv_done") if ok else tr("set_winv_failed"),
+                   kind="latest" if ok else "warning")
+
     def _use_wallpaper(self):
         # 只读取系统注册表已保存的壁纸文件；不再对壁纸层做 GDI/PrintWindow 强抓取。
         # 那条 _capture_wallpaper() 在硬件加速/壁纸引擎下会把窗口强制重绘，
         # 导致标题栏被"搅坏"（关闭按钮红块左上出现梯形缺口），故此处直接规避。
         p = _get_wallpaper()
         if not p:
-            QMessageBox.information(self, tr("set_bg"), tr("set_bg_wall_err"))
+            _info_card(self, tr("set_bg"), tr("set_bg_wall_err"),
+                       kind="warning")
             return
         self._bg_path = p
         self._bg_lbl.setText(_short_display_name(os.path.basename(p)))
@@ -8581,8 +10073,8 @@ class SettingsDialog(QDialog):
             if dlg.exec() == QDialog.DialogCode.Accepted:
                 self._finish_update(dlg.downloaded_path, new_version)
         except Exception as e:
-            QMessageBox.warning(self, tr("upd_error_title"),
-                                tr("upd_replace_failed", err=e))
+            _info_card(self, tr("upd_error_title"),
+                       tr("upd_replace_failed", err=e), kind="warning")
 
     def _finish_update(self, tmp_exe, new_version):
         """Write replace-and-restart batch script, launch it, and quit."""
@@ -8620,8 +10112,8 @@ del "%~f0"
             self._splash.ready.connect(_launch)
             self._splash.exec()
         except Exception as e:
-            QMessageBox.warning(self, tr("upd_error_title"),
-                                tr("upd_replace_failed", err=e))
+            _info_card(self, tr("upd_error_title"),
+                       tr("upd_replace_failed", err=e), kind="warning")
 
 
 class CloudSyncDialog(QDialog):
@@ -8660,9 +10152,6 @@ class CloudSyncDialog(QDialog):
         root.setSpacing(10)
         outer.addWidget(body, 1)
 
-        title = QLabel(tr("set_sync"))
-        title.setStyleSheet(f"color: {C['TEXT']}; font-size: 16px; font-weight: bold;")
-        root.addWidget(title)
         desc = QLabel(tr("set_sync_desc"))
         desc.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
         desc.setWordWrap(True)
@@ -8750,6 +10239,9 @@ class CloudSyncDialog(QDialog):
         sync_btns.addWidget(clr)
         self._sync_btns = [up, down, clr]
         root.addLayout(sync_btns)
+
+        # 多余高度收到下方，避免每行之间被均分出一堆空隙
+        root.addStretch(1)
 
         self._sync_status_lbl = QLabel("")
         self._sync_status_lbl.setObjectName("muted")

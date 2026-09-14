@@ -14,6 +14,7 @@
 """
 
 import hmac
+import io
 import json
 import mimetypes
 import os
@@ -31,10 +32,13 @@ try:
 except Exception:
     HAS_QRCODE = False
 
-from youboard_core import IMAGES_DIR
+from youboard_core import IMAGES_DIR, FILE_CACHE_DIR, read_external_head
 
 PHONE_MODULE_VERSION = "2.6.0"
 DEFAULT_PORT = 8765
+# 手机上传：单个文件大小上限（图片 / 普通文件）
+UPLOAD_MAX_BYTES = 64 * 1024 * 1024
+PHONE_INCOMING_DIR = os.path.join(FILE_CACHE_DIR, "phone")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _IMG_RE = re.compile(r"^/api/img/([0-9a-f]{64})\.png$", re.I)
 _FILE_RE = re.compile(r"^/api/file/([0-9a-f]{64})/(\d+)$")
@@ -166,8 +170,14 @@ def _entry_to_public(entry, srv, etype):
     }
     if etype in ("text", "url"):
         content = entry.get("content", "") or ""
+        # 大内容外置：只读前 50000 字符，避免把整份大文本读进内存
+        if entry.get("content_ref"):
+            head = read_external_head(entry["content_ref"], 50000)
+            if len(head) > len(content):
+                content = head
         item["content"] = content[:50000]
-        item["length"] = len(content)
+        item["length"] = entry.get("content_size") or len(content)
+        item["truncated"] = bool(item["length"] > len(item["content"]))
     elif etype == "image":
         h = entry.get("hash", "")
         item["width"] = entry.get("width", 0)
@@ -190,12 +200,63 @@ def _entry_to_public(entry, srv, etype):
     return item
 
 
+def _safe_upload_name(name):
+    """把手机传来的文件名清洗成安全的本地文件名。"""
+    name = os.path.basename(str(name or "").replace("\\", "/"))
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .")
+    if not name:
+        name = "phone_file"
+    if len(name) > 120:
+        stem, ext = os.path.splitext(name)
+        name = stem[:100] + ext
+    return name
+
+
+def _decode_upload_image(raw):
+    """把上传字节解码成 PIL 图片；失败返回 None。"""
+    try:
+        from PIL import Image as _PILImage
+    except Exception:
+        return None
+    try:
+        img = _PILImage.open(io.BytesIO(raw))
+        img.load()
+        return img
+    except Exception:
+        return None
+
+
+def _save_upload_file(raw, name):
+    """把上传的普通文件保存到本地缓存目录，返回保存后的路径。"""
+    try:
+        os.makedirs(PHONE_INCOMING_DIR, exist_ok=True)
+    except OSError:
+        return ""
+    base = _safe_upload_name(name)
+    stem, ext = os.path.splitext(base)
+    candidate = os.path.join(PHONE_INCOMING_DIR, base)
+    n = 1
+    while os.path.exists(candidate) and n < 500:
+        candidate = os.path.join(PHONE_INCOMING_DIR, f"{stem}({n}){ext}")
+        n += 1
+    try:
+        with open(candidate, "wb") as f:
+            f.write(raw)
+    except (IOError, OSError):
+        return ""
+    return candidate
+
+
 class PhoneTransferServer:
     """局域网手机传输服务（线程内 HTTP 服务）。"""
 
-    def __init__(self, store, on_receive_text=None, port=DEFAULT_PORT):
+    def __init__(self, store, on_receive_text=None, port=DEFAULT_PORT,
+                 on_receive_image=None, on_receive_file=None):
         self.store = store
         self.on_receive_text = on_receive_text
+        # 手机上传：图片走图片分类，其它文件落到本地缓存目录再进文件分类
+        self.on_receive_image = on_receive_image
+        self.on_receive_file = on_receive_file
         self.port = port or DEFAULT_PORT
         self.token = secrets.token_hex(12)
         self._httpd = None
@@ -383,8 +444,14 @@ h1{font-size:17px;font-weight:700;line-height:1.2}
 .tag.file{background:#38294a;color:#d9a7ff}.tag.url{background:#143a2d;color:#7ff0c0}
 .content{font-size:14px;line-height:1.55;word-break:break-all;white-space:pre-wrap;cursor:pointer}
 .content:active{opacity:.6}
-.content.img{text-align:center;cursor:default}
-.content.img img{max-width:100%;border-radius:8px;background:#fff;display:block;margin:0 auto}
+.content.img{text-align:center;cursor:default;background:var(--card2);border-radius:8px;padding:6px}
+.content.img img{max-width:100%;max-height:70vh;object-fit:contain;border-radius:6px;display:block;margin:0 auto}
+.content.img .ph{color:var(--muted);font-size:12px;padding:14px 8px;line-height:1.5;word-break:break-all}
+.actions{display:flex;gap:8px;margin:10px 0 4px}
+.actions .act{flex:1;padding:12px 10px;border-radius:12px;font-size:14px;cursor:pointer;
+  border:1px solid var(--border);background:var(--card);color:var(--text);font-family:inherit}
+.actions .act.primary{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
+.actions .act:active{opacity:.85}
 .file-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border)}
 .file-row:first-child{border-top:none}
 .file-row .nm{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0}
@@ -410,6 +477,11 @@ a.dl:active{background:var(--accent);color:#fff}
   <div><h1>YouBoard · 手机传输</h1><div class="sub" id="sub">...</div></div>
 </header>
 <div class="tabs" id="tabs"></div>
+<div class="actions">
+  <button id="clipBtn" class="act primary"></button>
+  <button id="upBtn" class="act"></button>
+  <input type="file" id="upFile" accept="image/*,*/*" multiple style="display:none">
+</div>
 <div id="list"><div class="empty">...</div></div>
 <div style="text-align:center;padding:8px 0 4px"><button class="more" id="moreBtn"></button></div>
 <div class="send">
@@ -438,7 +510,17 @@ var T = {
   file: ZH ? '文件' : 'Files',
   url: ZH ? '网址' : 'URLs',
   missing: ZH ? '已失效' : 'missing',
-  more: ZH ? '加载更多' : 'Load more'
+  more: ZH ? '加载更多' : 'Load more',
+  upload: ZH ? '上传图片 / 文件到电脑' : 'Upload photo / file to PC',
+  uploading: ZH ? '正在上传 {n}/{m}…' : 'Uploading {n}/{m}…',
+  uploaded: ZH ? '已上传到电脑：{name}' : 'Uploaded: {name}',
+  uploadFail: ZH ? '上传失败' : 'Upload failed',
+  uploadBig: ZH ? '文件太大（上限 64MB）' : 'File too large (max 64MB)',
+  clipSend: ZH ? '读取手机剪贴板并发送' : 'Send phone clipboard',
+  clipEmpty: ZH ? '手机剪贴板是空的' : 'Phone clipboard is empty',
+  clipManual: ZH ? '请长按下方输入框选「粘贴」，粘上后会自动发送' : 'Long-press the box below and paste; it sends automatically',
+  pasteSent: ZH ? '已把粘贴内容发送到电脑' : 'Pasted content sent to PC'
+  ,imgFail: ZH ? '图片加载失败' : 'Image failed to load'
 };
 var TAGS = ['all', 'text', 'image', 'file', 'url'];
 var CUR = 'all';
@@ -479,6 +561,9 @@ function buildTabs(){
       CUR = t;
       ENTRIES = [];
       TOTAL = 0;
+      LAST_SIG = '';      // 切分类时强制重绘，并回到顶部
+      var sc = document.scrollingElement || document.documentElement;
+      if(sc) sc.scrollTop = 0;
       buildTabs();
       poll();
     };
@@ -516,7 +601,11 @@ function card(e){
   if(e.type === 'text' || e.type === 'url'){
     body = '<div class="content" onclick="copyText(this.dataset.v)" data-v="' + esc(e.content) + '">' + esc(e.content) + '</div>';
   } else if(e.type === 'image'){
-    body = '<div class="content img"><img src="/api/img/' + esc(e.hash) + '.png?t=' + encodeURIComponent(TOKEN) + '" alt="image"></div>';
+    var ar = (e.width && e.height) ? (' style="aspect-ratio:' + e.width + '/' + e.height + '"') : '';
+    var u = '/api/img/' + esc(e.hash) + '.png?t=' + encodeURIComponent(TOKEN);
+    body = '<div class="content img"><img decoding="async"' + ar +
+           ' data-src="' + u + '" onerror="imgFail(this)" src="' + u +
+           '" alt="' + esc(T.image) + '"></div>';
   } else if(e.type === 'file'){
     var rows = '';
     (e.files || []).forEach(function(f, i){
@@ -529,9 +618,21 @@ function card(e){
   }
   return '<div class="card"><div class="meta"><span class="tag ' + tagCls + '">' + T[e.type] + '</span><span>' + esc(fmtTime(e.time)) + '</span></div>' + body + '</div>';
 }
-function render(){
+var LAST_SIG = '';
+function render(keepScroll){
   var list = $('list');
   var items = ENTRIES.filter(function(e){ return CUR === 'all' || e.type === CUR; });
+  // 内容没变就不重建 DOM：否则图片会被反复重新加载、页面来回跳
+  var sig = CUR + '|' + items.length + '|' + items.map(function(e){
+    return e.hash + ':' + e.type + ':' + (e.length || 0) + ':' + e.time;
+  }).join(',');
+  if(sig === LAST_SIG){
+    updateMore();
+    return;
+  }
+  LAST_SIG = sig;
+  var scroller = document.scrollingElement || document.documentElement;
+  var keepTop = keepScroll ? scroller.scrollTop : 0;
   if(!items.length){
     list.innerHTML = '<div class="empty">' + T.empty + '</div>';
     updateMore();
@@ -539,6 +640,23 @@ function render(){
   }
   list.innerHTML = items.map(card).join('');
   updateMore();
+  if(keepTop) scroller.scrollTop = keepTop;
+}
+function imgFail(img){
+  // 直连图片失败时：改用 fetch（带 token 头）再取一次，成功就换成 blob 显示；
+  // 还是失败就把原因写在原位，避免留一块空白大白框
+  if(!img || img.dataset.retry){ return; }
+  img.dataset.retry = '1';
+  var url = img.getAttribute('data-src') || img.src;
+  fetch(url, {headers:{'X-YouBoard-Token': TOKEN}})
+    .then(function(r){ if(!r.ok) throw new Error('HTTP ' + r.status); return r.blob(); })
+    .then(function(b){ img.src = URL.createObjectURL(b); })
+    .catch(function(e){
+      var d = document.createElement('div');
+      d.className = 'ph';
+      d.textContent = T.imgFail + '：' + (e && e.message ? e.message : 'load error');
+      if(img.parentNode){ img.parentNode.replaceChild(d, img); }
+    });
 }
 function copyText(txt){
   if(!txt) return;
@@ -583,7 +701,7 @@ function poll(){
       TOTAL = d.total || 0;
       ENTRIES = d.entries || [];
       markOnline(d);
-      render();
+      render(true);      // 轮询刷新时保持当前滚动位置
     })
     .catch(markOffline)
     .then(function(){ LOADING = false; });
@@ -598,7 +716,7 @@ function loadMore(){
       TOTAL = d.total || TOTAL;
       ENTRIES = ENTRIES.concat(d.entries || []);
       markOnline(d);
-      render();
+      render(true);
     })
     .catch(markOffline)
     .then(function(){ LOADING = false; });
@@ -614,13 +732,70 @@ setInterval(poll, 2500);
 $('sendBtn').onclick = function(){
   var v = $('msg').value.trim();
   if(!v) return;
+  sendText(v);
+};
+// 手机剪贴板 → 电脑：能直读就直读，不能直读就引导长按粘贴（粘贴后自动发送）
+$('clipBtn').textContent = T.clipSend;
+$('clipBtn').onclick = function(){
+  if(navigator.clipboard && navigator.clipboard.readText){
+    navigator.clipboard.readText().then(function(txt){
+      if(txt && txt.trim()) sendText(txt);
+      else toast(T.clipEmpty);
+    }, function(){ askManualPaste(); });
+  } else {
+    askManualPaste();
+  }
+};
+function askManualPaste(){
+  $('msg').focus();
+  toast(T.clipManual);
+}
+function sendText(v){
   api('/api/send', {method:'POST', body:JSON.stringify({text: v})})
     .then(function(d){
       if(d && d.ok){ toast(T.sent); $('msg').value = ''; }
       else toast(T.sendFail);
     })
     .catch(function(){ toast(T.sendFail); });
+}
+$('msg').addEventListener('paste', function(){
+  // 长按粘贴后自动发送，省掉再点一次「发送」
+  setTimeout(function(){
+    var v = $('msg').value.trim();
+    if(!v) return;
+    sendText(v);
+    toast(T.pasteSent);
+  }, 60);
+});
+$('upBtn').textContent = T.upload;
+$('upBtn').onclick = function(){ $('upFile').click(); };
+$('upFile').onchange = function(){
+  var files = Array.prototype.slice.call(this.files || []);
+  this.value = '';
+  if(files.length) uploadSeq(files, 0);
 };
+function uploadOne(file){
+  return fetch('/api/upload', {
+    method: 'POST',
+    headers: {
+      'X-YouBoard-Token': TOKEN,
+      'X-File-Name': encodeURIComponent(file.name),
+      'Content-Type': file.type || 'application/octet-stream'
+    },
+    body: file
+  }).then(function(r){ return r.json().catch(function(){ return {ok:false}; }); });
+}
+function uploadSeq(files, i){
+  if(i >= files.length){ poll(); return; }
+  var f = files[i];
+  if(f.size > 64 * 1024 * 1024){ toast(T.uploadBig); uploadSeq(files, i + 1); return; }
+  toast(T.uploading.replace('{n}', i + 1).replace('{m}', files.length));
+  uploadOne(f).then(function(d){
+    if(d && d.ok) toast(T.uploaded.replace('{name}', f.name));
+    else toast(d && d.err === 'too_large' ? T.uploadBig : T.uploadFail);
+  }).catch(function(){ toast(T.uploadFail); })
+    .then(function(){ uploadSeq(files, i + 1); });
+}
 </script>
 </body>
 </html>
@@ -703,7 +878,14 @@ class _PhoneHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(size))
             self.send_header("Content-Disposition", cdisp)
-            self.send_header("Cache-Control", "no-store")
+            if download_name:
+                # 下载的文件保持不缓存
+                self.send_header("Cache-Control", "no-store")
+            else:
+                # 图片预览：允许手机端缓存，避免列表刷新时图片反复重新下载（来回跳）
+                self.send_header("Cache-Control", "private, max-age=86400")
+                self.send_header("ETag", '"%d-%d"' % (size,
+                                                      int(os.path.getmtime(path))))
             self.end_headers()
             with open(path, "rb") as f:
                 while True:
@@ -798,6 +980,9 @@ class _PhoneHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "err": "no_server"}, 503)
             return
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/upload":
+            self._handle_upload(srv)
+            return
         if path != "/api/send":
             self._send_json({"ok": False, "err": "not_found"}, 404)
             return
@@ -821,5 +1006,72 @@ class _PhoneHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         self._send_json({"ok": True, "len": len(text)})
+
+    def _handle_upload(self, srv):
+        """手机 → 电脑：接收图片 / 文件（原始字节 + 文件名头，避免 multipart 解析）。"""
+        if not self._authorized():
+            self._send_json({"ok": False, "err": "auth"}, 401)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            length = 0
+        if length <= 0:
+            self._send_json({"ok": False, "err": "empty"}, 400)
+            return
+        if length > UPLOAD_MAX_BYTES:
+            self._send_json({"ok": False, "err": "too_large",
+                             "limit": UPLOAD_MAX_BYTES}, 413)
+            return
+        raw = b""
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(256 * 1024, remaining))
+            if not chunk:
+                break
+            raw += chunk
+            remaining -= len(chunk)
+        if not raw:
+            self._send_json({"ok": False, "err": "empty"}, 400)
+            return
+        name = self.headers.get("X-File-Name", "") or ""
+        try:
+            name = urllib.parse.unquote(name)
+        except Exception:
+            pass
+        name = _safe_upload_name(name)
+        ctype = (self.headers.get("Content-Type", "") or "").lower()
+        is_image = (ctype.startswith("image/")
+                    or os.path.splitext(name)[1].lower() in
+                    (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"))
+        if is_image and srv.on_receive_image is not None:
+            img = _decode_upload_image(raw)
+            if img is None:
+                self._send_json({"ok": False, "err": "bad_image"}, 400)
+                return
+            try:
+                srv.on_receive_image(img, name)
+            except Exception:
+                self._send_json({"ok": False, "err": "save_failed"}, 500)
+                return
+            self._send_json({"ok": True, "kind": "image",
+                             "name": name, "bytes": len(raw)})
+            return
+        if srv.on_receive_file is None:
+            self._send_json({"ok": False, "err": "unsupported"}, 400)
+            return
+        try:
+            saved = _save_upload_file(raw, name)
+        except (IOError, OSError):
+            saved = ""
+        if not saved:
+            self._send_json({"ok": False, "err": "save_failed"}, 500)
+            return
+        try:
+            srv.on_receive_file(saved, name)
+        except Exception:
+            pass
+        self._send_json({"ok": True, "kind": "file",
+                         "name": name, "bytes": len(raw)})
 
     do_PUT = do_POST
