@@ -72,14 +72,34 @@ jobs:
         run: |
           APP="dist/YouBoard.app"
           BASE="YouBoard_macOS_arm64_v3.1.0"
-          hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
-            -format UDZO "dist/${BASE}.dmg"
+          ls -la dist | head -20
+          # 先出 ZIP（最稳的产物）
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/${BASE}.zip"
+          # 再尝试 DMG：两种参数组合、各重试 3 次，失败不影响 ZIP 发布
+          ok=0
+          for fsarg in "-fs HFS+" "none"; do
+            for i in 1 2 3; do
+              if [ "$fsarg" = "none" ]; then
+                hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
+                  -format UDZO "dist/${BASE}.dmg" && { ok=1; break 2; }
+              else
+                hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
+                  -format UDZO $fsarg "dist/${BASE}.dmg" && { ok=1; break 2; }
+              fi
+              rm -f "dist/${BASE}.dmg"
+              sleep 8
+            done
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::warning::DMG 生成失败，本次只发布 ZIP"
+          fi
+          ls -lh dist
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: YouBoard-macOS-arm64
+          if-no-files-found: warn
           path: |
             dist/YouBoard_macOS_arm64_v3.1.0.dmg
             dist/YouBoard_macOS_arm64_v3.1.0.zip
@@ -110,14 +130,34 @@ jobs:
         run: |
           APP="dist/YouBoard.app"
           BASE="YouBoard_macOS_x86_64_v3.1.0"
-          hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
-            -format UDZO "dist/${BASE}.dmg"
+          ls -la dist | head -20
+          # 先出 ZIP（最稳的产物）
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/${BASE}.zip"
+          # 再尝试 DMG：两种参数组合、各重试 3 次，失败不影响 ZIP 发布
+          ok=0
+          for fsarg in "-fs HFS+" "none"; do
+            for i in 1 2 3; do
+              if [ "$fsarg" = "none" ]; then
+                hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
+                  -format UDZO "dist/${BASE}.dmg" && { ok=1; break 2; }
+              else
+                hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov \
+                  -format UDZO $fsarg "dist/${BASE}.dmg" && { ok=1; break 2; }
+              fi
+              rm -f "dist/${BASE}.dmg"
+              sleep 8
+            done
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::warning::DMG 生成失败，本次只发布 ZIP"
+          fi
+          ls -lh dist
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: YouBoard-macOS-x86_64
+          if-no-files-found: warn
           path: |
             dist/YouBoard_macOS_x86_64_v3.1.0.dmg
             dist/YouBoard_macOS_x86_64_v3.1.0.zip
