@@ -9278,6 +9278,8 @@ class SettingsDialog(QDialog):
         self._lay = QVBoxLayout(inner)
         self._lay.setContentsMargins(14, 9, 14, 9)
         self._lay.setSpacing(7)
+        # 已排布的模块数：用来给"模块之间"额外留白，做出 组间 > 组内 的分组感
+        self._card_n = 0
         scroll.setWidget(inner)
         root.addWidget(scroll, 1)
 
@@ -9298,7 +9300,7 @@ class SettingsDialog(QDialog):
         self._card(tr("set_general"))
         auto_row = QHBoxLayout()
         t1 = QLabel(tr("set_autostart"))
-        t1.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        t1.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
         auto_row.addWidget(t1, 1)
         self._auto_cb = QCheckBox()
         self._auto_cb.setChecked(get_autostart())
@@ -9310,7 +9312,7 @@ class SettingsDialog(QDialog):
         self._hotkey_values = self._init_hotkey_values(cfg)
         hk_row = QHBoxLayout()
         hk_title = QLabel(tr("set_hotkeys_entry"))
-        hk_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        hk_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
         hk_row.addWidget(hk_title, 1)
         hk_open = QPushButton(tr("hk_change"))
         hk_open.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -9322,7 +9324,7 @@ class SettingsDialog(QDialog):
         # Desktop widget row (on by default)
         widget_row = QHBoxLayout()
         wg_title = QLabel(tr("set_widget_title"))
-        wg_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        wg_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
         widget_row.addWidget(wg_title, 1)
         self._widget_cb = QCheckBox()
         self._widget_cb.setChecked(bool(cfg.get("desktop_widget", True)))
@@ -9333,7 +9335,7 @@ class SettingsDialog(QDialog):
         # Temporary session row (merged from privacy mode)
         session_row = QHBoxLayout()
         ss_title = QLabel(tr("set_session_title"))
-        ss_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        ss_title.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
         session_row.addWidget(ss_title, 1)
         self._session_cb = QCheckBox()
         self._session_cb.setChecked(bool(cfg.get("temporary_session", False)
@@ -9487,7 +9489,7 @@ class SettingsDialog(QDialog):
         for kind in ("copy", "paste"):
             row = QHBoxLayout()
             lbl = QLabel(tr("set_sound_" + kind))
-            lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+            lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
             row.addWidget(lbl, 1)
             pick = QPushButton(self._snd_button_text(kind))
             pick.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
@@ -9504,7 +9506,7 @@ class SettingsDialog(QDialog):
         self._card(tr("set_winv"))
         winv_row = QHBoxLayout()
         winv_lbl = QLabel(tr("set_winv_takeover"))
-        winv_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: bold;")
+        winv_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
         winv_row.addWidget(winv_lbl, 1)
         winv_row.addStretch()
         self._winv_onoff = QLabel("")
@@ -9648,6 +9650,10 @@ class SettingsDialog(QDialog):
             pass
 
     def _card(self, title):
+        # 模块之间比模块内部多留 8px：分组靠留白就能一眼看出来
+        if self._card_n:
+            self._lay.addSpacing(8)
+        self._card_n += 1
         box = QFrame()
         box.setObjectName("settingsSection")
         box.setStyleSheet(
@@ -9657,14 +9663,15 @@ class SettingsDialog(QDialog):
         row.setContentsMargins(10, 4, 10, 4)
         row.setSpacing(8)
         accent = QFrame()
-        accent.setFixedSize(3, 14)
+        accent.setFixedSize(3, 16)
         accent.setStyleSheet(
             f"background: {C['ACCENT']}; border: none; border-radius: 1px;")
         row.addWidget(accent)
         lbl = QLabel(title)
+        # 模块标题是这一层最高一级：比条目更大、用主文字色（以前 11px 次级色，像注脚）
         lbl.setStyleSheet(
-            f"color: {C['TEXT_SEC']}; font-size: 11px; font-weight: 700;"
-            " letter-spacing: 1px;")
+            f"color: {C['TEXT']}; font-size: 13px; font-weight: 700;"
+            " letter-spacing: 0.5px;")
         row.addWidget(lbl)
         row.addStretch()
         self._lay.addWidget(box)
