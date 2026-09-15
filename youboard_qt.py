@@ -4267,7 +4267,13 @@ class DesktopClipboardWidget(QWidget):
 
     def _track_child_cursor(self):
         """让所有子控件也汇报鼠标移动（并开启 hover 跟踪）。"""
-        for w in self.findChildren(QWidget) + [self]:
+        tracked = getattr(self, "_cursor_tracked", None)
+        if tracked is None:
+            tracked = self._cursor_tracked = set()
+        for w in [self] + self.findChildren(QWidget):
+            if w in tracked:
+                continue
+            tracked.add(w)
             w.setMouseTracking(True)
             w.installEventFilter(self)
 
@@ -4390,7 +4396,8 @@ class DesktopClipboardWidget(QWidget):
         self._press_pos = None
         self._press_zone = None
         self._press_active = False
-        self.unsetCursor()
+        # 松手后按真实位置重算光标（还贴着边缘就继续显示缩放箭头，回到中间就是普通箭头）
+        self._apply_zone_cursor(self.mapFromGlobal(QCursor.pos()))
         if changed:
             self.save_geometry()
         event.accept()
@@ -4649,6 +4656,7 @@ class YouBoardApp(QMainWindow):
         if getattr(self, "_tray_session_act", None) is not None:
             self._tray_session_act.setChecked(_session_on)
         self._build_ui()
+        self._track_edge_cursor()   # 边缘缩放光标：子控件也要汇报鼠标移动
         self._apply_background()
         QTimer.singleShot(150, self._initial_refresh)
         QTimer.singleShot(250, self._focus_search)
@@ -5006,6 +5014,7 @@ class YouBoardApp(QMainWindow):
     def showEvent(self, event):
         super().showEvent(event)
         self._resume_motion()
+        self._track_edge_cursor()          # 子控件也要汇报鼠标移动（光标才跟着走）
         QTimer.singleShot(250, self._check_files_changed)
 
     def hideEvent(self, event):
@@ -5092,6 +5101,33 @@ class YouBoardApp(QMainWindow):
         8: Qt.CursorShape.SizeHorCursor,
     }
 
+    def _track_edge_cursor(self):
+        """让主窗口的所有子控件也汇报鼠标移动。
+
+        子控件会继承窗口光标，而鼠标停在子控件上时窗口收不到 mouseMove，
+        于是"贴着边缘拖过一次"之后，鼠标回到窗口中间仍然显示缩放箭头。
+        """
+        tracked = getattr(self, "_edge_cursor_tracked", None)
+        if tracked is None:
+            tracked = self._edge_cursor_tracked = set()
+        for w in [self] + self.findChildren(QWidget):
+            if w in tracked:
+                continue
+            tracked.add(w)
+            w.setMouseTracking(True)
+            w.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.MouseMove, QEvent.Type.HoverMove,
+                            QEvent.Type.Enter, QEvent.Type.Leave):
+            self._apply_edge_cursor(self.mapFromGlobal(QCursor.pos()))
+        return super().eventFilter(obj, event)
+
+    def _apply_edge_cursor(self, pos):
+        """按鼠标在窗口里的位置切换光标：贴边=缩放箭头，其余=普通箭头。"""
+        self.setCursor(self._EDGE_CURSORS.get(self._edge_at(pos),
+                                              Qt.CursorShape.ArrowCursor))
+
     def mouseMoveEvent(self, event):
         if hasattr(self, '_resize_edge') and self._resize_edge and event.buttons() & Qt.MouseButton.LeftButton:
             self._do_resize(event.globalPosition().toPoint())
@@ -5114,7 +5150,16 @@ class YouBoardApp(QMainWindow):
 
     def mouseReleaseEvent(self, event):
         self._resize_edge = 0
+        # 松手后按当前位置重算一次：否则贴边拖过之后，鼠标回到窗口中间仍然是
+        # 缩放箭头（主窗口没有收到新的 mouseMove 前不会再更新光标）。
+        self.setCursor(self._EDGE_CURSORS.get(
+            self._edge_at(event.position().toPoint()),
+            Qt.CursorShape.ArrowCursor))
         super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        self.unsetCursor()
+        super().leaveEvent(event)
 
     def _do_resize(self, global_pos):
         if not hasattr(self, '_resize_start_geo') or not self._resize_start_geo:
