@@ -1,7 +1,7 @@
 #!/bin/bash
 # ===========================================================================
 # YouBoard macOS 一键构建脚本（必须在 macOS 上运行）
-# 产物：dist/YouBoard.app（可选：YouBoard_macOS_v3.2.3.dmg）
+# 产物：dist/YouBoard.app（可选：YouBoard_macOS_v3.2.4.dmg）
 # ===========================================================================
 set -e
 cd "$(dirname "$0")"
@@ -23,7 +23,7 @@ echo "    数据目录：~/Library/Application Support/YouBoard"
 
 if command -v hdiutil >/dev/null 2>&1; then
 echo "==> 生成 DMG 镜像"
-DMG="YouBoard_macOS_v3.2.3.dmg"
+DMG="YouBoard_macOS_v3.2.4.dmg"
     rm -f "$DMG"
     hdiutil create -volname "YouBoard" -srcfolder "$APP" -ov -format UDZO "$DMG"
     echo "==> DMG：$DMG"
