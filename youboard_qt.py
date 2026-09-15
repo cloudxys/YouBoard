@@ -114,7 +114,7 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "3.2.0"
+APP_VERSION = "3.2.1"
 LOGO_ICO = get_icon_path()
 # 四个数据分类；「全部」是 3.1.0 新增的聚合标签，只用于界面展示
 DATA_TYPES = ("text", "image", "file", "url")

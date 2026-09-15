@@ -2,7 +2,10 @@
 
 一款轻量级 Windows 剪贴板管理工具，自动记录复制历史，支持文本、图片、文件、网址四大分类，附带桌面实时小组件与手机传输，随取随用。
 
-## 🆕 v3.2.0 更新内容
+## 🆕 v3.2.1 更新内容
+
+- **设置界面的"分组感"重做** — 以前每个功能模块的标题是 11px 的次级灰，比模块里的条目还小、还淡（读起来像注脚），现在提升为 13px 主文字色标题；模块内的条目文字由粗体降为中等，把视觉重心让给标题；主题色竖条和圆角底片保留
+- **用留白表达分组** — 以前"模块之间 7px、模块内部最多 11px"，组间反而比组内更紧，所以一眼看去分不清哪些是分组、哪些是分组里的内容；现在组间 15px > 组内 7px，"分组标题 / 分组内容 / 说明文字"三级一眼分得清
 
 > 从 v3.0.0 及更早版本升级，以下内容全部包含在内。
 
@@ -65,7 +68,7 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v3.1.0.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v3.2.1.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -143,7 +146,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v3.1.0.exe`
+输出：`YouBoard_Setup_v3.2.1.exe`
 
 ## 📁 项目结构
 
@@ -172,20 +175,30 @@ YouBoard/
 │   ├── sousuo.ico       # 搜索框图标
 │   ├── anse.ico         # 主题按钮：暗色
 │   └── liangse.ico      # 主题按钮：亮色
-├── version_info.txt     # EXE 版本信息（v3.1.0）
+├── version_info.txt     # EXE 版本信息（v3.2.1）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
 ├── YouBoard_Mac.spec    # macOS PyInstaller 配置
 ├── build_mac.sh         # macOS 一键构建脚本
 ├── README_MAC.md        # macOS 构建与使用说明
 ├── .github/workflows/   # GitHub Actions 自动构建发布
-├── youboard_setup.iss   # Inno Setup 安装脚本（v3.1.0）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v3.2.1）
 ├── youboard_config.json # 用户配置（自动生成）
 ├── .youboard.json       # 剪贴板历史数据（自动生成）
 └── youboard.key         # 历史加密密钥（自动生成，勿提交）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v3.2.1
+
+- 🧩 **设置界面分组感重做**
+  - 模块标题：`11px` + 次级灰 → `13px` + 主文字色，字距 1px → 0.5px；主题色竖条（3×14 → 3×16）和圆角底片保留
+  - 模块内条目：粗体 → 中等字重（仍是 13px 主色），不再和标题抢视觉重心
+  - 说明文字（10–11px 次级色）不动，依旧是三级里最轻的一档
+- 📐 **分组靠留白表达**
+  - 以前整列统一 `7px` 间距，模块内部反而有 11px 的空档，等于"组内比组间还松"
+  - 现在每个模块前额外留 8px，实测组间 15px、组内 7px：扫一眼先看到"块"，再读块里的行
 
 ### YouBoard v3.2.0
 
