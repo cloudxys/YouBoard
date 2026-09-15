@@ -80,8 +80,8 @@ app = BUNDLE(
     info_plist={
         'CFBundleDisplayName': 'YouBoard',
         'CFBundleName': 'YouBoard',
-    'CFBundleShortVersionString': '3.2.2',
-    'CFBundleVersion': '3.2.2',
+    'CFBundleShortVersionString': '3.2.3',
+    'CFBundleVersion': '3.2.3',
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '11.0',
         'NSHumanReadableCopyright': 'YouBoard - Clipboard History Manager',

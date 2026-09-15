@@ -2,8 +2,10 @@
 
 一款轻量级 Windows 剪贴板管理工具，自动记录复制历史，支持文本、图片、文件、网址四大分类，附带桌面实时小组件与手机传输，随取随用。
 
-## 🆕 v3.2.2 更新内容
+## 🆕 v3.2.3 更新内容
 
+- **更新过程不再弹 `timeout.exe - Application Error`** — 更新脚本原来用 `timeout.exe` 做等待，在没有控制台句柄 / 句柄异常的环境里它起不来，会弹 `0xc0000142` 的错误框而且不等待；现在等待改用 `ping`，不依赖控制台
+- **替换 EXE 的重试有了上限** — 旧文件万一被占用，以前会一直循环；现在最多重试 60 次后照常继续，不会卡死
 - **修掉"更新完要先关掉再打开"的报错** — 应用内更新（3.2.0 → 3.2.1）完成后会弹 `Security validation failure: unexpected name of application's home directory!`，必须退出重开才能用。原因是新版 PyInstaller（6.22.3）给 onefile 程序加了安全校验，而更新时启动新版本的批处理**继承了旧进程的临时目录环境变量**，新版本校验不过就直接退出了；现在更新器会把这类变量清干净再启动新版本，更新完自动打开、不再报错
 - **打包工具版本固定** — 构建脚本把 PyInstaller 固定到 `6.22.3`，避免以后又因为自动升级到最新版而引入新的启动校验/行为
 - **设置界面的"分组感"重做** — 以前每个功能模块的标题是 11px 的次级灰，比模块里的条目还小、还淡（读起来像注脚），现在提升为 13px 主文字色标题；模块内的条目文字由粗体降为中等，把视觉重心让给标题；主题色竖条和圆角底片保留
@@ -70,7 +72,7 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v3.2.2.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v3.2.3.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -148,7 +150,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v3.2.2.exe`
+输出：`YouBoard_Setup_v3.2.3.exe`
 
 ## 📁 项目结构
 
@@ -177,20 +179,30 @@ YouBoard/
 │   ├── sousuo.ico       # 搜索框图标
 │   ├── anse.ico         # 主题按钮：暗色
 │   └── liangse.ico      # 主题按钮：亮色
-├── version_info.txt     # EXE 版本信息（v3.2.2）
+├── version_info.txt     # EXE 版本信息（v3.2.3）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
 ├── YouBoard_Mac.spec    # macOS PyInstaller 配置
 ├── build_mac.sh         # macOS 一键构建脚本
 ├── README_MAC.md        # macOS 构建与使用说明
 ├── .github/workflows/   # GitHub Actions 自动构建发布
-├── youboard_setup.iss   # Inno Setup 安装脚本（v3.2.2）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v3.2.3）
 ├── youboard_config.json # 用户配置（自动生成）
 ├── .youboard.json       # 剪贴板历史数据（自动生成）
 └── youboard.key         # 历史加密密钥（自动生成，勿提交）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v3.2.3
+
+- 🧯 **更新脚本不再依赖 `timeout.exe`**
+  - 现象：更新时会弹出 `timeout.exe - Application Error`，提示"应用程序无法正常启动(0xc0000142)"
+  - 原因：更新脚本原来用 `timeout /t N /nobreak` 做等待，而脚本是被以 DETACHED_PROCESS（没有控制台）方式拉起的；`timeout.exe` 在这种环境里起不来，于是弹错误框，而且**没有真的等待**，紧接着的"删除旧 EXE"重试就变成了空转
+  - 修复：等待改用 `ping -n N 127.0.0.1 >nul`，不依赖控制台；重试次数也加了上限（60 次），不会再无限循环
+- 🛠️ **（承接 v3.2.2）更新时清掉继承的 PyInstaller 环境变量**
+  - 不清的话新版本会以"onefile 子进程"身份启动，然后报 `Failed to load Python DLL …\_MEI…\python312.dll` 或 `Security validation failure: unexpected name of application's home directory!`，必须退出重开
+  - 现在批处理先 `set` 清掉 `_PYI_*` / `_MEIPASS*`，`Popen` 时再过滤一遍，并用 CI 打的真实包实测：带着污染环境执行更新流程，新版本能正常打开
 
 ### YouBoard v3.2.2
 

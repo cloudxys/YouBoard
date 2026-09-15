@@ -114,7 +114,7 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "3.2.2"
+APP_VERSION = "3.2.3"
 LOGO_ICO = get_icon_path()
 # 四个数据分类；「全部」是 3.1.0 新增的聚合标签，只用于界面展示
 DATA_TYPES = ("text", "image", "file", "url")
@@ -10226,19 +10226,12 @@ class SettingsDialog(QDialog):
             bat_path = os.path.join(exe_dir, "_update.bat")
             bat_content = f"""@echo off
 chcp 65001 >nul 2>&1
-timeout /t 3 /nobreak >nul
-:del_loop
-del /f "{current_exe}" >nul 2>&1
-if exist "{current_exe}" (
-    timeout /t 1 /nobreak >nul
-    goto del_loop
-)
-move /y "{tmp_exe}" "{current_exe}" >nul 2>&1
-for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
-timeout /t 1 /nobreak >nul
+rem 延时一律用 ping：timeout.exe 在没有控制台句柄 / 句柄异常的环境里会弹
+rem   "timeout.exe - Application Error 0xc0000142" 并且不等待，ping 没这个问题
+ping -n 4 127.0.0.1 >nul 2>&1
 rem 清掉 PyInstaller onefile 继承来的环境变量再启动新版本。
 rem 这套变量指向旧进程的临时目录，而 PyInstaller 6.22.3 起会校验它的名字/归属，
-rem 不清掉的话新版本会直接报
+rem 不清掉的话新版本会直接报 "Failed to load Python DLL" 或
 rem   Security validation failure: unexpected name of application's home directory!
 rem 然后就退出了（用户必须手动重新打开才行）。
 set "_PYI_APPLICATION_HOME_DIR="
@@ -10247,6 +10240,18 @@ set "_PYI_PARENT_PROCESS_LEVEL="
 set "_PYI_SPLASH_IPC="
 set "_MEIPASS="
 set "_MEIPASS2="
+set /a _yb_try=0
+:del_loop
+del /f "{current_exe}" >nul 2>&1
+if not exist "{current_exe}" goto _yb_install
+set /a _yb_try+=1
+if %_yb_try% GEQ 60 goto _yb_install
+ping -n 2 127.0.0.1 >nul 2>&1
+goto del_loop
+:_yb_install
+move /y "{tmp_exe}" "{current_exe}" >nul 2>&1
+for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
+ping -n 2 127.0.0.1 >nul 2>&1
 start "" "{current_exe}"
 del "%~f0"
 """
