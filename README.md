@@ -2,8 +2,10 @@
 
 一款轻量级 Windows 剪贴板管理工具，自动记录复制历史，支持文本、图片、文件、网址四大分类，附带桌面实时小组件与手机传输，随取随用。
 
-## 🆕 v3.2.1 更新内容
+## 🆕 v3.2.2 更新内容
 
+- **修掉"更新完要先关掉再打开"的报错** — 应用内更新（3.2.0 → 3.2.1）完成后会弹 `Security validation failure: unexpected name of application's home directory!`，必须退出重开才能用。原因是新版 PyInstaller（6.22.3）给 onefile 程序加了安全校验，而更新时启动新版本的批处理**继承了旧进程的临时目录环境变量**，新版本校验不过就直接退出了；现在更新器会把这类变量清干净再启动新版本，更新完自动打开、不再报错
+- **打包工具版本固定** — 构建脚本把 PyInstaller 固定到 `6.22.3`，避免以后又因为自动升级到最新版而引入新的启动校验/行为
 - **设置界面的"分组感"重做** — 以前每个功能模块的标题是 11px 的次级灰，比模块里的条目还小、还淡（读起来像注脚），现在提升为 13px 主文字色标题；模块内的条目文字由粗体降为中等，把视觉重心让给标题；主题色竖条和圆角底片保留
 - **用留白表达分组** — 以前"模块之间 7px、模块内部最多 11px"，组间反而比组内更紧，所以一眼看去分不清哪些是分组、哪些是分组里的内容；现在组间 15px > 组内 7px，"分组标题 / 分组内容 / 说明文字"三级一眼分得清
 
@@ -68,7 +70,7 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v3.2.1.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v3.2.2.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -146,7 +148,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v3.2.1.exe`
+输出：`YouBoard_Setup_v3.2.2.exe`
 
 ## 📁 项目结构
 
@@ -175,20 +177,29 @@ YouBoard/
 │   ├── sousuo.ico       # 搜索框图标
 │   ├── anse.ico         # 主题按钮：暗色
 │   └── liangse.ico      # 主题按钮：亮色
-├── version_info.txt     # EXE 版本信息（v3.2.1）
+├── version_info.txt     # EXE 版本信息（v3.2.2）
 ├── YouBoard.bat         # 一键打包脚本
 ├── YouBoard.spec        # PyInstaller 配置
 ├── YouBoard_Mac.spec    # macOS PyInstaller 配置
 ├── build_mac.sh         # macOS 一键构建脚本
 ├── README_MAC.md        # macOS 构建与使用说明
 ├── .github/workflows/   # GitHub Actions 自动构建发布
-├── youboard_setup.iss   # Inno Setup 安装脚本（v3.2.1）
+├── youboard_setup.iss   # Inno Setup 安装脚本（v3.2.2）
 ├── youboard_config.json # 用户配置（自动生成）
 ├── .youboard.json       # 剪贴板历史数据（自动生成）
 └── youboard.key         # 历史加密密钥（自动生成，勿提交）
 ```
 
 ## 📜 更新日志
+
+### YouBoard v3.2.2
+
+- 🛠️ **修复"更新完成后报错、必须退出重开"**
+  - 现象：在 3.2.0 里点「检查更新」升到 3.2.1，替换完成后新版本弹出
+    `Security validation failure: unexpected name of application's home directory!`，关掉再打开才正常
+  - 根因：新版 PyInstaller（6.22.3）给 onefile 程序加了一道安全校验（安全公告 GHSA-9fxf-4qw3-ghmr）：如果环境里带着"上一级 onefile 进程的临时目录"（`_PYI_APPLICATION_HOME_DIR` / `_PYI_ARCHIVE_FILE` / `_PYI_PARENT_PROCESS_LEVEL`），它会校验那个目录名必须是 `_MEI` + 8 位十六进制 PID。更新流程里批处理继承了旧进程的这套变量（旧进程随即退出），新版本校验失败便直接退出
+  - 修复：启动新版本的批处理里先 `set` 清掉这几个变量，`Popen` 时再传一份过滤过的环境（双保险），新版本就像手动双击一样干净启动
+  - 另外把构建脚本里的 PyInstaller 固定为 `6.22.3`，不再每次装最新版
 
 ### YouBoard v3.2.1
 

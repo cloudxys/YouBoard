@@ -114,7 +114,7 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "3.2.1"
+APP_VERSION = "3.2.2"
 LOGO_ICO = get_icon_path()
 # 四个数据分类；「全部」是 3.1.0 新增的聚合标签，只用于界面展示
 DATA_TYPES = ("text", "image", "file", "url")
@@ -10236,6 +10236,17 @@ if exist "{current_exe}" (
 move /y "{tmp_exe}" "{current_exe}" >nul 2>&1
 for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
 timeout /t 1 /nobreak >nul
+rem 清掉 PyInstaller onefile 继承来的环境变量再启动新版本。
+rem 这套变量指向旧进程的临时目录，而 PyInstaller 6.22.3 起会校验它的名字/归属，
+rem 不清掉的话新版本会直接报
+rem   Security validation failure: unexpected name of application's home directory!
+rem 然后就退出了（用户必须手动重新打开才行）。
+set "_PYI_APPLICATION_HOME_DIR="
+set "_PYI_ARCHIVE_FILE="
+set "_PYI_PARENT_PROCESS_LEVEL="
+set "_PYI_SPLASH_IPC="
+set "_MEIPASS="
+set "_MEIPASS2="
 start "" "{current_exe}"
 del "%~f0"
 """
@@ -10244,10 +10255,17 @@ del "%~f0"
             import subprocess
             self._splash = _UpdateSplashDialog(self.app, new_version)
 
+            # 交给新版本一份干净的环境（和批处理里的 set 双保险）
+            clean_env = {
+                k: v for k, v in os.environ.items()
+                if not k.startswith("_PYI_") and k not in ("_MEIPASS", "_MEIPASS2")
+            }
+
             def _launch():
                 try:
                     subprocess.Popen(["cmd.exe", "/c", bat_path],
-                                     creationflags=0x00000008)  # DETACHED_PROCESS
+                                     creationflags=0x00000008,    # DETACHED_PROCESS
+                                     env=clean_env)
                 finally:
                     self.app._real_quit()
 
