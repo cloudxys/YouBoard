@@ -124,6 +124,8 @@ TAB_TYPES = ("all", "text", "image", "file", "url")
 HEADER_TEXT_PAD = 10
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
+# 文字预览一次性显示的字数上限：正常大小的文本都会完整显示（超过才提示截断）
+PREVIEW_TEXT_LIMIT = 2000000
 PREVIEW_MAX = 1600
 TAB_ICONS = {"text": "\u270e", "image": "\u25a3", "file": "\u25a0", "url": "\u25c9"}
 TAB_ICON_FILES = {"text": "wenben.ico", "image": "tupian.ico",
@@ -328,12 +330,33 @@ class _Table(QTableWidget):
     露出来，于是拖选多行时视图会突然横向跳到右边。这里保持横向位置不动。
     """
 
+    _owner = None
+
     def scrollTo(self, index, hint=QAbstractItemView.ScrollHint.EnsureVisible):
         bar = self.horizontalScrollBar()
         keep = bar.value()
         super().scrollTo(index, hint)
         if bar.value() != keep:
             bar.setValue(keep)
+
+    def keyPressEvent(self, event):
+        """Ctrl+C / Ctrl+Insert：复制"选中记录的完整内容"。
+
+        Qt 默认会把「当前单元格里的文字」放进剪贴板——而内容预览列显示的是
+        预览文字（换行被写成 ⏎、超长还会截断加 …），这样复制出去的内容既不完整，
+        还会因为内容不同被记成一条新记录（看起来就是"重复"）。
+        """
+        is_copy = event.matches(QKeySequence.StandardKey.Copy) or (
+            event.key() == Qt.Key.Key_Insert
+            and bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier))
+        if is_copy and self._owner is not None:
+            try:
+                self._owner._copy_selected()
+            except Exception:
+                pass
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class _RoundMenu(QMenu):
@@ -5060,6 +5083,7 @@ class YouBoardApp(QMainWindow):
         lay.addLayout(act_row)
 
         table = _Table()
+        table._owner = self          # 让列表内的 Ctrl+C 能复制完整原文（见 _Table.keyPressEvent）
         # 内容列会按内容撑开，横向滚动条用来左右拖动看完整内容
         table.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -5941,7 +5965,7 @@ class YouBoardApp(QMainWindow):
         full_len = entry.get("content_size") or len(content)
         is_external = bool(entry.get("content_ref"))
         if is_external:
-            head = read_external_head(entry["content_ref"], 20000)
+            head = read_external_head(entry["content_ref"], PREVIEW_TEXT_LIMIT)
             if len(head) > len(content):
                 content = head
         url_pat = re.compile(r'https?://\S+|www\.\S+')
@@ -5963,7 +5987,7 @@ class YouBoardApp(QMainWindow):
         if not is_pure_url:
             txt = QTextEdit()
             txt.setReadOnly(True)
-            shown = content[:20000]
+            shown = content[:PREVIEW_TEXT_LIMIT]
             txt.setPlainText(shown + (tr("preview_truncated")
                                      if full_len > len(shown) else ""))
             self._preview_layout.addWidget(txt, 1)

@@ -1323,6 +1323,11 @@ class ClipboardStore:
         text = text.strip()
         if not text:
             return False
+        # 「预览形态」的文本不入库：内容预览列会把换行写成 " ⏎ "、超长还会截断加 …，
+        # 这种文字如果被复制、又被收录，就会和原文形成一条"重复记录"。
+        # 预览形态一定是"单行"的（所有换行都被替换成了 ⏎），带真换行的原文不受影响
+        if " ⏎ " in text and "\n" not in text and self._looks_like_preview_form(text):
+            return False
         h = self._text_hash(text)
         entry = {
             "hash": h, "type": "text", "content": text,
@@ -1557,6 +1562,27 @@ class ClipboardStore:
             self._save_snapshots()
         self.flush()
         return True
+
+    def _looks_like_preview_form(self, text):
+        """这段文字是不是既有文本记录"预览形态"的产物（换行被换成 ⏎、可能被截断）。"""
+        try:
+            norm = text.replace(" ⏎ ", "\n")
+            if norm.endswith("…"):
+                norm = norm[:-1]
+            if len(norm) < 20:
+                return False
+            with self._lock:
+                entries = list(self.categories["text"]["entries"])[:50]
+            for e in entries:
+                body = e.get("content", "") or ""
+                if len(body) < 20:
+                    continue
+                # 预览是原文的前缀（被截断），或原文是这条预览的前缀
+                if body.startswith(norm) or norm.startswith(body):
+                    return True
+        except Exception:
+            pass
+        return False
 
     # ---- counts ----
 
