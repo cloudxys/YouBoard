@@ -1,8 +1,8 @@
-; YouBoard v3.2.3 Inno Setup 安装脚本
+﻿; YouBoard v3.2.4 Inno Setup 安装脚本
 ; 功能：多盘检测选最大空闲盘根目录安装，数据保留更新，uninstall.exe，自定义图标
 
 #define MyAppName "YouBoard"
-#define MyAppVersion "3.2.3"
+#define MyAppVersion "3.2.4"
 #define MyAppPublisher "YouBoard"
 #define MyAppExeName "YouBoard.exe"
 #define MyAppURL "https://github.com/cloudxys/YouBoard"
@@ -148,4 +148,66 @@ end;
 procedure InitializeUninstallProgressForm();
 begin
   UninstallProgressForm.Color := $00F6F4F3;
+end;
+
+{ ---------------------------------------------------------------------------
+  卸载：询问是否一并删除本地数据
+
+  YouBoard 的历史 / 设置 / 图片都存在安装目录里（.youboard.json、images 等），
+  Inno 默认不会删除它们——如果什么都不做，卸载后重装会"悄悄"沿用旧数据。
+  这里给用户一个明确选择：
+    · 是 = 一并删除（不可恢复）
+    · 否 = 保留（默认；重装后新版本会继续读取）
+  静默卸载（/SILENT、/VERYSILENT 或 /SUPPRESSMSGBOXES）不弹窗，按默认值走，
+  也就是"保留"，避免自动化流程里误删用户数据。
+  --------------------------------------------------------------------------- }
+
+{ 本地数据清单：与 youboard_core.py 里的 _BASE_DIR 下各路径保持一致 }
+function HasLocalData(AppDir: String): Boolean;
+begin
+  Result := FileExists(AppDir + '\.youboard.json') or
+            FileExists(AppDir + '\.youboard.json.bak') or
+            FileExists(AppDir + '\.youboard_snapshots.json') or
+            FileExists(AppDir + '\youboard_config.json') or
+            FileExists(AppDir + '\youboard.key') or
+            FileExists(AppDir + '\youboard_error.log') or
+            DirExists(AppDir + '\images') or
+            DirExists(AppDir + '\content') or
+            DirExists(AppDir + '\file_cache');
+end;
+
+procedure DeleteLocalData(AppDir: String);
+begin
+  { 历史是加密的，必须连密钥 youboard.key 一起删；只删一半会留下打不开的历史 }
+  DeleteFile(AppDir + '\.youboard.json');
+  DeleteFile(AppDir + '\.youboard.json.bak');
+  DeleteFile(AppDir + '\.youboard_snapshots.json');
+  DeleteFile(AppDir + '\youboard_config.json');
+  DeleteFile(AppDir + '\youboard.key');
+  DeleteFile(AppDir + '\youboard_error.log');
+  DelTree(AppDir + '\images', True, True, True);
+  DelTree(AppDir + '\content', True, True, True);
+  DelTree(AppDir + '\file_cache', True, True, True);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  AppDir: String;
+  Answer: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    AppDir := ExpandConstant('{app}');
+    if not HasLocalData(AppDir) then
+      Exit;
+    Answer := SuppressibleMsgBox(
+      '是否同时删除 YouBoard 的本地数据？' + #13#10#13#10 +
+      '包含：剪贴板历史、图片、设置、加密密钥' + #13#10 +
+      '位置：' + AppDir + #13#10#13#10 +
+      '选择「是」：一并删除，删除后无法恢复。' + #13#10 +
+      '选择「否」（默认）：保留下来，以后重新安装会继续读取这些数据。',
+      mbConfirmation, MB_YESNO, IDNO);
+    if Answer = IDYES then
+      DeleteLocalData(AppDir);
+  end;
 end;
