@@ -131,6 +131,102 @@ TAB_ICONS = {"text": "\u270e", "image": "\u25a3", "file": "\u25a0", "url": "\u25
 TAB_ICON_FILES = {"text": "wenben.ico", "image": "tupian.ico",
                   "file": "wenjian.ico", "url": "wangzhi.ico"}
 
+# ---------------------------------------------------------------------------
+# 文件细分：只在「文件」标签里按扩展名分类（视频 / 图片 / 设计源文件 / 音频 /
+# 文档 / 压缩包 / 程序 / 代码 / 字体 / 其他）；「全部」标签里这些记录依旧是"文件"。
+# ---------------------------------------------------------------------------
+FILE_KINDS = ("video", "image", "design", "audio", "doc",
+              "archive", "app", "code", "font", "other")
+FILE_KIND_EXT = {
+    "video": {
+        "mp4", "m4v", "mkv", "avi", "mov", "wmv", "flv", "f4v", "webm", "mpg",
+        "mpeg", "mpe", "m2v", "ts", "m2ts", "mts", "vob", "rm", "rmvb", "3gp",
+        "3g2", "asf", "ogv", "divx", "xvid", "mxf", "swf", "dv", "wtv", "amv",
+    },
+    "image": {
+        "jpg", "jpeg", "jpe", "jfif", "png", "gif", "bmp", "dib", "tif", "tiff",
+        "webp", "heic", "heif", "avif", "ico", "icns", "tga", "pcx", "wmf",
+        "emf", "svg", "dds", "exr", "hdr", "jp2", "j2k", "pbm", "pgm", "ppm",
+        "xbm", "xpm", "raw", "cr2", "cr3", "nef", "arw", "dng", "orf", "rw2",
+    },
+    "design": {
+        "psd", "psb", "ai", "eps", "indd", "indt", "indb", "xd", "fig",
+        "sketch", "afdesign", "afphoto", "afpub", "cdr", "cdrx", "c4d", "blend",
+        "blend1", "max", "3ds", "obj", "fbx", "stl", "dae", "glb", "gltf",
+        "skp", "unitypackage", "uasset", "umap", "ase", "aseprite", "procreate",
+        "xcf", "kra", "sai", "sai2", "clip", "csp", "ptg", "graffle", "dwg",
+        "dxf", "step", "stp", "igs", "iges", "3dm", "sldprt", "sldasm", "f3d",
+    },
+    "audio": {
+        "wav", "wave", "mp3", "flac", "aac", "m4a", "m4b", "ogg", "oga", "opus",
+        "wma", "ape", "alac", "aiff", "aif", "aifc", "mid", "midi", "amr",
+        "ac3", "dts", "mka", "au", "snd", "ra", "wv", "tta", "dsf", "dff",
+        "caf", "aax", "m3u", "m3u8", "cue", "sf2", "sfz",
+    },
+    "doc": {
+        "pdf", "doc", "docx", "docm", "dot", "dotx", "rtf", "txt", "md",
+        "markdown", "csv", "tsv", "xls", "xlsx", "xlsm", "xlsb", "xlt", "xltx",
+        "ppt", "pptx", "pptm", "pps", "ppsx", "pot", "potx", "odt", "ods",
+        "odp", "odg", "epub", "mobi", "azw", "azw3", "djvu", "chm", "wps",
+        "et", "dps", "pages", "numbers", "key", "tex", "bib", "log", "msg",
+        "eml", "oft", "one", "vsdx", "vsd", "pub", "xmind", "mmap", "opml",
+    },
+    "archive": {
+        "zip", "zipx", "rar", "r00", "r01", "7z", "tar", "gz", "tgz", "bz2",
+        "tbz", "tbz2", "xz", "txz", "zst", "lz", "lzma", "lzh", "cab", "arj",
+        "ace", "iso", "img", "vhd", "vhdx", "wim", "esd", "jar", "war", "ear",
+        "cpio", "z", "001", "br", "lzo", "pak", "xar", "sit", "sitx", "gz2",
+    },
+    "app": {
+        "exe", "msi", "msp", "mst", "msix", "appx", "appxbundle", "com", "scr",
+        "bat", "cmd", "ps1", "psm1", "vbs", "vbe", "wsf", "wsh", "lnk", "url",
+        "dll", "ocx", "sys", "drv", "cpl", "hta", "reg", "inf", "so", "dylib",
+        "apk", "aab", "ipa", "deb", "rpm", "pkg", "dmg", "appimage", "snap",
+        "flatpak", "run", "bin", "elf", "class", "pdb", "lib", "a", "o",
+    },
+    "code": {
+        "py", "pyw", "pyi", "pyx", "ipynb", "js", "mjs", "cjs", "jsx", "ts",
+        "tsx", "vue", "svelte", "java", "kt", "kts", "groovy", "scala", "c",
+        "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx", "cs", "go", "rs", "rb",
+        "php", "pl", "pm", "lua", "swift", "m", "mm", "dart", "r", "jl", "hs",
+        "erl", "ex", "exs", "clj", "lisp", "asm", "s", "sql", "sh", "bash",
+        "zsh", "fish", "json", "json5", "jsonc", "xml", "yaml", "yml", "toml",
+        "ini", "cfg", "conf", "config", "properties", "env", "html", "htm",
+        "xhtml", "css", "scss", "sass", "less", "styl", "spec", "iss", "nsi",
+        "nsh", "gradle", "cmake", "make", "mk", "dockerfile", "gitignore",
+        "editorconfig", "diff", "patch", "rego", "tf", "tfvars", "proto",
+    },
+    "font": {
+        "ttf", "ttc", "otf", "otc", "woff", "woff2", "eot", "fon", "fnt",
+        "pfb", "pfm", "dfont", "suit", "bdf", "pcf",
+    },
+}
+
+
+def file_kind_of_path(path):
+    """单个文件属于哪个细分（看扩展名，认不出来就是 other）。"""
+    ext = os.path.splitext(str(path or ""))[1].lower().lstrip(".")
+    if not ext:
+        name = os.path.basename(str(path or "")).lower()
+        if name in ("dockerfile", "makefile", "cmakelists.txt", "gemfile"):
+            return "code"
+        return "other"
+    for kind in FILE_KINDS:
+        if ext in FILE_KIND_EXT.get(kind, ()):
+            return kind
+    return "other"
+
+
+def file_kind_of_paths(paths):
+    """一条记录（可能含多个文件）的细分：取数量最多的那一类，并列时按 FILE_KINDS 顺序。"""
+    counts = {}
+    for p in (paths or []):
+        k = file_kind_of_path(p)
+        counts[k] = counts.get(k, 0) + 1
+    if not counts:
+        return "other"
+    return max(FILE_KINDS, key=lambda k: (counts.get(k, 0), -FILE_KINDS.index(k)))
+
 
 def _all_tab_icon(size=18):
     """「全部」分类图标：运行时绘制的四宫格小方块（不新增资源文件）。"""
@@ -1286,7 +1382,11 @@ STRINGS = {
         "manage": " 管理 ▾ ", "settings_btn": " ⚙ 设置 ",
         "total_records": "共 {n} 条记录", "monitor_live": "实时监控中",
         "monitor_off": "未监控", "monitor_stopped": "监控已停止",
-        "type_text": "文本", "type_image": "图片", "type_file": "文件", "type_url": "网址",
+    "type_text": "文本", "type_image": "图片", "type_file": "文件", "type_url": "网址",
+    # 「文件」标签里的细分（「全部」里仍然是"文件"）
+    "fk_all": "全部", "fk_video": "视频", "fk_image": "图片", "fk_design": "设计源文件",
+    "fk_audio": "音频", "fk_doc": "文档", "fk_archive": "压缩包", "fk_app": "程序",
+    "fk_code": "代码", "fk_font": "字体", "fk_other": "其他",
         "panel_preview": " 预览 ", "panel_snapshots": " 历史快照 ", "panel_urls": " 网址 ",
         "preview_placeholder": "选择一条记录\n即可预览",
         "btn_restore": "恢复选中状态", "btn_clear_history": "清空历史",
@@ -1608,7 +1708,11 @@ STRINGS = {
         "manage": " Manage ▾ ", "settings_btn": " ⚙ Settings ",
         "total_records": "{n} records", "monitor_live": "Live monitoring",
         "monitor_off": "Not monitoring", "monitor_stopped": "Monitor stopped",
-        "type_text": "Text", "type_image": "Images", "type_file": "Files", "type_url": "URLs",
+    "type_text": "Text", "type_image": "Images", "type_file": "Files", "type_url": "URLs",
+    # file sub-categories (only used inside the "Files" tab)
+    "fk_all": "All", "fk_video": "Video", "fk_image": "Images", "fk_design": "Design",
+    "fk_audio": "Audio", "fk_doc": "Documents", "fk_archive": "Archives", "fk_app": "Apps",
+    "fk_code": "Code", "fk_font": "Fonts", "fk_other": "Other",
         "panel_preview": " Preview ", "panel_snapshots": " Snapshots ", "panel_urls": " URLs ",
         "preview_placeholder": "Select a record\nto preview",
         "btn_restore": "Restore selected", "btn_clear_history": "Clear history",
@@ -3924,13 +4028,13 @@ class DesktopClipboardWidget(QWidget):
         outer.addWidget(self._card)
 
         # 子控件默认不接收无按键鼠标移动，事件无法冒泡到父窗口，
-        # 边缘缩放光标就不会触发；统一开启 mouseTracking。
+        # 边缘缩放光标就不会触发；统一开启 mouseTracking + 事件过滤。
         self._card.setMouseTracking(True)
-        for _w in (self._title_lbl, self._cur_icon, self._cur_lbl, self._hist_title):
-            _w.setMouseTracking(True)
+        self._track_child_cursor()
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._track_child_cursor()   # 内容变化后新建的子控件也要跟得上光标
         # 直接设为常驻透明度：透明度变化即触发 DWM 合成，且无亮度跳变。
         self.setWindowOpacity(self.IDLE_OPACITY)
         QTimer.singleShot(0, self._sync_hist_visibility)
@@ -4147,6 +4251,40 @@ class DesktopClipboardWidget(QWidget):
         self.hide()
 
     # ---- drag / resize / persist geometry ----
+    # 光标：子控件会继承父窗口的光标，而鼠标停在子控件上时父窗口收不到 move 事件，
+    # 于是"贴过边缘"之后箭头会一直卡在缩放光标上（点一次设置、鼠标从边缘移开就会
+    # 触发）。这里让子控件也把鼠标移动报给本窗口，光标准确跟随实际位置。
+    _ZONE_CURSORS = {
+        "corner": Qt.CursorShape.SizeFDiagCursor,
+        "corner_tl": Qt.CursorShape.SizeFDiagCursor,
+        "corner_l": Qt.CursorShape.SizeBDiagCursor,
+        "corner_tr": Qt.CursorShape.SizeBDiagCursor,
+        "hedge_l": Qt.CursorShape.SizeHorCursor,
+        "hedge_r": Qt.CursorShape.SizeHorCursor,
+        "vedge": Qt.CursorShape.SizeVerCursor,
+        "tedge": Qt.CursorShape.SizeVerCursor,
+    }
+
+    def _track_child_cursor(self):
+        """让所有子控件也汇报鼠标移动（并开启 hover 跟踪）。"""
+        for w in self.findChildren(QWidget) + [self]:
+            w.setMouseTracking(True)
+            w.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.MouseMove, QEvent.Type.HoverMove,
+                            QEvent.Type.Enter, QEvent.Type.Leave):
+            self._apply_zone_cursor(self.mapFromGlobal(QCursor.pos()))
+        return super().eventFilter(obj, event)
+
+    def _apply_zone_cursor(self, pos):
+        """按鼠标在窗口里的位置切换光标：贴边=缩放箭头，中间=普通箭头。"""
+        cur = self._ZONE_CURSORS.get(self._hit_zone(pos))
+        if cur is None:
+            self.unsetCursor()
+        else:
+            self.setCursor(QCursor(cur))
+
     def _hit_zone(self, pos):
         """corner=右下；corner_l=左下；corner_tr=右上；corner_tl=左上（均双向缩放）；
         hedge_r/hedge_l=右/左水平；vedge/tedge=底/顶垂直；None=拖动。"""
@@ -4170,10 +4308,12 @@ class DesktopClipboardWidget(QWidget):
         return None
 
     def enterEvent(self, event):
+        self._apply_zone_cursor(self.mapFromGlobal(QCursor.pos()))
         self.setWindowOpacity(self.HOVER_OPACITY)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
+        self.unsetCursor()
         self.setWindowOpacity(self.IDLE_OPACITY)
         super().leaveEvent(event)
 
@@ -4239,17 +4379,7 @@ class DesktopClipboardWidget(QWidget):
             self.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
             return
-        zone = self._hit_zone(event.position().toPoint())
-        if zone in ("corner", "corner_tl"):
-            self.setCursor(QCursor(Qt.CursorShape.SizeFDiagCursor))
-        elif zone in ("corner_l", "corner_tr"):
-            self.setCursor(QCursor(Qt.CursorShape.SizeBDiagCursor))
-        elif zone in ("hedge_l", "hedge_r"):
-            self.setCursor(QCursor(Qt.CursorShape.SizeHorCursor))
-        elif zone in ("vedge", "tedge"):
-            self.setCursor(QCursor(Qt.CursorShape.SizeVerCursor))
-        else:
-            self.unsetCursor()
+        self._apply_zone_cursor(event.position().toPoint())
 
     def mouseReleaseEvent(self, event):
         changed = bool(self._press_active)
@@ -4438,6 +4568,10 @@ class YouBoardApp(QMainWindow):
         self._tab_layouts = []
         # 每个标签页里“按内容撑开”的那一列（横向滚动条靠它才能左右拖动看全文）
         self._flex_cols = {}
+        # 「文件」标签里的细分筛选（all / video / image / design / audio / doc /
+        # archive / app / code / font / other），只影响这个标签的显示
+        self._file_kind = "all"
+        self._file_kind_btns = {}
         # 需要按内容自适应宽度的小列（数量 / 格式 / 尺寸 / 大小）
         self._auto_width_cols = {"image": (4, 5, 6), "file": (4, 5, 6)}
         self._iid_to_hash = {t: {} for t in TAB_TYPES}
@@ -5016,6 +5150,42 @@ class YouBoardApp(QMainWindow):
                 "image": tr("type_image"), "file": tr("type_file"),
                 "url": tr("type_url")}.get(etype, str(etype))
 
+    @staticmethod
+    def _file_kind_label(key):
+        """文件细分的显示名（视频 / 设计源文件 / 压缩包 …）。"""
+        return tr("fk_" + key)
+
+    def _set_file_kind(self, key):
+        self._file_kind = key
+        self._refresh_tab("file")
+
+    def _paint_file_kind_chips(self, counts):
+        """刷新文件细分按钮：空分类隐藏（当前选中的始终留着），并显示各自数量。"""
+        if not self._file_kind_btns:
+            return
+        active = self._file_kind
+        for key, chip in self._file_kind_btns.items():
+            n = counts.get(key, 0)
+            if key != "all" and n == 0 and key != active:
+                chip.setVisible(False)
+                continue
+            chip.setVisible(True)
+            label = self._file_kind_label(key)
+            chip.setText(f"{label} {n}" if n else label)
+            if key == active:
+                chip.setStyleSheet(
+                    f"QPushButton {{ background: {C['ACCENT_DIM']};"
+                    f" color: {C['ACCENT']}; border: 1px solid {C['ACCENT']};"
+                    f" border-radius: 11px; padding: 3px 10px; font-size: 11px;"
+                    f" font-weight: 600; }}")
+            else:
+                chip.setStyleSheet(
+                    f"QPushButton {{ background: {C['SURFACE2']};"
+                    f" color: {C['TEXT_SEC']}; border: 1px solid {C['BORDER']};"
+                    f" border-radius: 11px; padding: 3px 10px; font-size: 11px; }}"
+                    f"QPushButton:hover {{ background: {C['SURFACE3']};"
+                    f" color: {C['TEXT']}; }}")
+
     def _build_tab(self, parent, etype):
         lay = QVBoxLayout(parent)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -5081,6 +5251,23 @@ class YouBoardApp(QMainWindow):
         export_btn.clicked.connect(self._export_selected)
         act_row.addWidget(export_btn)
         lay.addLayout(act_row)
+
+        if etype == "file":
+            # 文件细分：视频 / 图片 / 设计源文件 / 音频 / 文档 / 压缩包 / 程序 /
+            # 代码 / 字体 / 其他（只在「文件」标签里，不影响「全部」）
+            kind_row = QHBoxLayout()
+            kind_row.setSpacing(6)
+            self._file_kind = "all"
+            self._file_kind_btns = {}
+            for key in ("all",) + FILE_KINDS:
+                chip = QPushButton(self._file_kind_label(key))
+                chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                chip.setFlat(True)
+                chip.clicked.connect(lambda _, k=key: self._set_file_kind(k))
+                kind_row.addWidget(chip)
+                self._file_kind_btns[key] = chip
+            kind_row.addStretch()
+            lay.addLayout(kind_row)
 
         table = _Table()
         table._owner = self          # 让列表内的 Ctrl+C 能复制完整原文（见 _Table.keyPressEvent）
@@ -5509,6 +5696,18 @@ class YouBoardApp(QMainWindow):
             entries = (self.store.search(kw, etype) if kw
                        else self.store.get_by_type(etype))
         entries = self._apply_sort(etype, entries)
+        if etype == "file":
+            # 文件细分筛选：先统计各细分数量给按钮用，再按当前选中项过滤
+            counts = {"all": len(entries)}
+            kinds = {}
+            for e in entries:
+                k = file_kind_of_paths(self.store._norm_paths(e))
+                kinds[id(e)] = k
+                counts[k] = counts.get(k, 0) + 1
+            self._paint_file_kind_chips(counts)
+            if self._file_kind != "all":
+                entries = [e for e in entries
+                           if kinds.get(id(e)) == self._file_kind]
         total_all = len(entries)
         shown = entries[:DISPLAY_LIMIT]
         table.setRowCount(len(shown))
@@ -5582,6 +5781,10 @@ class YouBoardApp(QMainWindow):
             elif etype == "text":
                 html_flex = preview_html
                 badge = None
+            elif etype == "file":
+                # 文件行：在文件名前画一个细分标签（视频 / 压缩包 / 设计源文件 …）
+                html_flex = None
+                badge = self._file_kind_label(file_kind_of_paths(paths))
             else:
                 html_flex = None
                 badge = None
@@ -5592,7 +5795,7 @@ class YouBoardApp(QMainWindow):
                         and html_flex is not None):
                     item.setData(_InlineImageDelegate.HTML_ROLE, html_flex)
                 if (_flex_col is not None and col == _flex_col
-                        and etype == "all"):
+                        and etype in ("all", "file")):
                     item.setData(_InlineImageDelegate.BADGE_ROLE, badge)
                 # 序号 / 时间 / 状态居中；数量·格式·尺寸·大小 这几个小列也跟着表头居中，
                 # 否则表头居中、数值左对齐，看上去就"没对上"
@@ -10269,7 +10472,10 @@ del "%~f0"
             def _launch():
                 try:
                     subprocess.Popen(["cmd.exe", "/c", bat_path],
-                                     creationflags=0x00000008,    # DETACHED_PROCESS
+                                     # CREATE_NO_WINDOW：让批处理带一个"隐藏的控制台"，
+                                     # 它跑 ping 时不会再闪出黑窗口（DETACHED_PROCESS 时
+                                     # 没有控制台，子进程会被系统重新分配一个新控制台）
+                                     creationflags=0x08000000,
                                      env=clean_env)
                 finally:
                     self.app._real_quit()
