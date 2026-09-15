@@ -5161,6 +5161,12 @@ class YouBoardApp(QMainWindow):
         self.unsetCursor()
         super().leaveEvent(event)
 
+    def enterEvent(self, event):
+        # 鼠标重新进入窗口时按当前位置重算光标：避免上一次贴边留下的缩放箭头
+        # 在不动鼠标的情况下一直显示
+        self._apply_edge_cursor(self.mapFromGlobal(QCursor.pos()))
+        super().enterEvent(event)
+
     def _do_resize(self, global_pos):
         if not hasattr(self, '_resize_start_geo') or not self._resize_start_geo:
             return
@@ -6917,6 +6923,12 @@ class YouBoardApp(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self)
         dlg.exec()
+        # 关掉设置后立刻按当前位置重算一次光标：模态窗口期间本窗口收不到鼠标事件，
+        # 之前贴边留下的缩放箭头会一直粘着（用户描述为"光标被锁定"）。
+        try:
+            self._apply_edge_cursor(self.mapFromGlobal(QCursor.pos()))
+        except Exception:
+            pass
         # 设置窗口关闭后静默刷新：保证期间复制的新内容立即显示（不弹状态提示）
         try:
             for etype in TAB_TYPES:
