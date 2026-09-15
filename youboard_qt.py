@@ -114,7 +114,7 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "3.2.3"
+APP_VERSION = "3.2.4"
 LOGO_ICO = get_icon_path()
 # 四个数据分类；「全部」是 3.1.0 新增的聚合标签，只用于界面展示
 DATA_TYPES = ("text", "image", "file", "url")
@@ -3738,6 +3738,33 @@ class _CornerHandle(QWidget):
 # ===========================================================================
 # Custom Title Bar (frameless window)
 # ===========================================================================
+def _refresh_cursor_under_mouse(widget=None):
+    """鼠标下方控件的光标兜底刷新（设置 / 云同步窗口里的定时器调用）。
+
+    以前这里会把"当前生效的光标"复制成子控件自己的光标。子控件一旦被复制上
+    缩放箭头（比如贴过窗口边缘之后），父窗口再按位置重算也改不动它——表现就是
+    打开设置窗口后光标被锁在缩放箭头上。现在只做两件安全的事：
+      ① 缩放热区（自带缩放光标的细条）保持不动；
+      ② 误钉在普通控件上的缩放光标清掉，让它继续继承父窗口按位置算出来的光标；
+      ③ 自己设过光标的手型按钮（滚动时容易不刷新）重新应用一次。
+    """
+    try:
+        w = widget if widget is not None else QApplication.widgetAt(QCursor.pos())
+        if w is None or isinstance(w, (_EdgeHandle, _CornerHandle, _ResizeGrip)):
+            return
+        shape = w.cursor().shape()
+        if shape in (Qt.CursorShape.SizeHorCursor, Qt.CursorShape.SizeVerCursor,
+                     Qt.CursorShape.SizeFDiagCursor,
+                     Qt.CursorShape.SizeBDiagCursor,
+                     Qt.CursorShape.SizeAllCursor):
+            w.unsetCursor()
+        elif (shape != Qt.CursorShape.ArrowCursor
+              and w.testAttribute(Qt.WidgetAttribute.WA_SetCursor)):
+            w.setCursor(w.cursor())
+    except Exception:
+        pass
+
+
 class _TitleBar(QWidget):
     """Flat custom title bar with window control buttons."""
     HEIGHT = 36
@@ -9891,13 +9918,8 @@ class SettingsDialog(QDialog):
                 btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
 
     def _force_cursor_refresh(self):
-        """鼠标下的控件若是手型按钮，强制重设光标（任何进入方向都立即生效）。"""
-        try:
-            w = QApplication.widgetAt(QCursor.pos())
-            if w is not None and w.cursor().shape() != Qt.CursorShape.ArrowCursor:
-                w.setCursor(w.cursor())
-        except Exception:
-            pass
+        """兜底光标刷新（只刷新按钮自己的手型光标，不再把缩放箭头钉到子控件上）。"""
+        _refresh_cursor_under_mouse()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -10700,13 +10722,8 @@ class CloudSyncDialog(QDialog):
         self._cursor_timer.start(120)
 
     def _force_cursor_refresh(self):
-        """鼠标下的控件若是手型按钮，强制重设光标（任何进入方向都立即生效）。"""
-        try:
-            w = QApplication.widgetAt(QCursor.pos())
-            if w is not None and w.cursor().shape() != Qt.CursorShape.ArrowCursor:
-                w.setCursor(w.cursor())
-        except Exception:
-            pass
+        """兜底光标刷新（只刷新按钮自己的手型光标，不再把缩放箭头钉到子控件上）。"""
+        _refresh_cursor_under_mouse()
 
     # ---- 配置 ----
 
