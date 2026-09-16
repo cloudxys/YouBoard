@@ -1469,6 +1469,43 @@ class ClipboardStore:
             self._save()
         return True
 
+    def replace_text(self, entry_hash, new_text):
+        """把一条文本记录的正文换成 new_text。
+
+        「用 AI 结果替换本条」走这里：标签 / 收藏 / 时间戳都保留，列表位置也不变，
+        不会像"新增一条再删旧的"那样跑到列表最前面。
+        """
+        text = (new_text or "").strip()
+        if not text:
+            return False
+        new_hash = self._text_hash(text)
+        with self._lock:
+            found = self._scan_locked(entry_hash)
+            if not found:
+                return False
+            cat, list_name, index, old = found
+            entry = dict(old)
+            for key in ("content_ref", "content_external", "content_size"):
+                entry.pop(key, None)
+            entry["hash"] = new_hash
+            entry["content"] = text
+            entry["length"] = len(text)
+            entry["edited_at"] = datetime.now().isoformat()
+            if len(text) >= LARGE_TEXT_THRESHOLD:
+                ref = write_external_content(new_hash, text)
+                if ref:
+                    entry["content"] = text[:CONTENT_HEAD_CHARS]
+                    entry["content_ref"] = ref
+                    entry["content_external"] = True
+                    entry["content_size"] = len(text)
+            # 同分类里若已经有同一份新正文（hash 相同），先去掉，避免出现两条同 hash
+            siblings = [e for e in cat[list_name]
+                        if e.get("hash") not in (entry_hash, new_hash)]
+            siblings.insert(min(index, len(siblings)), entry)
+            cat[list_name] = siblings
+            self._save()
+            return True
+
     def add_url(self, url):
         """收录一条网址到 url 分类。"""
         url = url.strip()
