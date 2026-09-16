@@ -865,6 +865,31 @@ def test_gui():
     for _ in range(3):
         app.processEvents()
 
+    # 生成过程中再按回车不能变成「停止」（输入框保持可用、按钮不吃键盘焦点）
+    from PyQt6.QtCore import Qt as _Qt8
+    check("ai chat: stop/send ignore keyboard focus",
+          chat_dlg._stop_btn.focusPolicy() == _Qt8.FocusPolicy.NoFocus
+          and chat_dlg._send_btn.focusPolicy() == _Qt8.FocusPolicy.NoFocus
+          and chat_dlg._input.isEnabled())
+    # 卡片弹层不再"始终置顶"（切到别的程序时不会孤零零飘在别人窗口上）
+    _ret_probe = yq._RetentionDialog(win, None, {"mode": "forever"})
+    check("overlay: not always-on-top",
+          not bool(_ret_probe.windowFlags()
+                   & _Qt8.WindowType.WindowStaysOnTopHint))
+    win.hide()
+    for _ in range(4):
+        app.processEvents()
+    _ret_probe._sync_to_host()
+    _geo = _ret_probe.geometry()
+    _scr = yq.QApplication.primaryScreen().availableGeometry()
+    check("overlay: centred when host hidden",
+          _geo.width() <= 700 and _geo.height() <= 620
+          and _scr.contains(_geo.center()), str(_geo))
+    _ret_probe.close()
+    win.show()
+    for _ in range(6):
+        app.processEvents()
+
     # ---- v3.2.8：设置窗口尺寸 / 光标兜底 / 弹层抬小组件 ----
     _avail = yq.QApplication.primaryScreen().availableGeometry()
     s_probe = yq.SettingsDialog(win)

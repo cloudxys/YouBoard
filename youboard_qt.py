@@ -3268,8 +3268,7 @@ class _CardOverlayDialog(QDialog):
         self.setWindowTitle(title_text)
         self.setWindowFlags(
             Qt.WindowType.Dialog |
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint)
+            Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         # 同 _UpdateDialog：窗口级模态，别把桌面小组件一起禁掉
         self.setModal(True)
@@ -3361,11 +3360,30 @@ class _CardOverlayDialog(QDialog):
 
     def _sync_to_host(self):
         host = self._host
+        target = None
         try:
             if host is not None and host.isVisible():
-                self.setGeometry(host.frameGeometry())
+                target = host.frameGeometry()
         except Exception:
-            pass
+            target = None
+        if target is None or target.width() < 200 or target.height() < 150:
+            # 宿主不可见时不能把卡片丢在屏幕角落（以前会停在默认位置，
+            # 看起来就像"弹到程序外面去了"）：改成在当前屏幕居中、只占卡片大小
+            try:
+                scr = QApplication.screenAt(QCursor.pos()) \
+                    or QApplication.primaryScreen()
+                avail = scr.availableGeometry()
+                w = min(max(self.CARD_WIDTH + 48, 360), avail.width() - 40)
+                h = min(560, avail.height() - 40)
+                target = QRect(avail.x() + (avail.width() - w) // 2,
+                               avail.y() + (avail.height() - h) // 2, w, h)
+            except Exception:
+                target = None
+        if target is not None:
+            try:
+                self.setGeometry(target)
+            except Exception:
+                pass
         # 弹层会铺满宿主（主窗口最大化时就是整屏）。桌面小组件是独立的置顶窗口，
         # 如果不重新抬一次，新的置顶弹层会排在它前面，把小组件整个盖住（点不到、没法复制）。
         try:
@@ -4108,6 +4126,12 @@ class _AIDialog(_CardOverlayDialog):
         for btn in (self._copy_btn, self._save_btn, self._replace_btn,
                     self._export_btn, self._close_btn):
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        # 这些按钮不接受键盘焦点：否则输入框一发消息就被禁用、焦点跳到「停止」，
+        # 用户再按一次回车就等于按了停止（表现就是"刚发出去就 已停止生成"）
+        for btn in (self._stop_btn, self._retry_btn, self._cfg_btn,
+                    self._send_btn, self._copy_btn, self._save_btn,
+                    self._replace_btn, self._export_btn, self._close_btn):
+            btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._copy_btn.setObjectName("retSave")
         self._copy_btn.clicked.connect(self._use_result_copy)
         self._save_btn.clicked.connect(self._use_result_save)
@@ -4148,7 +4172,8 @@ class _AIDialog(_CardOverlayDialog):
         self._export_btn.setEnabled(has_export)
         if self._chat:
             self._send_btn.setEnabled(not running)
-            self._input.setEnabled(not running)
+            # 输入框始终可用：生成期间禁用会让焦点跳到「停止」按钮上，
+            # 再按回车就变成停止生成（_send_chat 自己会忽略生成中的发送）
         for btn in (self._copy_btn, self._save_btn, self._replace_btn):
             btn.setEnabled(has_result and not running)
 
