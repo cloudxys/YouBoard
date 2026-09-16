@@ -20,6 +20,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# CI（尤其 Windows runner）的默认输出编码不是 UTF-8，中文用例名会抛
+# UnicodeEncodeError 把整个流程带崩；这里强制 UTF-8，编不出来的字符降级替换。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # 项目根目录 = 本文件所在目录的上一层，换机器 / CI 上都不用改
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAIL = []
