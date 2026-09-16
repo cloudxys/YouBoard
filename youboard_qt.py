@@ -3791,18 +3791,26 @@ class _AISettingsDialog(_CardOverlayDialog):
             grid.setColumnStretch(col, 1)
         lay.addLayout(grid)
 
+        # 表单用两列网格：左列标签按内容自适应宽度（固定宽度会把中文标签裁掉，
+        # 例如「温度（越低越稳）」），右列输入框起点全部对齐
+        self._fields = QGridLayout()
+        self._fields.setContentsMargins(0, 0, 0, 0)
+        self._fields.setHorizontalSpacing(10)
+        self._fields.setVerticalSpacing(8)
+        self._fields.setColumnStretch(1, 1)
+        lay.addLayout(self._fields)
+
         self._base = QLineEdit(str(self._values.get("base_url") or ""))
         self._model = QLineEdit(str(self._values.get("model") or ""))
-        lay.addLayout(self._field_row(tr("set_ai_base"), self._base))
-        lay.addLayout(self._field_row(tr("set_ai_model"), self._model))
+        self._add_field(tr("set_ai_base"), self._base)
+        self._add_field(tr("set_ai_model"), self._model)
 
         self._key = QLineEdit()
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_btn = QPushButton(tr("set_ai_key_clear"))
         self._key_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._key_btn.clicked.connect(self._on_key_clear)
-        lay.addLayout(self._field_row(tr("set_ai_key"), self._key,
-                                      self._key_btn))
+        self._add_field(tr("set_ai_key"), self._key, self._key_btn)
         self._sync_key_ui()
 
         self._temp = QDoubleSpinBox()
@@ -3811,11 +3819,11 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._temp.setDecimals(1)
         self._temp.setValue(float(self._values.get("temperature", 0.3)))
         self._temp.setMaximumWidth(120)
-        lay.addLayout(self._field_row(tr("set_ai_temp"), self._temp))
+        self._add_field(tr("set_ai_temp"), self._temp)
 
         self._proxy = QLineEdit(str(self._values.get("proxy") or ""))
         self._proxy.setPlaceholderText(tr("set_ai_proxy_ph"))
-        lay.addLayout(self._field_row(tr("set_ai_proxy"), self._proxy))
+        self._add_field(tr("set_ai_proxy"), self._proxy)
 
         test_row = QHBoxLayout()
         test_row.setSpacing(8)
@@ -3850,19 +3858,23 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._pick_provider(self._provider, fill=False)
 
     # ---- 小组件 ----
-    @staticmethod
-    def _field_row(label_text, widget, extra=None):
-        """一行「左侧标签 + 右侧输入框（+ 可选小按钮）」，卡片内统一排版。"""
-        row = QHBoxLayout()
-        row.setSpacing(10)
+    def _add_field(self, label_text, widget, extra=None):
+        """表单加一行：左标签（宽度自适应、不裁字）+ 输入框（+ 可选小按钮）。
+
+        标签以前写死 74px，中文长标签（「温度（越低越稳）」）会被裁成半个字，
+        所以改成网格布局按内容撑开。
+        """
+        row = self._fields.rowCount()
         lbl = QLabel(label_text)
         lbl.setObjectName("retSub")
-        lbl.setFixedWidth(74)
-        row.addWidget(lbl)
-        row.addWidget(widget, 1)
+        lbl.setWordWrap(False)
+        self._fields.addWidget(
+            lbl, row, 0,
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._fields.addWidget(widget, row, 1)
         if extra is not None:
-            row.addWidget(extra)
-        return row
+            self._fields.addWidget(extra, row, 2,
+                                   Qt.AlignmentFlag.AlignRight)
 
     def _sync_key_ui(self):
         saved = (bool(self._values.get("api_key_saved"))

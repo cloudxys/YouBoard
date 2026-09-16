@@ -755,6 +755,21 @@ def test_gui():
     check("ai: spin arrows flattened (no square block)",
           "up-button" in cfg_dlg.card.styleSheet()
           and "background: transparent" in cfg_dlg.card.styleSheet())
+    # 字段标签按内容自适应，不能被裁（固定宽度会把「温度（越低越稳）」切掉）
+    clipped = []
+    for _r in range(cfg_dlg._fields.rowCount()):
+        _item = cfg_dlg._fields.itemAtPosition(_r, 0)
+        _lbl = _item.widget() if _item is not None else None
+        if _lbl is not None and _lbl.width() < _lbl.sizeHint().width():
+            clipped.append((_lbl.text(), _lbl.width(), _lbl.sizeHint().width()))
+    check("ai: field labels not clipped", not clipped, str(clipped))
+    _labels = []
+    for _r in range(cfg_dlg._fields.rowCount()):
+        _item = cfg_dlg._fields.itemAtPosition(_r, 0)
+        if _item is not None and _item.widget() is not None:
+            _labels.append(_item.widget().text())
+    check("ai: all five field labels present", len(_labels) == 5,
+          str(_labels))
     cfg_dlg.close()
     sdlg.close()
     check("ai: hotkey default", yq._ACTION_HOTKEY_DEFAULTS.get("hk_ai")
