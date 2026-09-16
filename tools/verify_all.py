@@ -320,8 +320,8 @@ def test_gui():
           yq.play_notify_sound("copy", yq.SOUND_SRC_CUSTOM, ""))
     check("sound legacy system source falls back",
           yq.play_notify_sound("copy", "system"))
-    shot = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "shot_final.png")
+    # 截图落到临时目录：不要把测试产生的图片留在仓库里
+    shot = os.path.join(tempfile.gettempdir(), "youboard_verify_shot.png")
     try:
         win._tabs.setCurrentIndex(0)
         app.processEvents()
