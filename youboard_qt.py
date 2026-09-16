@@ -299,6 +299,7 @@ class _InlineImageDelegate(QStyledItemDelegate):
     HTML_ROLE = Qt.ItemDataRole.UserRole + 1
     # 内容列开头的类型标签（只有「全部」分类用）
     BADGE_ROLE = Qt.ItemDataRole.UserRole + 2
+    PIN_ROLE = Qt.ItemDataRole.UserRole + 3
     BADGE_GAP = 8
     BADGE_H = 18
 
@@ -353,6 +354,24 @@ class _InlineImageDelegate(QStyledItemDelegate):
         left = target_left
         width = max(1, option.rect.left() + option.rect.width() - left)
         painter.save()
+        pin = index.data(self.PIN_ROLE)
+        if pin:
+            # 置顶标记：主题色小胶囊，画在类型/细分标签前面，一眼能看出来
+            _fm = QFontMetrics(opt.font)
+            _pw = _fm.horizontalAdvance(str(pin)) + 16
+            _ph = min(self.BADGE_H, max(12, option.rect.height() - 8))
+            _py = option.rect.top() + (option.rect.height() - _ph) / 2.0
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(C['ACCENT']))
+            painter.drawRoundedRect(
+                QRectF(float(left), float(_py), float(_pw), float(_ph)),
+                _ph / 2.0, _ph / 2.0)
+            painter.setPen(QPen(QColor(_on_accent_color())))
+            painter.drawText(
+                QRectF(float(left), float(_py), float(_pw), float(_ph)),
+                Qt.AlignmentFlag.AlignCenter, str(pin))
+            left += _pw + self.BADGE_GAP
+            width = max(1, option.rect.left() + option.rect.width() - left)
         badge = index.data(self.BADGE_ROLE)
         if badge:
             # 圆角实心标签：半透明、比行底色更深一点，文字用次要色
@@ -3013,16 +3032,19 @@ def _retention_summary(policy):
     return tr("ret_summary_forever")
 
 
-class _RetentionDialog(QDialog):
-    """Compact retention settings card matching the updater's visual style."""
+class _CardOverlayDialog(QDialog):
+    """卡片式弹层基类：半透明遮罩 + 居中圆角卡片 + 图标 / 标题 / 副标题。
 
-    def __init__(self, owner, app, policy):
+    「历史保留策略」和「自定义皮肤」都用它，两个弹层的风格天然一致；
+    以后要调风格只改这一处。
+    """
+
+    CARD_WIDTH = 620
+
+    def __init__(self, owner, app, icon_glyph, title_text, subtitle_text=""):
         super().__init__(owner)
         self._host = app if app is not None and app.isVisible() else owner
-        self._preset = "forever"
-        self._preset_btns = {}
-
-        self.setWindowTitle(tr("ret_title"))
+        self.setWindowTitle(title_text)
         self.setWindowFlags(
             Qt.WindowType.Dialog |
             Qt.WindowType.FramelessWindowHint |
@@ -3036,17 +3058,19 @@ class _RetentionDialog(QDialog):
         outer.addStretch(1)
         card = QFrame()
         card.setObjectName("retCard")
-        card.setFixedWidth(620)
+        card.setFixedWidth(self.CARD_WIDTH)
         outer.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         outer.addStretch(1)
+        self.card = card
 
         lay = QVBoxLayout(card)
         lay.setContentsMargins(30, 24, 30, 22)
         lay.setSpacing(11)
+        self._lay = lay
 
         icon_row = QHBoxLayout()
         icon_row.addStretch()
-        icon = QLabel("◷")
+        icon = QLabel(icon_glyph)
         icon.setObjectName("retIcon")
         icon.setFixedSize(72, 72)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -3054,15 +3078,76 @@ class _RetentionDialog(QDialog):
         icon_row.addStretch()
         lay.addLayout(icon_row)
 
-        title = QLabel(tr("ret_title"))
+        title = QLabel(title_text)
         title.setObjectName("retTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(title)
-        subtitle = QLabel(tr("ret_sub"))
-        subtitle.setObjectName("retSub")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setWordWrap(True)
-        lay.addWidget(subtitle)
+        if subtitle_text:
+            subtitle = QLabel(subtitle_text)
+            subtitle.setObjectName("retSub")
+            subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            subtitle.setWordWrap(True)
+            lay.addWidget(subtitle)
+
+        card.setStyleSheet(f"""
+            QFrame#retCard {{ background-color: {C['SURFACE']};
+                border: 1px solid {C['BORDER']}; border-radius: 14px; }}
+            QLabel {{ background: transparent; color: {C['TEXT']};
+                font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; }}
+            QLabel#retIcon {{ background-color: {C['SURFACE2']};
+                border: 1px solid {C['BORDER']};
+                border-radius: 36px; color: {C['TEXT']}; font-size: 31px; }}
+            QLabel#retTitle {{ color: {C['TEXT']}; font-size: 20px; font-weight: 700; }}
+            QLabel#retSub, QLabel#retNote {{ color: {C['TEXT_SEC']}; font-size: 12px; }}
+            QPushButton {{ background-color: {C['SURFACE2']}; color: {C['TEXT_SEC']};
+                border: 1px solid transparent; border-radius: 8px;
+                padding: 7px 10px; font-size: 12px; }}
+            QPushButton:hover {{ background-color: {C['SURFACE3']}; color: {C['TEXT']}; }}
+            QPushButton:checked {{ background-color: {C['ACCENT']}; color: #071116;
+                border: none; font-weight: 700; }}
+            QPushButton#retSave {{ background-color: {C['ACCENT']}; color: #071116;
+                border: none; font-weight: 700; }}
+            QPushButton#retSave:hover {{ background-color: {C['ACCENT_HV']}; }}
+            QPushButton#unitPill {{ background-color: {C['SURFACE2']};
+                color: {C['TEXT_SEC']}; border: 1px solid transparent;
+                border-radius: 7px; padding: 5px 14px; font-size: 12px; }}
+            QPushButton#unitPill:hover {{ background-color: {C['SURFACE3']};
+                color: {C['TEXT']}; }}
+            QPushButton#unitPill:checked {{ background-color: {C['ACCENT']};
+                color: #071116; font-weight: 700; }}
+            QSpinBox, QComboBox, QDateTimeEdit {{ background-color: {C['INPUT_BG']};
+                color: {C['TEXT']}; border: 1px solid {C['BORDER']};
+                border-radius: 7px; padding: 5px 8px; font-size: 12px; }}
+            QComboBox QAbstractItemView {{ background-color: {C['SURFACE']};
+                color: {C['TEXT']}; selection-background-color: {C['ACCENT_DIM']};
+                border: 1px solid {C['BORDER']}; border-radius: 7px; }}
+        """)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(3, 6, 10, 170))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._sync_to_host)
+
+    def _sync_to_host(self):
+        host = self._host
+        try:
+            if host is not None and host.isVisible():
+                self.setGeometry(host.frameGeometry())
+        except Exception:
+            pass
+
+
+class _RetentionDialog(_CardOverlayDialog):
+    """历史保留策略（卡片式弹层，样式与「自定义皮肤」一致）。"""
+
+    def __init__(self, owner, app, policy):
+        super().__init__(owner, app, "◷", tr("ret_title"), tr("ret_sub"))
+        self._preset = "forever"
+        self._preset_btns = {}
+        lay = self._lay
 
         options = QGridLayout()
         options.setHorizontalSpacing(8)
@@ -3093,12 +3178,20 @@ class _RetentionDialog(QDialog):
         self._custom_value.setRange(1, 8760)
         self._custom_value.setValue(12)
         custom_lay.addWidget(self._custom_value)
-        self._custom_unit = QComboBox()
-        self._custom_unit.addItems(
-            [tr("ret_unit_hours"), tr("ret_unit_days")])
-        self._custom_unit.currentIndexChanged.connect(
-            self._on_custom_unit_changed)
-        custom_lay.addWidget(self._custom_unit)
+        # 小时 / 天：用两个小胶囊按钮，不用下拉框——下拉弹层是直角框，
+        # 而且靠近窗口底部时还会翻到上面盖住别的控件
+        self._custom_unit_index = 0
+        self._unit_btns = []
+        for _idx, _label in ((0, tr("ret_unit_hours")),
+                             (1, tr("ret_unit_days"))):
+            _ub = QPushButton(_label)
+            _ub.setObjectName("unitPill")
+            _ub.setCheckable(True)
+            _ub.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            _ub.clicked.connect(lambda _, i=_idx: self._set_custom_unit(i))
+            custom_lay.addWidget(_ub)
+            self._unit_btns.append(_ub)
+        self._set_custom_unit(0)
         custom_lay.addStretch()
         lay.addWidget(self._custom_row)
 
@@ -3133,35 +3226,15 @@ class _RetentionDialog(QDialog):
         buttons.addWidget(save)
         lay.addLayout(buttons)
 
-        card.setStyleSheet(f"""
-            QFrame#retCard {{ background-color: {C['SURFACE']};
-                border: 1px solid {C['BORDER']}; border-radius: 14px; }}
-            QLabel {{ background: transparent; color: {C['TEXT']};
-                font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; }}
-            QLabel#retIcon {{ background-color: {C['SURFACE2']};
-                border: 1px solid {C['BORDER']};
-                border-radius: 36px; color: {C['TEXT']}; font-size: 31px; }}
-            QLabel#retTitle {{ color: {C['TEXT']}; font-size: 20px; font-weight: 700; }}
-            QLabel#retSub, QLabel#retNote {{ color: {C['TEXT_SEC']}; font-size: 12px; }}
-            QPushButton {{ background-color: {C['SURFACE2']}; color: {C['TEXT_SEC']};
-                border: 1px solid transparent; border-radius: 8px;
-                padding: 7px 10px; font-size: 12px; }}
-            QPushButton:hover {{ background-color: {C['SURFACE3']}; color: {C['TEXT']}; }}
-            QPushButton:checked {{ background-color: {C['ACCENT']}; color: #071116;
-                border: none; font-weight: 700; }}
-            QPushButton#retSave {{ background-color: {C['ACCENT']}; color: #071116;
-                border: none; font-weight: 700; }}
-            QPushButton#retSave:hover {{ background-color: {C['ACCENT_HV']}; }}
-            QSpinBox, QComboBox, QDateTimeEdit {{ background-color: {C['INPUT_BG']};
-                color: {C['TEXT']}; border: 1px solid {C['BORDER']};
-                border-radius: 7px; padding: 5px 8px; font-size: 12px; }}
-            QComboBox QAbstractItemView {{ background-color: {C['SURFACE']};
-                color: {C['TEXT']}; selection-background-color: {C['ACCENT_DIM']}; }}
-        """)
         self._apply_policy(policy)
 
-    def _on_custom_unit_changed(self, index):
-        self._custom_value.setMaximum(365 if index == 1 else 8760)
+    def _set_custom_unit(self, index):
+        """切换自定义保留的单位（0=小时 / 1=天）。"""
+        self._custom_unit_index = 1 if index == 1 else 0
+        for i, btn in enumerate(self._unit_btns):
+            btn.setChecked(i == self._custom_unit_index)
+        self._custom_value.setMaximum(
+            365 if self._custom_unit_index == 1 else 8760)
 
     def _pick(self, key):
         self._preset = key
@@ -3188,10 +3261,10 @@ class _RetentionDialog(QDialog):
             else:
                 key = "custom"
                 if abs(hours % 24) < 0.001:
-                    self._custom_unit.setCurrentIndex(1)
+                    self._set_custom_unit(1)
                     self._custom_value.setValue(max(1, int(hours // 24)))
                 else:
-                    self._custom_unit.setCurrentIndex(0)
+                    self._set_custom_unit(0)
                     self._custom_value.setValue(max(1, int(hours)))
         elif mode == "expire":
             key = "expire"
@@ -3210,27 +3283,70 @@ class _RetentionDialog(QDialog):
                     "hours": {"1d": 24, "3d": 72, "7d": 168}[self._preset]}
         if self._preset == "custom":
             value = int(self._custom_value.value())
-            hours = value * 24 if self._custom_unit.currentIndex() == 1 else value
+            hours = value * 24 if self._custom_unit_index == 1 else value
             return {"mode": "age", "hours": hours}
         deadline = self._expire_edit.dateTime().toPyDateTime()
         return {"mode": "expire",
                 "expire_at": deadline.replace(second=0, microsecond=0).isoformat()}
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(3, 6, 10, 170))
+class _CustomSkinDialog(_CardOverlayDialog):
+    """自定义皮肤：底色 / 面板色 / 文字色 / 强调色。
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        QTimer.singleShot(0, self._sync_to_host)
+    与「历史保留策略」共用卡片式弹层（同一个基类），保证两处风格一致。
+    """
 
-    def _sync_to_host(self):
-        host = self._host
-        try:
-            if host is not None and host.isVisible():
-                self.setGeometry(host.frameGeometry())
-        except Exception:
-            pass
+    def __init__(self, owner, app, current):
+        super().__init__(owner, app, "◨", tr("skin_dlg_title"),
+                         tr("skin_dlg_hint"))
+        self.colors = dict(current)
+        lay = self._lay
+        for key, label_key in (("skin_custom_bg", "skin_dlg_bg"),
+                               ("skin_custom_surface", "skin_dlg_surface"),
+                               ("skin_custom_text", "skin_dlg_text"),
+                               ("skin_custom_accent", "skin_dlg_accent")):
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            name_lbl = QLabel(tr(label_key))
+            name_lbl.setObjectName("retSub")
+            name_lbl.setFixedWidth(64)
+            row.addWidget(name_lbl)
+            swatch = QPushButton(self.colors[key])
+            swatch.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            swatch.setMinimumWidth(160)
+            self._paint_swatch(swatch, self.colors[key])
+            swatch.clicked.connect(
+                lambda _, k=key, btn=swatch: self._pick_color(k, btn))
+            row.addWidget(swatch, 1)
+            lay.addLayout(row)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton(tr("btn_save"))
+        save.setObjectName("retSave")
+        save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        save.clicked.connect(self.accept)
+        buttons.addWidget(save)
+        lay.addLayout(buttons)
+
+    @staticmethod
+    def _paint_swatch(btn, color):
+        btn.setText(color)
+        btn.setStyleSheet(
+            f"background: {color}; color: "
+            f"{'#111111' if _luminance(color) > 0.5 else '#ffffff'};"
+            f" border: 1px solid {C['BORDER_LT']}; border-radius: 7px;"
+            f" padding: 8px 10px; font-weight: 600;")
+
+    def _pick_color(self, key, btn):
+        picked = QColorDialog.getColor(
+            QColor(self.colors[key]), self, tr("skin_dlg_pick"))
+        if picked.isValid():
+            self.colors[key] = picked.name()
+            self._paint_swatch(btn, self.colors[key])
 
 
 class _WatermarkFrame(QFrame):
@@ -5875,6 +5991,9 @@ class YouBoardApp(QMainWindow):
                 if (_flex_col is not None and col == _flex_col
                         and etype in ("all", "file")):
                     item.setData(_InlineImageDelegate.BADGE_ROLE, badge)
+                if (_flex_col is not None and col == _flex_col and is_pin):
+                    # 置顶的记录额外画一个主题色小胶囊，任何分类里都能一眼看出
+                    item.setData(_InlineImageDelegate.PIN_ROLE, tr("btn_pin"))
                 # 序号 / 时间 / 状态居中；数量·格式·尺寸·大小 这几个小列也跟着表头居中，
                 # 否则表头居中、数值左对齐，看上去就"没对上"
                 if col in (0, 1, 2) or (etype in ("image", "file") and col >= 4):
@@ -10002,71 +10121,11 @@ class SettingsDialog(QDialog):
         for key, default in _CUSTOM_SKIN_DEFAULTS.items():
             value = str(cfg.get(key, default) or default)
             current[key] = value if QColor(value).isValid() else default
-        dlg = QDialog(self)
-        dlg.setWindowTitle(tr("skin_dlg_title"))
-        dlg.setModal(True)
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(9)
-        title = QLabel(tr("skin_dlg_title"))
-        title.setStyleSheet(f"color: {C['TEXT']}; font-size: 13px; font-weight: bold;")
-        lay.addWidget(title)
-        hint = QLabel(tr("skin_dlg_hint"))
-        hint.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        hint.setWordWrap(True)
-        lay.addWidget(hint)
-        picks = {}
-        for key, label_key in (("skin_custom_bg", "skin_dlg_bg"),
-                               ("skin_custom_surface", "skin_dlg_surface"),
-                               ("skin_custom_text", "skin_dlg_text"),
-                               ("skin_custom_accent", "skin_dlg_accent")):
-            row = QHBoxLayout()
-            name_lbl = QLabel(tr(label_key))
-            name_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
-            name_lbl.setFixedWidth(70)
-            row.addWidget(name_lbl)
-            swatch = QPushButton(current[key])
-            swatch.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            swatch.setMinimumWidth(140)
-
-            def _paint_swatch(btn, color):
-                btn.setText(color)
-                btn.setStyleSheet(
-                    f"background: {color}; color: "
-                    f"{'#111111' if _luminance(color) > 0.5 else '#ffffff'};"
-                    f" border: 1px solid {C['BORDER_LT']}; border-radius: 6px;"
-                    f" padding: 6px 10px;")
-
-            _paint_swatch(swatch, current[key])
-
-            def _pick(btn=swatch, cfg_key=key):
-                picked = QColorDialog.getColor(
-                    QColor(current[cfg_key]), dlg, tr("skin_dlg_pick"))
-                if picked.isValid():
-                    current[cfg_key] = picked.name()
-                    _paint_swatch(btn, current[cfg_key])
-
-            swatch.clicked.connect(_pick)
-            row.addWidget(swatch, 1)
-            lay.addLayout(row)
-            picks[key] = swatch
-        btns = QHBoxLayout()
-        btns.addStretch()
-        cancel = QPushButton(tr("btn_cancel"))
-        cancel.clicked.connect(dlg.reject)
-        btns.addWidget(cancel)
-        ok = QPushButton(tr("btn_save"))
-        ok.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        ok.setStyleSheet(
-            f"background: {C['ACCENT']}; color: {_on_accent_color()}; "
-            f"font-weight: bold; border-radius: 6px; padding: 7px 16px;")
-        ok.clicked.connect(dlg.accept)
-        btns.addWidget(ok)
-        lay.addLayout(btns)
+        dlg = _CustomSkinDialog(self, self.app, current)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         cfg = load_config()
-        for key, value in current.items():
+        for key, value in dlg.colors.items():
             cfg[key] = value
         save_config(cfg)
         self._theme_sel = CUSTOM_SKIN_ID
