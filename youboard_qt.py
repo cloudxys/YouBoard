@@ -5666,7 +5666,8 @@ class YouBoardApp(QMainWindow):
         row = QHBoxLayout(holder)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(6)
-        row.addStretch()
+        # 同「文件」细分那排：行尾留白显式给 stretch，否则宽窗口下胶囊会被摊开
+        row.addStretch(1)
         holder.setVisible(False)
         lay.addWidget(holder)
         self._filter_rows[etype] = (holder, row)
@@ -5745,7 +5746,7 @@ class YouBoardApp(QMainWindow):
                     lambda _, t=tag: self._toggle_tag_filter(t))
                 row.addWidget(chip)
                 self._tag_chips[etype][tag.lower()] = (tag, chip)
-            row.addStretch()
+            row.addStretch(1)
         active = (self._tag_filter or "").lower()
         fav_chip = self._fav_chips.get(etype)
         if fav_chip is not None:
@@ -5880,7 +5881,10 @@ class YouBoardApp(QMainWindow):
                 chip.clicked.connect(lambda _, k=key: self._set_file_kind(k))
                 kind_row.addWidget(chip)
                 self._file_kind_btns[key] = chip
-                kind_row.addStretch()
+            # 行尾留白必须显式给 stretch：只写 addStretch()（stretch=0）时，
+            # 窗口一拉宽，多出来的宽度会被平均摊到各个胶囊之间，
+            # 看上去就"分类排得太开"了
+            kind_row.addStretch(1)
             lay.addLayout(kind_row)
 
         # 标签 / 收藏筛选行：贴着列表，有标签或收藏时才出现

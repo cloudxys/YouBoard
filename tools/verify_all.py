@@ -366,6 +366,8 @@ def test_gui():
     check("tags: sample entry available", fav_target is not None)
     store.set_tags(fav_target["hash"], ["回归标签"])
     store.set_fav(fav_target["hash"], True)
+    # 用户自己的历史里可能本来就有收藏，所以按"基线 + 本次新增"来断言
+    fav_expected = store.fav_count()
     win._refresh_all()
     for _ in range(6):
         app.processEvents()
@@ -375,7 +377,8 @@ def test_gui():
                              win._tag_chips["all"].values()],
           str(list(win._tag_chips["all"].keys())))
     check("tags: fav chip count", fav_chip is not None
-          and fav_chip.text().endswith("1"), fav_chip.text() if fav_chip else "")
+          and fav_chip.text().endswith(str(fav_expected)),
+          "%s (want %s)" % (fav_chip.text() if fav_chip else "", fav_expected))
     rows_all = all_table.rowCount()
     win._toggle_fav_filter()
     for _ in range(6):
@@ -412,6 +415,44 @@ def test_gui():
     check("tags: star drawn vectorially",
           not yq._star_pixmap(13).isNull()
           and yq._star_pixmap(13, filled=False).isNull() is False)
+
+    # ---- 分类 / 标签胶囊行：窗口拉宽后不能被摊开（行尾留白要显式 stretch） ----
+    def chip_gaps(btns):
+        xs = sorted((c.geometry().x(), c.geometry().right())
+                    for c in btns if c.isVisible())
+        return [xs[i + 1][0] - xs[i][1] - 1 for i in range(len(xs) - 1)]
+
+    _mp4 = os.path.join(tmp, "regression_clip.mp4")
+    with open(_mp4, "wb") as fh:
+        fh.write(b"\x00" * 128)
+    store.add_files([_mp4], "regression-video-hash")
+    store.set_tags(fav_target["hash"], ["回归标签", "第二个"])
+    win._refresh_all()
+    file_idx = yq.TAB_TYPES.index("file")
+    widths_seen = {}
+    for width in (1180, 1500):
+        win.resize(width, 780)
+        for _ in range(10):
+            app.processEvents()
+        win._tabs.setCurrentIndex(file_idx)
+        for _ in range(10):
+            app.processEvents()
+        widths_seen[width] = chip_gaps(list(win._file_kind_btns.values()))
+    kind_gaps = widths_seen[1500]
+    check("file kind chips stay packed",
+          len(kind_gaps) >= 2 and all(g == 6 for g in kind_gaps)
+          and kind_gaps == widths_seen[1180], str(widths_seen))
+    win._tabs.setCurrentIndex(yq.TAB_TYPES.index("text"))
+    for _ in range(10):
+        app.processEvents()
+    fav_and_tags = [win._fav_chips["text"]] + [c for _t, c in
+                                               win._tag_chips["text"].values()]
+    tag_gaps = chip_gaps(fav_and_tags)
+    check("tag filter chips stay packed",
+          len(tag_gaps) >= 2 and all(g == 6 for g in tag_gaps), str(tag_gaps))
+    win.resize(1200, 760)      # 还原窗口尺寸，后面的用例不受影响
+    for _ in range(6):
+        app.processEvents()
     store.set_fav(fav_target["hash"], False)
     store.set_tags(fav_target["hash"], [])
     win._refresh_all()
