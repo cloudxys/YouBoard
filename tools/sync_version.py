@@ -18,6 +18,13 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+# CI（尤其 Windows runner）默认输出编码不是 UTF-8，打印中文会抛 UnicodeEncodeError
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import youboard_version  # noqa: E402  （必须在插入路径之后导入）
 
 VERSION = youboard_version.APP_VERSION

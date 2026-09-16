@@ -227,6 +227,22 @@ def test_gui():
 
     app = yq.QApplication(sys.argv)
     store = yq.ClipboardStore()
+    # CI 上没有用户历史（.youboard.json 不进仓库），这里自造样本数据，
+    # 否则列表是空的，"列对齐 / 类型标记"这些断言无从测起。
+    if store.count() == 0:
+        store.add_text("YouBoard 回归测试文本\n第二行内容，用来检查内容列与表头对齐。")
+        store.add_url("https://github.com/cloudxys/YouBoard")
+        _f = os.path.join(tmp, "回归测试文件.txt")
+        with open(_f, "w", encoding="utf-8") as fh:
+            fh.write("regression sample")
+        store.add_files([_f], "regression-file-hash")
+        try:
+            from PIL import Image as _PILImage
+            _pic = _PILImage.new("RGB", (64, 48), (30, 120, 200))
+            store.add_image(_pic, store._image_hash(_pic), "sample.png")
+        except Exception:
+            pass
+        store.flush()
     win = yq.YouBoardApp(store, None)
     win.resize(1200, 760)
     win.show()
