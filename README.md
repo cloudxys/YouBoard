@@ -33,9 +33,9 @@
 
 ## 📥 下载安装
 
-- **安装版（推荐）**：`YouBoard_Setup_v3.2.7.exe` —— 双击安装，自动创建快捷方式与卸载程序；覆盖安装保留全部数据（历史 / 配置 / 背景 / 快捷键 / 标签收藏 / AI 设置）
+- **安装版（推荐）**：`YouBoard_Setup_v3.2.8.exe` —— 双击安装，自动创建快捷方式与卸载程序；覆盖安装保留全部数据（历史 / 配置 / 背景 / 快捷键 / 标签收藏 / AI 设置）
 - **便携版**：`YouBoard.exe` —— 放到任意目录双击运行，数据存在 EXE 同目录
-- **macOS**：`YouBoard_macOS_arm64_v3.2.7.dmg` / `.zip`（Apple Silicon）、`YouBoard_macOS_x86_64_v3.2.7.dmg` / `.zip`（Intel）
+- **macOS**：`YouBoard_macOS_arm64_v3.2.8.dmg` / `.zip`（Apple Silicon）、`YouBoard_macOS_x86_64_v3.2.8.dmg` / `.zip`（Intel）
 - 卸载时可选择是否保留本地数据，方便换机后继续用
 
 👉 [前往 Releases 下载](https://github.com/cloudxys/YouBoard/releases)

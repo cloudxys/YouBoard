@@ -32,6 +32,8 @@ AI_MAX_INPUT_CHARS = 24000
 AI_DEFAULT_MAX_TOKENS = 1200
 AI_DEFAULT_TIMEOUT = 60
 AI_DEFAULT_RETRIES = 2
+# 多轮对话只带最近这么多轮（一问一答算一轮），避免 token 越滚越多
+AI_CHAT_MAX_TURNS = 6
 AI_ACTIONS = ("summarize", "translate", "rewrite", "extract", "custom")
 # 设置里的服务商展示顺序：国内能直连的放前面
 AI_PROVIDER_ORDER = ("deepseek", "dashscope", "zhipu", "openai", "ollama",
@@ -42,10 +44,11 @@ PROVIDERS = {
     "deepseek": {
         "zh": "DeepSeek 官方（国内直连）",
         "en": "DeepSeek",
-        "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-v4-flash",
-        "models": ["deepseek-v4-flash", "deepseek-v4-pro",
-                   "deepseek-v4.1-flash", "deepseek-v4-pro-0813"],
+        # 官方「模型 & 价格」页：BASE URL (OpenAI 格式) = https://api.deepseek.com
+        # 模型 id：deepseek-flash（= DeepSeek-V4.1-Flash）、deepseek-v4-pro（= V4-Pro-0813）
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-flash",
+        "models": ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-pro-0813"],
         "needs_key": True,
     },
     "dashscope": {
@@ -299,6 +302,16 @@ AI_ACTION_PROMPT = {
 
 AI_BLOCK = {"zh": ("----- 内容开始 -----", "----- 内容结束 -----"),
             "en": ("----- BEGIN CONTENT -----", "----- END CONTENT -----")}
+
+# 自由对话：把选中的记录作为参考资料，之后用户问什么答什么
+AI_CHAT_CONTEXT = {
+    "zh": "下面是我从剪贴板里复制的一条记录，作为这次对话的参考资料。"
+          "接下来我会继续提问，请结合它回答；回答直接给结果，不要寒暄。\n\n"
+          "{begin}\n{body}\n{end}",
+    "en": "Below is an entry I copied to my clipboard. Use it as reference "
+          "for this conversation. I will keep asking questions — answer with "
+          "the result only, no greetings.\n\n{begin}\n{body}\n{end}",
+}
 AI_TARGET = {"zh": {"zh": "简体中文", "en": "英文"},
              "en": {"zh": "Simplified Chinese", "en": "English"}}
 
@@ -352,6 +365,33 @@ def prepare_request(action, text, settings=None, custom_prompt="", lang="zh"):
 
 def build_messages(action, text, settings=None, **kw):
     return prepare_request(action, text, settings, **kw)["messages"]
+
+
+def prepare_chat_context(text, settings=None, lang="zh"):
+    """对话模式的上下文消息：system + 「这条记录作为参考资料」。"""
+    lang = "en" if str(lang or "").lower().startswith("en") else "zh"
+    body, truncated = truncate_text(text, AI_MAX_INPUT_CHARS)
+    begin, end = AI_BLOCK[lang]
+    user = AI_CHAT_CONTEXT[lang].format(begin=begin, body=body, end=end)
+    return {
+        "messages": [{"role": "system", "content": AI_SYSTEM[lang]},
+                     {"role": "user", "content": user}],
+        "truncated": truncated,
+        "sent_chars": len(body),
+        "total_chars": len(text or ""),
+    }
+
+
+def build_chat_messages(context_messages, history, user_text,
+                        max_turns=AI_CHAT_MAX_TURNS):
+    """多轮对话请求：上下文 + 最近若干轮 + 本次提问（限制轮数，token 才可控）。"""
+    msgs = list(context_messages or [])
+    turns = list(history or [])
+    if max_turns and max_turns > 0:
+        turns = turns[-2 * int(max_turns):]
+    msgs.extend(turns)
+    msgs.append({"role": "user", "content": user_text or ""})
+    return msgs
 
 
 # ===========================================================================

@@ -114,6 +114,7 @@ from youboard_ai import (
     AIClient, AIError, AI_ACTIONS, AI_MAX_INPUT_CHARS, AI_PROVIDER_ORDER,
     PROVIDERS, ai_text, load_ai_settings, save_ai_settings, provider_label,
     provider_info, prepare_request, default_ai_settings,
+    prepare_chat_context, build_chat_messages, AI_CHAT_MAX_TURNS,
 )
 # 版本号唯一来源：youboard_version.py（改版本只改那一个文件）
 from youboard_version import APP_NAME, APP_VERSION
@@ -1546,6 +1547,19 @@ STRINGS = {
         "set_ai_key_saved": "Key 已保存", "set_ai_key_missing": "未填 Key",
         "set_ai_unset": "还没配置",
         "hk_ai": "AI 处理（总结）",
+        # AI 对话 + 导出 TXT
+        "ai_menu_chat": "和 AI 聊聊…",
+        "ai_chat_title": "和 AI 聊聊",
+        "ai_chat_sub": "已把选中的这条记录作为上下文（模型：{model}）",
+        "ai_chat_intro": "已把这条记录作为上下文，下面直接提问就行。\n"
+                         "例如：这段内容里有哪些需要我跟进的？帮我写一条回复？",
+        "ai_chat_placeholder": "和 AI 说点什么…（回车发送）",
+        "ai_chat_send": "发送",
+        "ai_chat_me": "你：{text}\n",
+        "ai_chat_ai": "AI：",
+        "ai_chat_hint": "多轮对话只带最近 {n} 轮，不会把整段历史都发出去。",
+        "ai_btn_export": "导出 TXT",
+        "msg_export_failed": "导出失败：{err}",
         "btn_delete": "删除  Del", "btn_export": "导出", "btn_open": "打开  双击",
         "col_time": "时间", "col_preview": "内容预览", "col_filename": "文件名",
         "col_format": "格式", "col_dims": "尺寸", "col_size": "大小",
@@ -1931,6 +1945,19 @@ STRINGS = {
         "set_ai_key_saved": "key saved", "set_ai_key_missing": "no key",
         "set_ai_unset": "Not configured",
         "hk_ai": "AI actions (summarize)",
+        # AI chat + TXT export
+        "ai_menu_chat": "Chat with AI…",
+        "ai_chat_title": "Chat with AI",
+        "ai_chat_sub": "The selected entry is used as context (model: {model})",
+        "ai_chat_intro": "This entry is the context — just ask below.\n"
+                         "e.g. What should I follow up on here? Draft a reply.",
+        "ai_chat_placeholder": "Say something to the AI… (Enter to send)",
+        "ai_chat_send": "Send",
+        "ai_chat_me": "You: {text}\n",
+        "ai_chat_ai": "AI: ",
+        "ai_chat_hint": "Only the last {n} turns are sent, so tokens stay bounded.",
+        "ai_btn_export": "Export TXT",
+        "msg_export_failed": "Export failed: {err}",
         "btn_delete": "Delete  Del", "btn_export": "Export", "btn_open": "Open  Dbl-click",
         "col_time": "Time", "col_preview": "Preview", "col_filename": "Filename",
         "col_format": "Format", "col_dims": "Dimensions", "col_size": "Size",
@@ -3339,6 +3366,14 @@ class _CardOverlayDialog(QDialog):
                 self.setGeometry(host.frameGeometry())
         except Exception:
             pass
+        # 弹层会铺满宿主（主窗口最大化时就是整屏）。桌面小组件是独立的置顶窗口，
+        # 如果不重新抬一次，新的置顶弹层会排在它前面，把小组件整个盖住（点不到、没法复制）。
+        try:
+            desk = getattr(host, "_desk_widget", None)
+            if desk is not None and desk.isVisible():
+                desk.raise_()
+        except Exception:
+            pass
 
 
 class _RetentionDialog(_CardOverlayDialog):
@@ -3985,21 +4020,33 @@ class _AIDialog(_CardOverlayDialog):
     CARD_WIDTH = 760
 
     def __init__(self, owner, app, entry, action, client=None,
-                 custom_prompt="", lang=None):
+                 custom_prompt="", lang=None, chat=False):
         self._app = app
         self._entry = entry or {}
         self._action = action if action in AI_ACTIONS else "summarize"
         self._custom = custom_prompt or ""
         self._lang = lang or LANG
+        self._chat = bool(chat)
         self._settings = load_ai_settings()
         self._client = client or AIClient(self._settings, self._lang)
         self._worker = None
         self._result = ""
-        action_lbl = tr("ai_act_" + self._action)
+        self._history = []            # 对话模式：一问一答
+        self._context = []            # 对话模式：上下文消息
+        self._transcript = ""         # 对话模式：整段对话（导出用）
+        self._answer_start = 0        # 最近一次回答在 transcript 里的起点
+        action_lbl = tr("ai_chat_title") if self._chat \
+            else tr("ai_act_" + self._action)
         model = str(self._settings.get("model") or "").strip()
-        subtitle = ("%s · %s" % (action_lbl, tr("ai_model", model=model))
-                    if model else action_lbl)
-        super().__init__(owner, app, "✦", tr("ai_title"), subtitle)
+        if self._chat:
+            subtitle = (tr("ai_chat_sub", model=model) if model
+                        else tr("ai_chat_title"))
+        else:
+            subtitle = ("%s · %s" % (action_lbl, tr("ai_model", model=model))
+                        if model else action_lbl)
+        super().__init__(owner, app, "✦",
+                         tr("ai_chat_title") if self._chat else tr("ai_title"),
+                         subtitle)
         self._need_config = bool(self._client.config_problem())
 
         lay = self._lay
@@ -4016,6 +4063,23 @@ class _AIDialog(_CardOverlayDialog):
         self._status.setObjectName("retNote")
         self._status.setWordWrap(True)
         lay.addWidget(self._status)
+
+        # 对话模式：一个输入框 + 发送（回车也能发）
+        self._input = QLineEdit()
+        self._input.setPlaceholderText(tr("ai_chat_placeholder"))
+        self._input.returnPressed.connect(self._send_chat)
+        self._send_btn = QPushButton(tr("ai_chat_send"))
+        self._send_btn.setObjectName("retSave")
+        self._send_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._send_btn.clicked.connect(self._send_chat)
+        self._input_row = QWidget()
+        _ir = QHBoxLayout(self._input_row)
+        _ir.setContentsMargins(0, 0, 0, 0)
+        _ir.setSpacing(8)
+        _ir.addWidget(self._input, 1)
+        _ir.addWidget(self._send_btn)
+        self._input_row.setVisible(self._chat)
+        lay.addWidget(self._input_row)
 
         top = QHBoxLayout()
         top.setSpacing(8)
@@ -4039,18 +4103,21 @@ class _AIDialog(_CardOverlayDialog):
         self._copy_btn = QPushButton(tr("ai_btn_copy"))
         self._save_btn = QPushButton(tr("ai_btn_save"))
         self._replace_btn = QPushButton(tr("ai_btn_replace"))
+        self._export_btn = QPushButton(tr("ai_btn_export"))
         self._close_btn = QPushButton(tr("ai_btn_close"))
         for btn in (self._copy_btn, self._save_btn, self._replace_btn,
-                    self._close_btn):
+                    self._export_btn, self._close_btn):
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self._copy_btn.setObjectName("retSave")
         self._copy_btn.clicked.connect(self._use_result_copy)
         self._save_btn.clicked.connect(self._use_result_save)
         self._replace_btn.clicked.connect(self._use_result_replace)
+        self._export_btn.clicked.connect(self._export_txt)
         self._close_btn.clicked.connect(self.reject)
         bottom.addWidget(self._copy_btn)
         bottom.addWidget(self._save_btn)
         bottom.addWidget(self._replace_btn)
+        bottom.addWidget(self._export_btn)
         bottom.addWidget(self._close_btn)
         lay.addLayout(bottom)
 
@@ -4061,16 +4128,27 @@ class _AIDialog(_CardOverlayDialog):
             self._out.setPlainText(tr("ai_need_config"))
             self._status.setText(ai_text(self._client.config_problem(),
                                          self._lang))
+        elif self._chat:
+            # 对话模式：先把上下文准备好，等用户提问
+            self._out.setPlainText(tr("ai_chat_intro"))
+            self._status.setText(tr("ai_chat_hint", n=AI_CHAT_MAX_TURNS))
+            QTimer.singleShot(0, self._prepare_chat)
         else:
             QTimer.singleShot(0, self._start_request)
 
     # ---- 按钮状态 ----
     def _sync_buttons(self, running=False):
         has_result = bool(self._result.strip())
+        has_export = bool((self._transcript if self._chat
+                           else self._result).strip())
         self._stop_btn.setVisible(running)
         self._stop_btn.setEnabled(running)
         self._retry_btn.setEnabled(not running)
         self._cfg_btn.setVisible(self._need_config)
+        self._export_btn.setEnabled(has_export)
+        if self._chat:
+            self._send_btn.setEnabled(not running)
+            self._input.setEnabled(not running)
         for btn in (self._copy_btn, self._save_btn, self._replace_btn):
             btn.setEnabled(has_result and not running)
 
@@ -4107,23 +4185,50 @@ class _AIDialog(_CardOverlayDialog):
             self._worker.cancel()
             self._worker.wait(3000)
         self._worker = None
-        self._start_request()
+        if not self._chat:
+            self._start_request()
+            return
+        # 对话模式：去掉上一条回答，重发最后一条提问
+        while self._history and self._history[-1]["role"] == "assistant":
+            self._history.pop()
+        if not self._history or self._history[-1]["role"] != "user":
+            return
+        last = self._history.pop()["content"]
+        self._transcript = self._transcript[:self._answer_start]
+        self._out.setPlainText(self._transcript)
+        self._send_chat_text(last, echo=False)
 
     def _stop(self):
         if self._worker is not None and self._worker.isRunning():
             self._worker.cancel()
 
     def _on_delta(self, chunk):
-        if not self._result:
+        if not self._result and not self._chat:
             self._set_body("")          # 第一段增量到了，先把「正在生成…」清掉
         self._result += chunk
-        self._out.moveCursor(QTextCursor.MoveOperation.End)
-        self._out.insertPlainText(chunk)
-        self._out.moveCursor(QTextCursor.MoveOperation.End)
+        if self._chat:
+            self._append_raw(chunk)
+        else:
+            self._out.moveCursor(QTextCursor.MoveOperation.End)
+            self._out.insertPlainText(chunk)
+            self._out.moveCursor(QTextCursor.MoveOperation.End)
 
     def _on_done(self, ok, message):
         self._worker = None
         text = self._result
+        if self._chat:
+            if text.strip():
+                self._history.append({"role": "assistant", "content": text})
+                self._append_raw("\n")
+                self._status.setText(tr("ai_done", n=len(text)))
+            elif not ok:
+                self._append_raw("\n" + message + "\n")
+                self._status.setText(message)
+            else:
+                self._append_raw("\n")
+                self._status.setText("")
+            self._sync_buttons(running=False)
+            return
         if text.strip():
             self._set_body(text)
         if ok:
@@ -4134,6 +4239,80 @@ class _AIDialog(_CardOverlayDialog):
             self._set_body(message, error=True)
             self._status.setText("")
         self._sync_buttons(running=False)
+
+    # ---- 自由对话 ----
+    def _append_raw(self, text):
+        """把文字追加到对话记录区（同时镜像一份纯文本，导出 TXT 用）。"""
+        if not text:
+            return
+        self._transcript += text
+        self._out.moveCursor(QTextCursor.MoveOperation.End)
+        self._out.insertPlainText(text)
+        self._out.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _prepare_chat(self):
+        """准备上下文（只发这一条记录 + 后续提问）。"""
+        request = prepare_chat_context(entry_full_text(self._entry),
+                                       self._settings, self._lang)
+        self._context = request["messages"]
+        if request["truncated"]:
+            self._status.setText(
+                ai_text("truncated", self._lang, n=request["sent_chars"]))
+
+    def _send_chat(self):
+        if not self._chat:
+            return
+        text = self._input.text().strip()
+        if not text:
+            return
+        self._input.clear()
+        self._send_chat_text(text)
+
+    def _send_chat_text(self, text, echo=True):
+        if self._worker is not None and self._worker.isRunning():
+            return
+        if self._client.config_problem():
+            self._need_config = True
+            self._sync_buttons()
+            return
+        if not self._context:
+            self._prepare_chat()
+        if echo:
+            self._append_raw(tr("ai_chat_me", text=text))
+        self._history.append({"role": "user", "content": text})
+        messages = build_chat_messages(self._context, self._history[:-1], text)
+        self._start_chat_turn(messages)
+
+    def _start_chat_turn(self, messages):
+        self._result = ""
+        self._answer_start = len(self._transcript)
+        self._append_raw(tr("ai_chat_ai"))
+        self._worker = _AIWorker(self._client, messages, self)
+        self._worker.delta.connect(self._on_delta)
+        self._worker.done.connect(self._on_done)
+        self._sync_buttons(running=True)
+        self._worker.start()
+
+    # ---- 导出 TXT（与「文本」分类的导出同一套做法） ----
+    def _export_txt(self):
+        text = (self._transcript if self._chat else self._result) or ""
+        if not text.strip():
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("ai_btn_export"), "",
+            f"{tr('ft_text')} (*.txt);;{tr('ft_all')} (*.*)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+        except Exception as ex:
+            _info_card(self, tr("dlg_error"),
+                       tr("msg_export_failed", err=ex), kind="warning")
+            return
+        _info_card(self, tr("ai_btn_export"),
+                   tr("st_exported", name=os.path.basename(path)),
+                   kind="latest")
 
     # ---- 结果落点 ----
     def _use_result_copy(self):
@@ -4161,7 +4340,11 @@ class _AIDialog(_CardOverlayDialog):
         self._need_config = bool(self._client.config_problem())
         self._sync_buttons()
         if not self._need_config:
-            self._start_request()
+            if self._chat:
+                self._context = []
+                self._prepare_chat()
+            else:
+                self._start_request()
 
     # ---- 关掉弹层时收线程，别把请求甩到后台 ----
     def _shutdown_worker(self):
@@ -4754,6 +4937,13 @@ def _refresh_cursor_under_mouse(widget=None):
         w = widget if widget is not None else _widget_under_cursor()
         if w is None or isinstance(w, (_EdgeHandle, _CornerHandle, _ResizeGrip)):
             return
+        # 桌面小组件靠"贴边=缩放箭头"表达可缩放，它自己设的缩放光标不能被这里清掉
+        # （以前鼠标一经过小组件，光标刚变成缩放箭头就被这里 unsetCursor 弹回默认箭头）
+        try:
+            if isinstance(w.window(), DesktopClipboardWidget):
+                return
+        except Exception:
+            pass
         shape = w.cursor().shape()
         if shape in (Qt.CursorShape.SizeHorCursor, Qt.CursorShape.SizeVerCursor,
                      Qt.CursorShape.SizeFDiagCursor,
@@ -8111,6 +8301,7 @@ class YouBoardApp(QMainWindow):
                           lambda a=act: self._run_ai(a))
         sub.addSeparator()
         sub.addAction(tr("ai_act_custom"), self._run_ai_custom)
+        sub.addAction(tr("ai_menu_chat"), self._run_ai_chat)
         menu.addMenu(sub)
         return sub
 
@@ -8142,6 +8333,13 @@ class YouBoardApp(QMainWindow):
         prompt = ask.prompt_text()
         if prompt:
             self._run_ai("custom", prompt)
+
+    def _run_ai_chat(self):
+        """和 AI 自由对话：把选中的这条记录作为上下文，之后问什么都行。"""
+        entry = self._ai_target_entry()
+        if entry is None:
+            return
+        _AIDialog(self, self, entry, "summarize", chat=True).exec()
 
     def _ai_result_copy(self, text):
         """把 AI 结果复制到剪贴板（必须标记 self-copy，否则会被再收录一条）。"""
@@ -10888,8 +11086,13 @@ class SettingsDialog(QDialog):
         # 窗口级模态：设置窗口只挡住宿主窗口，桌面小组件照样能点、能复制
         # （应用级模态会禁用整个程序的所有窗口，包括小组件）
         self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.resize(620 if LANG == "en" else 500, 740)
-        self.setMinimumSize(560 if LANG == "en" else 460, 560)
+        # 尺寸收敛到"正常窗口"大小：不超屏幕可用区，也能缩到更小
+        _avail = QApplication.primaryScreen().availableGeometry()
+        _w = 600 if LANG == "en" else 480
+        _h = 660
+        self.resize(min(_w, max(360, _avail.width() - 120)),
+                    min(_h, max(360, _avail.height() - 120)))
+        self.setMinimumSize(420, 420)
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
 
@@ -11314,11 +11517,54 @@ class SettingsDialog(QDialog):
 
     def _refresh_button_cursors(self):
         """滚动区按钮手型光标刷新：修复 Qt 滚动区在鼠标静止时
-        滚动内容不更新子控件光标的问题（只重新设置原本就是手型的按钮）。"""
-        for btn in self.findChildren(QPushButton):
-            if btn.cursor().shape() != Qt.CursorShape.ArrowCursor:
-                btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        滚动内容不更新子控件光标的问题。
 
+        以前这里只处理"已经是手型"的按钮，从没设过光标的按钮（例如「打开同步窗口」）
+        会一直是箭头光标，表现就是"只有从下往上扫过才变手型"。现在统一补齐。
+        """
+        _apply_hand_cursor(self)
+
+    def _live_cursor_refresh(self, widget=None):
+        """定时按鼠标位置补一次手型光标。
+
+        Qt 只在该子控件收到进入事件时才更新光标；鼠标不动、内容滚过来、
+        或者从别处移进来时，鼠标下面的按钮常常仍是箭头（用户看到的就是
+        "从上往下扫没有手型，只有从下往上才有"）。这里直接按位置算，
+        并用 override 光标强制生效——实测只有这样系统光标才会立刻跟着变。
+        """
+        if widget is not None:
+            w = widget
+        else:
+            try:
+                w = _widget_under_cursor()
+            except Exception:
+                w = None
+        want_hand = (isinstance(w, (QPushButton, QCheckBox, QComboBox))
+                     and w.isEnabled())
+        if want_hand:
+            if not getattr(self, "_cursor_override_on", False):
+                QApplication.setOverrideCursor(
+                    QCursor(Qt.CursorShape.PointingHandCursor))
+                self._cursor_override_on = True
+        else:
+            self._clear_cursor_override()
+
+    def _clear_cursor_override(self):
+        """只撤掉自己设的那个手型覆盖光标，别动别人设的。"""
+        if getattr(self, "_cursor_override_on", False):
+            self._cursor_override_on = False
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+
+    def _start_cursor_timer(self):
+        timer = getattr(self, "_cursor_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.timeout.connect(self._live_cursor_refresh)
+            self._cursor_timer = timer
+        timer.start(150)
     def _force_cursor_refresh(self):
         """兜底光标刷新（只刷新按钮自己的手型光标，不再把缩放箭头钉到子控件上）。"""
         _apply_hand_cursor(self)
@@ -11327,6 +11573,14 @@ class SettingsDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         self._refresh_button_cursors()
+        self._start_cursor_timer()
+
+    def hideEvent(self, event):
+        timer = getattr(self, "_cursor_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._clear_cursor_override()
+        super().hideEvent(event)
 
     def _live_refresh(self):
         try:

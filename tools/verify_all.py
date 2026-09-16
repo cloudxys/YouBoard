@@ -376,6 +376,29 @@ def test_ai():
           == "need_base_url"
           and ai.AIClient({"base_url": base, "model": "m"}).config_problem()
           == "need_key")
+    # v3.2.8：内置服务商预设（按各家官方文档核对）
+    check("ai presets",
+          ai.PROVIDERS["deepseek"]["base_url"] == "https://api.deepseek.com"
+          and ai.PROVIDERS["deepseek"]["model"] == "deepseek-flash"
+          and ai.PROVIDERS["dashscope"]["base_url"].endswith(
+              "/compatible-mode/v1")
+          and ai.PROVIDERS["zhipu"]["base_url"].endswith("/api/paas/v4")
+          and ai.PROVIDERS["openai"]["base_url"].endswith("/v1")
+          and ai.PROVIDERS["ollama"]["base_url"].startswith(
+              "http://localhost"))
+    # v3.2.8：自由对话的消息组装（上下文 + 多轮 + 轮数上限）
+    ctx = ai.prepare_chat_context("剪贴板里的原始内容")
+    check("ai chat context", len(ctx["messages"]) == 2
+          and "剪贴板里的原始内容" in ctx["messages"][1]["content"])
+    hist = []
+    for i in range(10):
+        hist += [{"role": "user", "content": "u%d" % i},
+                 {"role": "assistant", "content": "a%d" % i}]
+    msgs = ai.build_chat_messages(ctx["messages"], hist, "now")
+    check("ai chat trims history",
+          len(msgs) == 2 + 2 * ai.AI_CHAT_MAX_TURNS + 1
+          and msgs[-1]["content"] == "now"
+          and msgs[-2]["role"] == "assistant", str(len(msgs)))
     server.shutdown()
 
     # 用 AI 结果"替换本条"：正文换掉但标签 / 收藏 / 位置都在
@@ -746,8 +769,9 @@ def test_gui():
                                  {"mode": "forever"}).card.styleSheet())
     check("ai: provider pills", len(cfg_dlg._prov_btns) == 6)
     check("ai: settings defaults",
-          cfg_dlg._base.text() == "https://api.deepseek.com/v1"
-          and cfg_dlg._model.text() == "deepseek-v4-flash")
+          cfg_dlg._base.text() == "https://api.deepseek.com"
+          and cfg_dlg._model.text() == "deepseek-flash",
+          "%s / %s" % (cfg_dlg._base.text(), cfg_dlg._model.text()))
     check("ai: settings key hidden",
           cfg_dlg._key.echoMode() == yq.QLineEdit.EchoMode.Password)
     cfg_dlg._pick_provider("ollama")
@@ -779,6 +803,114 @@ def test_gui():
     sdlg.close()
     check("ai: hotkey default", yq._ACTION_HOTKEY_DEFAULTS.get("hk_ai")
           == "ctrl+i")
+
+    # ---- v3.2.8：AI 自由对话（多轮）+ 导出 TXT ----
+    chat_client = _FakeAI(chunks=("答", "复"))
+    chat_dlg = yq._AIDialog(win, win, ai_entry, "summarize",
+                            client=chat_client, chat=True)
+    chat_dlg.show()
+    for _ in range(4):
+        app.processEvents()
+    check("ai chat: input row shown", chat_dlg._input_row.isVisible())
+    check("ai chat: waits for the user", chat_client.calls == [])
+    check("ai chat: submenu entry", yq.tr("ai_menu_chat") != ""
+          and hasattr(win, "_run_ai_chat"))
+    chat_dlg._input.setText("帮我把时间点列出来")
+    chat_dlg._send_chat()
+    for _ in range(4):
+        app.processEvents()
+    _wait_ai(chat_dlg)
+    chat_text = chat_dlg._out.toPlainText()
+    check("ai chat: transcript shows Q and A",
+          "帮我把时间点列出来" in chat_text and "答复" in chat_text,
+          chat_text[:40].replace("\n", " / "))
+    check("ai chat: entry sent as context",
+          bool(chat_client.calls)
+          and ai_entry["content"] in chat_client.calls[0][1]["content"])
+    chat_dlg._input.setText("再短一点")
+    chat_dlg._send_chat()
+    for _ in range(4):
+        app.processEvents()
+    _wait_ai(chat_dlg)
+    check("ai chat: second turn carries history",
+          [m["role"] for m in chat_client.calls[-1]][-3:]
+          == ["user", "assistant", "user"],
+          str([m["role"] for m in chat_client.calls[-1]]))
+    chat_dlg._restart()
+    for _ in range(4):
+        app.processEvents()
+    _wait_ai(chat_dlg)
+    check("ai chat: regenerate reuses question",
+          chat_client.calls[-1][-1]["content"] == "再短一点")
+    chat_file = os.path.join(tmp, "ai_chat_export.txt")
+    _orig_save = yq.QFileDialog.getSaveFileName
+    _orig_card_fn = yq._info_card
+    yq.QFileDialog.getSaveFileName = staticmethod(
+        lambda *a, **k: (chat_file, "txt"))
+    yq._info_card = lambda *a, **k: None
+    try:
+        chat_dlg._export_btn.setEnabled(True)
+        chat_dlg._export_txt()
+        for _ in range(3):
+            app.processEvents()
+    finally:
+        yq.QFileDialog.getSaveFileName = _orig_save
+        yq._info_card = _orig_card_fn
+    exported = ""
+    if os.path.exists(chat_file):
+        exported = open(chat_file, encoding="utf-8").read()
+    check("ai chat: export txt wrote conversation",
+          "你：" in exported and "再短一点" in exported, exported[:40])
+    chat_dlg.close()
+    for _ in range(3):
+        app.processEvents()
+
+    # ---- v3.2.8：设置窗口尺寸 / 光标兜底 / 弹层抬小组件 ----
+    _avail = yq.QApplication.primaryScreen().availableGeometry()
+    s_probe = yq.SettingsDialog(win)
+    check("settings: size sane",
+          s_probe.width() <= max(360, _avail.width() - 120)
+          and s_probe.height() <= max(360, _avail.height() - 120)
+          and s_probe.minimumWidth() <= 440,
+          "%sx%s min=%s" % (s_probe.width(), s_probe.height(),
+                            s_probe.minimumWidth()))
+    s_probe.show()
+    for _ in range(4):
+        app.processEvents()
+    _btn = next(b for b in s_probe.findChildren(yq.QPushButton)
+                if b.isEnabled())
+    s_probe._live_cursor_refresh(_btn)
+    cursor_on = (yq.QApplication.overrideCursor() is not None
+                 and s_probe._cursor_override_on is True)
+    s_probe._live_cursor_refresh(yq.QLabel("x", s_probe))
+    cursor_off = s_probe._cursor_override_on is False
+    s_probe._live_cursor_refresh(_btn)
+    s_probe.hide()
+    for _ in range(3):
+        app.processEvents()
+    check("cursor: hand override toggles with hover", cursor_on and cursor_off)
+    check("cursor: override cleared when settings hides",
+          s_probe._cursor_override_on is False
+          and yq.QApplication.overrideCursor() is None)
+    if getattr(win, "_desk_widget", None) is not None:
+        from PyQt6.QtGui import QCursor as _QC
+        from PyQt6.QtCore import Qt as _Qt
+        win._desk_widget.setCursor(_QC(_Qt.CursorShape.SizeVerCursor))
+        yq._refresh_cursor_under_mouse(win._desk_widget)
+        check("cursor: widget keeps resize cursor",
+              win._desk_widget.cursor().shape()
+              == _Qt.CursorShape.SizeVerCursor)
+        win._desk_widget.unsetCursor()
+        raised = []
+        _desk = win._desk_widget
+        _orig_raise = _desk.raise_
+        _desk.raise_ = lambda: raised.append(1)
+        try:
+            yq._AISettingsDialog(sdlg, win,
+                                 yq.default_ai_settings())._sync_to_host()
+        finally:
+            _desk.raise_ = _orig_raise
+        check("overlay raises desktop widget", bool(raised))
 
     # 快速面板已移除；Win+V 改为开关主窗口
     check("quick panel removed",
