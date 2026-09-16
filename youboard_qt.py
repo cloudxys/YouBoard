@@ -1534,10 +1534,11 @@ STRINGS = {
         "set_ai_key_ph": "已保存，留空表示不修改",
         "set_ai_key_new": "粘贴你的 API Key",
         "set_ai_key_clear": "清除 Key",
-        "set_ai_temp": "温度（越低越稳）", "set_ai_proxy": "代理（可留空）",
+        "set_ai_temp": "温度（推荐 0.3，越低越稳）", "set_ai_proxy": "代理（可留空）",
         "set_ai_proxy_ph": "如 http://127.0.0.1:7890",
         "set_ai_note": "Key 在本机加密保存（Windows 用系统 DPAPI），不写日志；"
-                       "请求只发送你在列表里选中的那一条记录。",
+                       "请求只发送你在列表里选中的那一条记录（单次最多 2.4 万字符、"
+                       "最多生成约 1200 字，不会带上别的历史记录）。",
         "set_ai_test": "测试连接",
         "set_ai_test_ok": "连接成功：{text}",
         "set_ai_open": "配置",
@@ -1917,11 +1918,12 @@ STRINGS = {
         "set_ai_key_ph": "Saved — leave empty to keep it",
         "set_ai_key_new": "Paste your API key",
         "set_ai_key_clear": "Clear key",
-        "set_ai_temp": "Temperature (lower = steadier)",
+        "set_ai_temp": "Temperature (0.3 recommended; lower = steadier)",
         "set_ai_proxy": "Proxy (optional)",
         "set_ai_proxy_ph": "e.g. http://127.0.0.1:7890",
         "set_ai_note": "The key is encrypted on this machine (DPAPI on Windows) and "
-                       "never logged; requests contain only the entry you selected.",
+                       "never logged; requests contain only the entry you selected "
+                       "(max 24k characters in, ~1200 tokens out, no other history).",
         "set_ai_test": "Test connection",
         "set_ai_test_ok": "Connected: {text}",
         "set_ai_open": "Configure",

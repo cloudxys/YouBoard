@@ -476,14 +476,18 @@ def test_gui():
         app.processEvents()
         table = win._tables[tab]
         flex = win._flex_cols[tab]
-        if tab in ("all", "file"):
-            # 「全部」和「文件」列首会画圆角标记（类型 / 细分），标记会占掉一段宽度，
-            # 这里先摘掉标记，专门量"正文起点是否和表头对齐"这条不变量
-            for i in range(min(4, table.rowCount())):
-                cell = table.item(i, flex)
-                if cell is not None:
-                    cell.setData(yq._InlineImageDelegate.BADGE_ROLE, None)
-            app.processEvents()
+        # 列首的内联标记（类型 / 细分圆角标记、置顶胶囊、收藏星标）都会占掉一段宽度，
+        # 这里统一先摘掉，专门量"正文起点是否和表头对齐"这条不变量
+        # （不摘的话，用户历史里正好有置顶 / 收藏记录时会把正文顶右、误报不对齐）
+        for i in range(min(4, table.rowCount())):
+            cell = table.item(i, flex)
+            if cell is None:
+                continue
+            for role in (yq._InlineImageDelegate.BADGE_ROLE,
+                         yq._InlineImageDelegate.PIN_ROLE,
+                         yq._InlineImageDelegate.FAV_ROLE):
+                cell.setData(role, None)
+        app.processEvents()
         col_x = table.horizontalHeader().sectionViewportPosition(flex)
         pix = table.grab()
         img = pix.toImage().convertToFormat(QImage.Format.Format_RGB32)
