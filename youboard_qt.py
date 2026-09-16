@@ -1540,6 +1540,10 @@ STRINGS = {
                        "请求只发送你在列表里选中的那一条记录。",
         "set_ai_test": "测试连接",
         "set_ai_test_ok": "连接成功：{text}",
+        "set_ai_open": "配置",
+        "set_ai_summary": "{provider} · {model} · {state}",
+        "set_ai_key_saved": "Key 已保存", "set_ai_key_missing": "未填 Key",
+        "set_ai_unset": "还没配置",
         "hk_ai": "AI 处理（总结）",
         "btn_delete": "删除  Del", "btn_export": "导出", "btn_open": "打开  双击",
         "col_time": "时间", "col_preview": "内容预览", "col_filename": "文件名",
@@ -1920,6 +1924,10 @@ STRINGS = {
                        "never logged; requests contain only the entry you selected.",
         "set_ai_test": "Test connection",
         "set_ai_test_ok": "Connected: {text}",
+        "set_ai_open": "Configure",
+        "set_ai_summary": "{provider} · {model} · {state}",
+        "set_ai_key_saved": "key saved", "set_ai_key_missing": "no key",
+        "set_ai_unset": "Not configured",
         "hk_ai": "AI actions (summarize)",
         "btn_delete": "Delete  Del", "btn_export": "Export", "btn_open": "Open  Dbl-click",
         "col_time": "Time", "col_preview": "Preview", "col_filename": "Filename",
@@ -3296,12 +3304,17 @@ class _CardOverlayDialog(QDialog):
                 color: {C['TEXT']}; }}
             QPushButton#unitPill:checked {{ background-color: {C['ACCENT']};
                 color: #071116; font-weight: 700; }}
-            QSpinBox, QComboBox, QDateTimeEdit {{ background-color: {C['INPUT_BG']};
+            QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox, QDateTimeEdit {{
+                background-color: {C['INPUT_BG']};
                 color: {C['TEXT']}; border: 1px solid {C['BORDER']};
                 border-radius: 7px; padding: 5px 8px; font-size: 12px; }}
             QComboBox QAbstractItemView {{ background-color: {C['SURFACE']};
                 color: {C['TEXT']}; selection-background-color: {C['ACCENT_DIM']};
                 border: 1px solid {C['BORDER']}; border-radius: 7px; }}
+            /* 数字框右侧的原生上下箭头是个直角小块，去掉它的底色只留箭头 */
+            QSpinBox::up-button, QDoubleSpinBox::up-button,
+            QSpinBox::down-button, QDoubleSpinBox::down-button {{
+                width: 16px; border: none; background: transparent; }}
         """)
 
     def paintEvent(self, event):
@@ -3745,6 +3758,204 @@ class _AIPromptDialog(_CardOverlayDialog):
         return self._edit.text().strip()
 
 
+class _AISettingsDialog(_CardOverlayDialog):
+    """AI 服务配置（卡片式弹层，与「历史保留策略」完全是同一套风格）。
+
+    设置页里只留一行摘要 + 「配置」按钮，所以设置页不会被这一项拉得很长。
+    """
+
+    def __init__(self, owner, app, values=None):
+        super().__init__(owner, app, "✦", tr("set_ai"), tr("set_ai_desc"))
+        self._values = dict(values or load_ai_settings())
+        self._provider = str(self._values.get("provider") or "deepseek")
+        if self._provider not in PROVIDERS:
+            self._provider = "custom"
+        self._key_cleared = False
+        self._test_worker = None
+        lay = self._lay
+
+        # 服务商：两列胶囊（与保留策略那排选项同一套画法，输入框只留圆角的）
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(8)
+        self._prov_btns = {}
+        for idx, pid in enumerate(AI_PROVIDER_ORDER):
+            btn = QPushButton(provider_label(pid, LANG))
+            btn.setCheckable(True)
+            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btn.clicked.connect(lambda _, p=pid: self._pick_provider(p))
+            self._prov_btns[pid] = btn
+            grid.addWidget(btn, idx // 2, idx % 2)
+        for col in range(2):
+            grid.setColumnStretch(col, 1)
+        lay.addLayout(grid)
+
+        self._base = QLineEdit(str(self._values.get("base_url") or ""))
+        self._model = QLineEdit(str(self._values.get("model") or ""))
+        lay.addLayout(self._field_row(tr("set_ai_base"), self._base))
+        lay.addLayout(self._field_row(tr("set_ai_model"), self._model))
+
+        self._key = QLineEdit()
+        self._key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._key_btn = QPushButton(tr("set_ai_key_clear"))
+        self._key_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._key_btn.clicked.connect(self._on_key_clear)
+        lay.addLayout(self._field_row(tr("set_ai_key"), self._key,
+                                      self._key_btn))
+        self._sync_key_ui()
+
+        self._temp = QDoubleSpinBox()
+        self._temp.setRange(0.0, 1.0)
+        self._temp.setSingleStep(0.1)
+        self._temp.setDecimals(1)
+        self._temp.setValue(float(self._values.get("temperature", 0.3)))
+        self._temp.setMaximumWidth(120)
+        lay.addLayout(self._field_row(tr("set_ai_temp"), self._temp))
+
+        self._proxy = QLineEdit(str(self._values.get("proxy") or ""))
+        self._proxy.setPlaceholderText(tr("set_ai_proxy_ph"))
+        lay.addLayout(self._field_row(tr("set_ai_proxy"), self._proxy))
+
+        test_row = QHBoxLayout()
+        test_row.setSpacing(8)
+        self._test_btn = QPushButton(tr("set_ai_test"))
+        self._test_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._test_btn.clicked.connect(self._test)
+        test_row.addWidget(self._test_btn)
+        self._test_lbl = QLabel("")
+        self._test_lbl.setObjectName("retNote")
+        self._test_lbl.setWordWrap(True)
+        test_row.addWidget(self._test_lbl, 1)
+        lay.addLayout(test_row)
+
+        note = QLabel(tr("set_ai_note"))
+        note.setObjectName("retNote")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton(tr("btn_save"))
+        save.setObjectName("retSave")
+        save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        save.clicked.connect(self._save_and_close)
+        buttons.addWidget(save)
+        lay.addLayout(buttons)
+
+        self._pick_provider(self._provider, fill=False)
+
+    # ---- 小组件 ----
+    @staticmethod
+    def _field_row(label_text, widget, extra=None):
+        """一行「左侧标签 + 右侧输入框（+ 可选小按钮）」，卡片内统一排版。"""
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        lbl = QLabel(label_text)
+        lbl.setObjectName("retSub")
+        lbl.setFixedWidth(74)
+        row.addWidget(lbl)
+        row.addWidget(widget, 1)
+        if extra is not None:
+            row.addWidget(extra)
+        return row
+
+    def _sync_key_ui(self):
+        saved = (bool(self._values.get("api_key_saved"))
+                 and not self._key_cleared)
+        self._key.setPlaceholderText(
+            tr("set_ai_key_ph") if saved else tr("set_ai_key_new"))
+        self._key_btn.setEnabled(saved)
+
+    def _on_key_clear(self):
+        self._key_cleared = True
+        self._key.clear()
+        self._sync_key_ui()
+        self._test_lbl.setText("")
+
+    def _pick_provider(self, pid, fill=True):
+        """选服务商；fill=True 时把接口地址与模型填成该服务商的默认值。"""
+        if pid not in PROVIDERS:
+            pid = "custom"
+        self._provider = pid
+        for key, btn in self._prov_btns.items():
+            btn.setChecked(key == pid)
+        if fill:
+            info = provider_info(pid)
+            self._base.setText(str(info.get("base_url") or ""))
+            self._model.setText(str(info.get("model") or ""))
+            self._test_lbl.setText("")
+
+    # ---- 取值 / 保存 ----
+    def values(self):
+        values = dict(self._values)
+        values["provider"] = self._provider
+        values["base_url"] = self._base.text().strip()
+        values["model"] = self._model.text().strip()
+        values["temperature"] = float(self._temp.value())
+        values["proxy"] = self._proxy.text().strip()
+        key = self._key.text().strip()
+        if key:
+            values["api_key"] = key
+            values["api_key_saved"] = True
+        elif self._key_cleared:
+            values["api_key"] = ""
+            values["api_key_saved"] = False
+        return values
+
+    def _save_and_close(self):
+        self._stop_test()
+        save_ai_settings(self.values())
+        self._values = load_ai_settings()
+        self.accept()
+
+    # ---- 测试连接 ----
+    def _test(self):
+        worker = self._test_worker
+        if worker is not None and worker.isRunning():
+            return
+        client = AIClient(self.values(), LANG)
+        if not client.is_ready():
+            self._test_lbl.setText(ai_text(client.config_problem(), LANG))
+            return
+        self._test_lbl.setText(tr("ai_running"))
+        worker = _AITestWorker(client, self)
+        worker.done.connect(self._on_test_done)
+        worker.finished.connect(worker.deleteLater)
+        self._test_worker = worker
+        worker.start()
+
+    def _on_test_done(self, ok, message):
+        self._test_worker = None
+        try:
+            self._test_lbl.setText(
+                tr("set_ai_test_ok", text=message[:80]) if ok else message)
+            self._test_lbl.setStyleSheet(
+                f"color: {C['SUCCESS'] if ok else C['DANGER']};"
+                f" font-size: 12px;")
+        except RuntimeError:
+            pass
+
+    def _stop_test(self):
+        worker = self._test_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            worker.wait(3000)
+        self._test_worker = None
+
+    def reject(self):
+        self._stop_test()
+        super().reject()
+
+    def closeEvent(self, event):
+        self._stop_test()
+        super().closeEvent(event)
+
+
 class _AIDialog(_CardOverlayDialog):
     """AI 结果弹层：流式显示结果 + 复制 / 另存为新条 / 替换本条。
 
@@ -3925,7 +4136,7 @@ class _AIDialog(_CardOverlayDialog):
     def _open_ai_settings(self):
         if self._app is None:
             return
-        SettingsDialog(self._app).exec()
+        _AISettingsDialog(self, self._app, load_ai_settings()).exec()
         self._settings = load_ai_settings()
         self._client = AIClient(self._settings, self._lang)
         self._need_config = bool(self._client.config_problem())
@@ -10941,115 +11152,19 @@ class SettingsDialog(QDialog):
             self._snd_cbs[kind] = cb
             self._snd_btns[kind] = pick
 
-        # AI 服务 card（自带 Key；只发送选中的那一条记录）
+        # AI 服务 card（详细配置在卡片弹层里，设置页保持紧凑）
         self._card(tr("set_ai"))
         self._ai_values = load_ai_settings(cfg)
-        self._ai_key_cleared = False
-        self._ai_test_worker = None
-        _ai_qss = (f"background: {C['INPUT_BG']}; color: {C['TEXT']};"
-                   f" border: 1px solid {C['BORDER']}; border-radius: 7px;"
-                   f" padding: 5px 8px; font-size: 12px;")
-        ai_desc = QLabel(tr("set_ai_desc"))
-        ai_desc.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        ai_desc.setWordWrap(True)
-        self._lay.addWidget(ai_desc)
-
-        prov_row = QHBoxLayout()
-        prov_lbl = QLabel(tr("set_ai_provider"))
-        prov_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
-        prov_row.addWidget(prov_lbl, 1)
-        self._ai_provider = QComboBox()
-        for pid in AI_PROVIDER_ORDER:
-            self._ai_provider.addItem(provider_label(pid, LANG), pid)
-        _pidx = self._ai_provider.findData(self._ai_values.get("provider"))
-        self._ai_provider.setCurrentIndex(_pidx if _pidx >= 0 else 0)
-        self._ai_provider.setStyleSheet(
-            f"QComboBox {{ {_ai_qss} }}"
-            f"QComboBox QAbstractItemView {{ background: {C['SURFACE']};"
-            f" color: {C['TEXT']};"
-            f" selection-background-color: {C['ACCENT_DIM']};"
-            f" border: 1px solid {C['BORDER']}; }}")
-        self._ai_provider.currentIndexChanged.connect(self._on_ai_provider)
-        prov_row.addWidget(self._ai_provider, 1)
-        self._lay.addLayout(prov_row)
-        self._add_sep()
-
-        base_row = QHBoxLayout()
-        base_lbl = QLabel(tr("set_ai_base"))
-        base_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
-        base_row.addWidget(base_lbl, 1)
-        self._ai_base = QLineEdit(str(self._ai_values.get("base_url") or ""))
-        self._ai_base.setStyleSheet(f"QLineEdit {{ {_ai_qss} }}")
-        base_row.addWidget(self._ai_base, 2)
-        self._lay.addLayout(base_row)
-        self._add_sep()
-
-        model_row = QHBoxLayout()
-        model_lbl = QLabel(tr("set_ai_model"))
-        model_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
-        model_row.addWidget(model_lbl, 1)
-        self._ai_model = QLineEdit(str(self._ai_values.get("model") or ""))
-        self._ai_model.setStyleSheet(f"QLineEdit {{ {_ai_qss} }}")
-        model_row.addWidget(self._ai_model, 2)
-        self._lay.addLayout(model_row)
-        self._add_sep()
-
-        key_row = QHBoxLayout()
-        key_lbl = QLabel(tr("set_ai_key"))
-        key_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
-        key_row.addWidget(key_lbl, 1)
-        self._ai_key = QLineEdit()
-        self._ai_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._ai_key.setStyleSheet(f"QLineEdit {{ {_ai_qss} }}")
-        key_row.addWidget(self._ai_key, 2)
-        self._ai_key_clear_btn = QPushButton(tr("set_ai_key_clear"))
-        self._ai_key_clear_btn.setCursor(
-            QCursor(Qt.CursorShape.PointingHandCursor))
-        self._ai_key_clear_btn.clicked.connect(self._on_ai_key_clear)
-        key_row.addWidget(self._ai_key_clear_btn)
-        self._lay.addLayout(key_row)
-        self._sync_ai_key_ui()
-        self._add_sep()
-
-        temp_row = QHBoxLayout()
-        temp_lbl = QLabel(tr("set_ai_temp"))
-        temp_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
-        temp_row.addWidget(temp_lbl, 1)
-        self._ai_temp = QDoubleSpinBox()
-        self._ai_temp.setRange(0.0, 1.0)
-        self._ai_temp.setSingleStep(0.1)
-        self._ai_temp.setDecimals(1)
-        self._ai_temp.setValue(float(self._ai_values.get("temperature", 0.3)))
-        self._ai_temp.setStyleSheet(f"QDoubleSpinBox {{ {_ai_qss} }}")
-        temp_row.addWidget(self._ai_temp, 1)
-        self._lay.addLayout(temp_row)
-        self._add_sep()
-
-        proxy_row = QHBoxLayout()
-        proxy_lbl = QLabel(tr("set_ai_proxy"))
-        proxy_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
-        proxy_row.addWidget(proxy_lbl, 1)
-        self._ai_proxy = QLineEdit(str(self._ai_values.get("proxy") or ""))
-        self._ai_proxy.setPlaceholderText(tr("set_ai_proxy_ph"))
-        self._ai_proxy.setStyleSheet(f"QLineEdit {{ {_ai_qss} }}")
-        proxy_row.addWidget(self._ai_proxy, 2)
-        self._lay.addLayout(proxy_row)
-
-        ai_btn_row = QHBoxLayout()
-        self._ai_test_btn = QPushButton(tr("set_ai_test"))
-        self._ai_test_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._ai_test_btn.clicked.connect(self._ai_test)
-        ai_btn_row.addWidget(self._ai_test_btn)
-        self._ai_test_lbl = QLabel("")
-        self._ai_test_lbl.setStyleSheet(
-            f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        self._ai_test_lbl.setWordWrap(True)
-        ai_btn_row.addWidget(self._ai_test_lbl, 1)
-        self._lay.addLayout(ai_btn_row)
-        ai_note = QLabel(tr("set_ai_note"))
-        ai_note.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        ai_note.setWordWrap(True)
-        self._lay.addWidget(ai_note)
+        ai_row = QHBoxLayout()
+        self._ai_lbl = QLabel(self._ai_summary())
+        self._ai_lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        self._ai_lbl.setWordWrap(True)
+        ai_row.addWidget(self._ai_lbl, 1)
+        ai_open = QPushButton(tr("set_ai_open"))
+        ai_open.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        ai_open.clicked.connect(self._open_ai)
+        ai_row.addWidget(ai_open)
+        self._lay.addLayout(ai_row)
 
         # Win+V 接管 card（默认关闭，带风险提示）
         self._card(tr("set_winv"))
@@ -11450,84 +11565,24 @@ class SettingsDialog(QDialog):
         self.app._apply_retention_policy()
 
     # ---- AI 服务（自带 Key；只发送选中的那一条记录） ----
-    def _sync_ai_key_ui(self):
-        saved = (bool(self._ai_values.get("api_key_saved"))
-                 and not self._ai_key_cleared)
-        self._ai_key.setPlaceholderText(
-            tr("set_ai_key_ph") if saved else tr("set_ai_key_new"))
-        self._ai_key_clear_btn.setEnabled(saved)
+    def _ai_summary(self):
+        """设置页里那行摘要：当前服务商 / 模型 / Key 状态。"""
+        values = self._ai_values or {}
+        model = str(values.get("model") or "").strip()
+        if not model:
+            return tr("set_ai_unset")
+        key_state = (tr("set_ai_key_saved") if values.get("api_key_saved")
+                     else tr("set_ai_key_missing"))
+        return tr("set_ai_summary",
+                  provider=provider_label(values.get("provider"), LANG),
+                  model=model, state=key_state)
 
-    def _on_ai_key_clear(self):
-        self._ai_key_cleared = True
-        self._ai_key.clear()
-        self._sync_ai_key_ui()
-        self._ai_test_lbl.setText("")
-
-    def _on_ai_provider(self, _index=None):
-        """切换服务商时，把接口地址与模型填成该服务商的默认值。"""
-        info = provider_info(self._ai_provider.currentData() or "custom")
-        self._ai_base.setText(str(info.get("base_url") or ""))
-        self._ai_model.setText(str(info.get("model") or ""))
-        self._ai_test_lbl.setText("")
-
-    def _ai_settings_from_ui(self):
-        """把界面上这几项读成一份设置（给保存 / 测试连接共用）。"""
-        settings = dict(self._ai_values)
-        settings["provider"] = self._ai_provider.currentData() or "custom"
-        settings["base_url"] = self._ai_base.text().strip()
-        settings["model"] = self._ai_model.text().strip()
-        settings["temperature"] = float(self._ai_temp.value())
-        settings["proxy"] = self._ai_proxy.text().strip()
-        key = self._ai_key.text().strip()
-        if key:
-            settings["api_key"] = key
-            settings["api_key_saved"] = True
-        elif self._ai_key_cleared:
-            settings["api_key"] = ""
-            settings["api_key_saved"] = False
-        return settings
-
-    def _ai_test(self):
-        """测试连接：后台发一条最小请求，结果写在按钮旁边。"""
-        worker = self._ai_test_worker
-        if worker is not None and worker.isRunning():
-            return
-        client = AIClient(self._ai_settings_from_ui(), LANG)
-        if not client.is_ready():
-            self._ai_test_lbl.setText(ai_text(client.config_problem(), LANG))
-            return
-        self._ai_test_lbl.setText(tr("ai_running"))
-        worker = _AITestWorker(client, self)
-        worker.done.connect(self._on_ai_test_done)
-        worker.finished.connect(worker.deleteLater)
-        self._ai_test_worker = worker
-        worker.start()
-
-    def _on_ai_test_done(self, ok, message):
-        self._ai_test_worker = None
-        try:
-            self._ai_test_lbl.setText(
-                tr("set_ai_test_ok", text=message[:80]) if ok else message)
-            self._ai_test_lbl.setStyleSheet(
-                f"color: {C['SUCCESS'] if ok else C['DANGER']};"
-                f" font-size: 11px;")
-        except RuntimeError:
-            pass
-
-    def _stop_ai_test(self):
-        worker = self._ai_test_worker
-        if worker is not None and worker.isRunning():
-            worker.cancel()
-            worker.wait(3000)
-        self._ai_test_worker = None
-
-    def closeEvent(self, event):
-        self._stop_ai_test()
-        super().closeEvent(event)
-
-    def reject(self):
-        self._stop_ai_test()
-        super().reject()
+    def _open_ai(self):
+        """打开 AI 服务卡片弹层（与「历史保留策略」同一套风格）。"""
+        dlg = _AISettingsDialog(self, self.app, self._ai_values)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._ai_values = dlg.values()
+            self._ai_lbl.setText(self._ai_summary())
 
     def _save(self):
         try:
@@ -11549,16 +11604,11 @@ class SettingsDialog(QDialog):
             cfg["snd_paste_file"] = self._snd_file.get("paste", "") or ""
             cfg["takeover_winv"] = self._winv_cb.isChecked()
             cfg["temporary_session"] = self._session_cb.isChecked()
-            # AI 服务：Key 由 save_ai_settings 加密后存（留空表示不修改原 Key）。
-            # 返回值要写回 cfg，否则下面这次 save_config 会把它覆盖掉
-            cfg["ai"] = save_ai_settings(self._ai_settings_from_ui(), cfg)
             for k, v in self._hotkey_values.items():
                 if k != "hotkey":
                     cfg[k] = v
             save_config(cfg)
             self.app.set_temporary_session(self._session_cb.isChecked())
-            # 保存时先收掉可能在跑的「测试连接」，避免线程跟着窗口一起消失
-            self._stop_ai_test()
             self.accept()
             self.app.apply_settings(self._lang_sel, self._auto_cb.isChecked(),
                                     self._theme_sel, bg_changed,

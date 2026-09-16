@@ -731,17 +731,31 @@ def test_gui():
           and win._ai_menu_for(yq._RoundMenu(win), {"hash": "h",
                                                     "type": "image"}) is None)
     sdlg = yq.SettingsDialog(win)
-    check("ai: settings card", sdlg._ai_provider.count() == 6
-          and "deepseek" in sdlg._ai_base.text())
+    check("ai: settings page row only", sdlg._ai_lbl.text() != ""
+          and not hasattr(sdlg, "_ai_provider"))
+    cfg_dlg = yq._AISettingsDialog(sdlg, win, sdlg._ai_values)
+    check("ai: config dialog is card style",
+          isinstance(cfg_dlg, yq._CardOverlayDialog)
+          and cfg_dlg.card.styleSheet()
+          == yq._RetentionDialog(win, win,
+                                 {"mode": "forever"}).card.styleSheet())
+    check("ai: provider pills", len(cfg_dlg._prov_btns) == 6)
+    check("ai: settings defaults",
+          cfg_dlg._base.text() == "https://api.deepseek.com/v1"
+          and cfg_dlg._model.text() == "deepseek-v4-flash")
     check("ai: settings key hidden",
-          sdlg._ai_key.echoMode() == yq.QLineEdit.EchoMode.Password)
-    sdlg._ai_provider.setCurrentIndex(sdlg._ai_provider.findData("ollama"))
+          cfg_dlg._key.echoMode() == yq.QLineEdit.EchoMode.Password)
+    cfg_dlg._pick_provider("ollama")
     for _ in range(4):
         app.processEvents()
     check("ai: provider switch fills defaults",
-          sdlg._ai_base.text() == "http://localhost:11434/v1"
-          and sdlg._ai_model.text() == "qwen3.5",
-          "%s / %s" % (sdlg._ai_base.text(), sdlg._ai_model.text()))
+          cfg_dlg._base.text() == "http://localhost:11434/v1"
+          and cfg_dlg._model.text() == "qwen3.5",
+          "%s / %s" % (cfg_dlg._base.text(), cfg_dlg._model.text()))
+    check("ai: spin arrows flattened (no square block)",
+          "up-button" in cfg_dlg.card.styleSheet()
+          and "background: transparent" in cfg_dlg.card.styleSheet())
+    cfg_dlg.close()
     sdlg.close()
     check("ai: hotkey default", yq._ACTION_HOTKEY_DEFAULTS.get("hk_ai")
           == "ctrl+i")
