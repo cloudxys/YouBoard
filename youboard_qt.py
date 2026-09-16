@@ -100,6 +100,7 @@ from youboard_core import (
     get_icon_path, get_app_icon,
     CONTENT_DIR, entry_full_text, read_external_head,
     find_installations, copy_installation_assets, read_foreign_history,
+    normalize_tag, normalize_tags, entry_tags, entry_is_fav,
 )
 from youboard_phone import (
     PhoneTransferServer, get_lan_ip, get_lan_ips, make_qr_pil,
@@ -289,6 +290,63 @@ def _text_preview_html(text, max_len=120):
     return html_src
 
 
+# ---------------------------------------------------------------------------
+# 收藏星标：矢量绘制（不依赖字体是否有 ★ 字形；缺字体的机器上不会掉成方块）
+# ---------------------------------------------------------------------------
+_STAR_PM_CACHE = {}
+
+
+def _star_path(rect):
+    """正五角星路径：外接圆按短边算，10 个顶点在内 / 外半径间交替。"""
+    r = min(rect.width(), rect.height()) / 2.0
+    inner = r * 0.382
+    cx, cy = rect.center().x(), rect.center().y()
+    path = QPainterPath()
+    for i in range(10):
+        rad = r if i % 2 == 0 else inner
+        ang = -math.pi / 2.0 + i * math.pi / 5.0
+        x = cx + rad * math.cos(ang)
+        y = cy + rad * math.sin(ang)
+        if i == 0:
+            path.moveTo(x, y)
+        else:
+            path.lineTo(x, y)
+    path.closeSubpath()
+    return path
+
+
+def _star_pixmap(size=14, color=None, filled=True):
+    """画一颗五角星（filled=实心 / 空心描边），结果带缓存。"""
+    color = color or C.get("ACCENT", "#58c98a")
+    key = (int(size), str(color), bool(filled))
+    cached = _STAR_PM_CACHE.get(key)
+    if cached is not None:
+        return cached
+    pm = QPixmap(int(size), int(size))
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    path = _star_path(QRectF(1.0, 1.0, float(size) - 2.0, float(size) - 2.0))
+    if filled:
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color))
+        painter.drawPath(path)
+    else:
+        pen = QPen(QColor(color))
+        pen.setWidthF(1.4)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+    painter.end()
+    _STAR_PM_CACHE[key] = pm
+    return pm
+
+
+def _star_icon(size=14, color=None, filled=True):
+    return QIcon(_star_pixmap(size, color, filled))
+
+
 class _InlineImageDelegate(QStyledItemDelegate):
     """内容列渲染：文本预览的内联换行图标 + 普通文本。
 
@@ -300,6 +358,8 @@ class _InlineImageDelegate(QStyledItemDelegate):
     # 内容列开头的类型标签（只有「全部」分类用）
     BADGE_ROLE = Qt.ItemDataRole.UserRole + 2
     PIN_ROLE = Qt.ItemDataRole.UserRole + 3
+    # 已收藏：内容前画一颗主题色星（在「置顶」胶囊之前）
+    FAV_ROLE = Qt.ItemDataRole.UserRole + 4
     BADGE_GAP = 8
     BADGE_H = 18
 
@@ -354,6 +414,17 @@ class _InlineImageDelegate(QStyledItemDelegate):
         left = target_left
         width = max(1, option.rect.left() + option.rect.width() - left)
         painter.save()
+        fav = index.data(self.FAV_ROLE)
+        if fav:
+            # 收藏标记：一颗主题色五角星（矢量画，缺字体的机器也不会掉成方块）
+            _s = 13
+            _pm = _star_pixmap(_s)
+            painter.drawPixmap(
+                int(left) + 1,
+                int(option.rect.top() + (option.rect.height() - _s) / 2.0),
+                _pm)
+            left += _s + 5
+            width = max(1, option.rect.left() + option.rect.width() - left)
         pin = index.data(self.PIN_ROLE)
         if pin:
             # 置顶标记：主题色小胶囊，画在类型/细分标签前面，一眼能看出来
@@ -1414,6 +1485,22 @@ STRINGS = {
         "sort_fmt_az": "格式(A-Z)", "sort_fmt_za": "格式(Z-A)",
         "sort_size_desc": "大小(最大)", "sort_size_asc": "大小(最小)",
         "btn_copy": "复制  Enter", "btn_pin": "置顶", "btn_unpin": "取消置顶",
+        # 标签 / 收藏（3.2.7）：纯本地的分组与标记
+        "btn_fav": "收藏", "btn_faved": "已收藏",
+        "filter_fav": "收藏",
+        "btn_edit_tags": "编辑标签…",
+        "m_fav_on": "加入收藏", "m_fav_off": "取消收藏", "m_edit_tags": "编辑标签…",
+        "st_fav_set": "已收藏 {n} 条", "st_fav_unset": "已取消收藏 {n} 条",
+        "st_fav_filter": "只看收藏（{n} 条）", "st_fav_filter_off": "已取消收藏筛选",
+        "st_tag_filter": "只看标签 #{tag}", "st_tag_filter_off": "已取消标签筛选",
+        "st_tags_saved": "标签已更新（{n} 条）",
+        "st_tags_none": "没有可编辑标签的记录",
+        "tags_title": "编辑标签", "tags_title_add": "添加标签",
+        "tags_sub": "标签存在本机：搜索框里输标签名，也能找到这条记录",
+        "tags_sub_add": "为选中的 {n} 条记录添加标签（已有的不会重复）",
+        "tags_placeholder": "输入标签后回车", "tags_none": "无标签",
+        "tags_known": "历史标签", "tags_hint_existing": "已有",
+        "hk_fav": "收藏 / 取消收藏",
         "btn_delete": "删除  Del", "btn_export": "导出", "btn_open": "打开  双击",
         "col_time": "时间", "col_preview": "内容预览", "col_filename": "文件名",
         "col_format": "格式", "col_dims": "尺寸", "col_size": "大小",
@@ -1740,6 +1827,23 @@ STRINGS = {
         "sort_fmt_az": "Format (A-Z)", "sort_fmt_za": "Format (Z-A)",
         "sort_size_desc": "Size (largest)", "sort_size_asc": "Size (smallest)",
         "btn_copy": "Copy  Enter", "btn_pin": "Pin", "btn_unpin": "Unpin",
+        # tags / favorites (3.2.7) — stored locally only
+        "btn_fav": "Favorite", "btn_faved": "Favorited",
+        "filter_fav": "Favorites",
+        "btn_edit_tags": "Edit tags…",
+        "m_fav_on": "Add to favorites", "m_fav_off": "Remove from favorites",
+        "m_edit_tags": "Edit tags…",
+        "st_fav_set": "{n} added to favorites", "st_fav_unset": "{n} removed from favorites",
+        "st_fav_filter": "Favorites only ({n})", "st_fav_filter_off": "Favorites filter off",
+        "st_tag_filter": "Filtering by #{tag}", "st_tag_filter_off": "Tag filter off",
+        "st_tags_saved": "Tags updated ({n})",
+        "st_tags_none": "Nothing to tag",
+        "tags_title": "Edit tags", "tags_title_add": "Add tags",
+        "tags_sub": "Tags stay on this device — typing a tag in the search box finds the record",
+        "tags_sub_add": "Add tags to {n} selected records (existing ones are skipped)",
+        "tags_placeholder": "Type a tag, press Enter", "tags_none": "No tags",
+        "tags_known": "Known tags", "tags_hint_existing": "existing",
+        "hk_fav": "Favorite / unfavorite",
         "btn_delete": "Delete  Del", "btn_export": "Export", "btn_open": "Open  Dbl-click",
         "col_time": "Time", "col_preview": "Preview", "col_filename": "Filename",
         "col_format": "Format", "col_dims": "Dimensions", "col_size": "Size",
@@ -3349,6 +3453,116 @@ class _CustomSkinDialog(_CardOverlayDialog):
             self._paint_swatch(btn, self.colors[key])
 
 
+class _TagsDialog(_CardOverlayDialog):
+    """给记录打标签的卡片弹层（与「历史保留策略」「自定义皮肤」同一套样式）。
+
+    edit 模式：整条替换这条记录的标签；add 模式：把选中的标签加到多条记录上
+    （已经有的标签显示为"已有"且不可点，不会重复添加）。
+    """
+
+    def __init__(self, owner, app, current_tags, known_tags,
+                 mode="edit", count=1):
+        title = tr("tags_title") if mode != "add" else tr("tags_title_add")
+        sub = (tr("tags_sub") if mode != "add"
+               else tr("tags_sub_add", n=count))
+        super().__init__(owner, app, "#", title, sub)
+        self._mode = "add" if mode == "add" else "edit"
+        self._count = max(1, int(count or 1))
+        current = normalize_tags(current_tags)
+        self._existing = {t.lower() for t in current}
+        # 编辑模式：先勾上这条记录现有的标签；批量添加模式：从空白开始
+        self._selected = ({t.lower(): t for t in current}
+                          if self._mode == "edit" else {})
+        self._known = normalize_tags(list(known_tags or []) + current)
+        lay = self._lay
+
+        self._edit = QLineEdit()
+        self._edit.setPlaceholderText(tr("tags_placeholder"))
+        self._edit.returnPressed.connect(self._add_typed)
+        lay.addWidget(self._edit)
+
+        self._chips_host = QWidget()
+        self._chips = QGridLayout(self._chips_host)
+        self._chips.setContentsMargins(0, 0, 0, 0)
+        self._chips.setSpacing(6)
+        lay.addWidget(self._chips_host)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton(tr("btn_save"))
+        save.setObjectName("retSave")
+        save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        save.clicked.connect(self.accept)
+        buttons.addWidget(save)
+        lay.addLayout(buttons)
+
+        self._rebuild_chips()
+        QTimer.singleShot(0, self._edit.setFocus)
+
+    def _add_typed(self):
+        """输入框回车：把新标签加进待保存列表。"""
+        tag = normalize_tag(self._edit.text())
+        if not tag:
+            self._edit.clear()
+            return
+        self._selected[tag.lower()] = tag
+        if tag.lower() not in [t.lower() for t in self._known]:
+            self._known.append(tag)
+        self._edit.clear()
+        self._rebuild_chips()
+
+    def _toggle(self, tag):
+        key = tag.lower()
+        if self._mode == "add" and key in self._existing:
+            return
+        if key in self._selected:
+            self._selected.pop(key, None)
+        else:
+            self._selected[key] = tag
+        self._rebuild_chips()
+
+    def _rebuild_chips(self):
+        while self._chips.count():
+            item = self._chips.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+        tags = normalize_tags(list(self._known) + list(self._selected.values()))
+        for i, tag in enumerate(tags):
+            key = tag.lower()
+            chip = QPushButton(tag)
+            chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            if self._mode == "add" and key in self._existing:
+                chip.setText(f"{tag}  {tr('tags_hint_existing')}")
+                chip.setEnabled(False)
+                chip.setStyleSheet(
+                    f"QPushButton {{ background: {C['SURFACE3']};"
+                    f" color: {C['TEXT_MUTED']}; border: 1px dashed {C['BORDER']};"
+                    f" border-radius: 10px; padding: 4px 10px; font-size: 12px; }}")
+            elif key in self._selected:
+                chip.setStyleSheet(
+                    f"QPushButton {{ background: {C['ACCENT']}; color: #071116;"
+                    f" border: none; border-radius: 10px; padding: 5px 12px;"
+                    f" font-size: 12px; font-weight: 700; }}")
+                chip.clicked.connect(lambda _, t=tag: self._toggle(t))
+            else:
+                chip.setStyleSheet(
+                    f"QPushButton {{ background: {C['SURFACE2']};"
+                    f" color: {C['TEXT_SEC']}; border: 1px solid transparent;"
+                    f" border-radius: 10px; padding: 5px 12px; font-size: 12px; }}"
+                    f"QPushButton:hover {{ background: {C['SURFACE3']};"
+                    f" color: {C['TEXT']}; }}")
+                chip.clicked.connect(lambda _, t=tag: self._toggle(t))
+            self._chips.addWidget(chip, i // 5, i % 5)
+
+    def selected_tags(self):
+        return list(self._selected.values())
+
+
 class _WatermarkFrame(QFrame):
     """Light splash card with a faint tiled app-logo watermark."""
 
@@ -4778,6 +4992,14 @@ class YouBoardApp(QMainWindow):
         # archive / app / code / font / other），只影响这个标签的显示
         self._file_kind = "all"
         self._file_kind_btns = {}
+        # 标签 / 收藏筛选（3.2.7）：只看收藏 / 只看某个标签，作用于所有标签页
+        self._fav_only = False
+        self._tag_filter = None
+        self._tag_chips = {}          # 标签页 → {标签小写: (原名, 按钮)}
+        self._fav_chips = {}          # 标签页 → 收藏按钮
+        self._filter_rows = {}        # 标签页 → (容器, 布局)
+        self._filter_sig = {}         # 标签页 → 上次画筛选行时用的签名
+        self._preview_hash = None
         # 需要按内容自适应宽度的小列（数量 / 格式 / 尺寸 / 大小）
         self._auto_width_cols = {"image": (4, 5, 6), "file": (4, 5, 6)}
         self._iid_to_hash = {t: {} for t in TAB_TYPES}
@@ -5437,6 +5659,140 @@ class YouBoardApp(QMainWindow):
                     f"QPushButton:hover {{ background: {C['SURFACE3']};"
                     f" color: {C['TEXT']}; }}")
 
+    # ---- 标签 / 收藏筛选（3.2.7） ----
+    def _build_filter_row(self, lay, etype):
+        """标签 / 收藏筛选行：贴着列表的一排小胶囊，有标签或收藏时才显示。"""
+        holder = QWidget()
+        row = QHBoxLayout(holder)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addStretch()
+        holder.setVisible(False)
+        lay.addWidget(holder)
+        self._filter_rows[etype] = (holder, row)
+
+    def _style_filter_chip(self, chip, label, count, active, force_show=False):
+        """筛选胶囊画法：与「文件」细分那排完全同一套样式。"""
+        if count <= 0 and not force_show:
+            chip.setVisible(False)
+            return
+        chip.setVisible(True)
+        chip.setText(f"{label} {count}" if count else label)
+        if active:
+            chip.setStyleSheet(
+                f"QPushButton {{ background: {C['ACCENT_DIM']};"
+                f" color: {C['ACCENT']}; border: 1px solid {C['ACCENT']};"
+                f" border-radius: 11px; padding: 3px 10px; font-size: 11px;"
+                f" font-weight: 600; }}")
+        else:
+            chip.setStyleSheet(
+                f"QPushButton {{ background: {C['SURFACE2']};"
+                f" color: {C['TEXT_SEC']}; border: 1px solid {C['BORDER']};"
+                f" border-radius: 11px; padding: 3px 10px; font-size: 11px; }}"
+                f"QPushButton:hover {{ background: {C['SURFACE3']};"
+                f" color: {C['TEXT']}; }}")
+
+    def _refresh_filters(self, etype, entries):
+        """重画标签 / 收藏筛选行，并返回筛选后的记录列表。"""
+        fav_n = sum(1 for e in entries if e.get("fav"))
+        counts = {}
+        for e in entries:
+            for tag in entry_tags(e):
+                counts[tag] = counts.get(tag, 0) + 1
+        self._paint_tag_filter(etype, counts, fav_n)
+        if not self._fav_only and not self._tag_filter:
+            return entries
+        want = (self._tag_filter or "").lower()
+        out = []
+        for e in entries:
+            if self._fav_only and not e.get("fav"):
+                continue
+            if want and want not in [t.lower() for t in entry_tags(e)]:
+                continue
+            out.append(e)
+        return out
+
+    def _paint_tag_filter(self, etype, counts, fav_n):
+        holder = self._filter_rows.get(etype)
+        if holder is None:
+            return
+        row_w, row = holder
+        sig = (tuple(sorted(k.lower() for k in counts)),
+               fav_n > 0, self._fav_only, (self._tag_filter or "").lower())
+        if self._filter_sig.get(etype) != sig:
+            # 只有标签集合 / 筛选状态变了才重建按钮，否则只刷新数量与高亮，
+            # 免得每次捕获新内容都重建控件闪一下
+            self._filter_sig[etype] = sig
+            while row.count():
+                item = row.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+            self._tag_chips[etype] = {}
+            fav_chip = QPushButton(tr("filter_fav"))
+            fav_chip.setFlat(True)
+            fav_chip.setIcon(_star_icon(14))
+            fav_chip.setIconSize(QSize(12, 12))
+            fav_chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            fav_chip.clicked.connect(self._toggle_fav_filter)
+            row.addWidget(fav_chip)
+            self._fav_chips[etype] = fav_chip
+            for tag in sorted(counts, key=lambda t: (-counts[t], t.lower())):
+                chip = QPushButton()
+                chip.setFlat(True)
+                chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                chip.clicked.connect(
+                    lambda _, t=tag: self._toggle_tag_filter(t))
+                row.addWidget(chip)
+                self._tag_chips[etype][tag.lower()] = (tag, chip)
+            row.addStretch()
+        active = (self._tag_filter or "").lower()
+        fav_chip = self._fav_chips.get(etype)
+        if fav_chip is not None:
+            self._style_filter_chip(fav_chip, tr("filter_fav"), fav_n,
+                                    self._fav_only, force_show=self._fav_only)
+        for key, (tag, chip) in self._tag_chips.get(etype, {}).items():
+            self._style_filter_chip(chip, "#" + tag, counts.get(tag, 0),
+                                    key == active, force_show=(key == active))
+        row_w.setVisible(bool(counts) or fav_n > 0 or self._fav_only
+                         or bool(self._tag_filter))
+
+    def _toggle_fav_filter(self):
+        """只看收藏 / 取消：作用在当前标签页上。"""
+        self._fav_only = not self._fav_only
+        self._refresh_tab(self._active_type)
+        self._update_preview()
+        if self._fav_only:
+            n = self.store.fav_count(
+                None if self._active_type == "all" else self._active_type)
+            self._set_status(tr("st_fav_filter", n=n))
+        else:
+            self._set_status(tr("st_fav_filter_off"))
+
+    def _toggle_tag_filter(self, tag):
+        """点标签胶囊：只看该标签；再点一次取消。"""
+        tag = normalize_tag(tag)
+        if not tag:
+            return
+        if (self._tag_filter or "").lower() == tag.lower():
+            self._tag_filter = None
+            self._refresh_tab(self._active_type)
+            self._update_preview()
+            self._set_status(tr("st_tag_filter_off"))
+            return
+        self._tag_filter = tag
+        self._refresh_tab(self._active_type)
+        self._update_preview()
+        self._set_status(tr("st_tag_filter", tag=tag))
+
+    def _clear_tag_filter(self):
+        if not self._tag_filter and not self._fav_only:
+            return
+        self._tag_filter = None
+        self._fav_only = False
+        self._refresh_tab(self._active_type)
+        self._update_preview()
+
     def _build_tab(self, parent, etype):
         lay = QVBoxLayout(parent)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -5479,6 +5835,13 @@ class YouBoardApp(QMainWindow):
         copy_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         copy_btn.clicked.connect(self._copy_selected)
         act_row.addWidget(copy_btn)
+        # 收藏 / 取消收藏（多选时整批处理，和「置顶」的多选行为一致）
+        fav_btn = QPushButton(tr("btn_fav"))
+        fav_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        fav_btn.setIcon(_star_icon(14))
+        fav_btn.setIconSize(QSize(13, 13))
+        fav_btn.clicked.connect(self._toggle_fav_selected)
+        act_row.addWidget(fav_btn)
         for label, slot in [(tr("btn_pin"), self._pin_selected),
                             (tr("btn_unpin"), self._unpin_selected),
                             (tr("btn_delete"), self._delete_selected)]:
@@ -5517,8 +5880,11 @@ class YouBoardApp(QMainWindow):
                 chip.clicked.connect(lambda _, k=key: self._set_file_kind(k))
                 kind_row.addWidget(chip)
                 self._file_kind_btns[key] = chip
-            kind_row.addStretch()
+                kind_row.addStretch()
             lay.addLayout(kind_row)
+
+        # 标签 / 收藏筛选行：贴着列表，有标签或收藏时才出现
+        self._build_filter_row(lay, etype)
 
         table = _Table()
         table._owner = self          # 让列表内的 Ctrl+C 能复制完整原文（见 _Table.keyPressEvent）
@@ -5643,6 +6009,26 @@ class YouBoardApp(QMainWindow):
         box_lay = QVBoxLayout(preview_box)
         box_lay.setContentsMargins(4, 4, 4, 4)
         box_lay.setSpacing(0)
+        # 预览顶部：收藏按钮 + 标签 + 「编辑标签…」（选中记录时才有内容）
+        self._preview_meta = QFrame()
+        self._preview_meta.setStyleSheet("background: transparent; border: none;")
+        meta_lay = QHBoxLayout(self._preview_meta)
+        meta_lay.setContentsMargins(6, 2, 6, 4)
+        meta_lay.setSpacing(8)
+        self._preview_fav_btn = QPushButton(tr("btn_fav"))
+        self._preview_fav_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._preview_fav_btn.clicked.connect(self._toggle_fav_preview)
+        meta_lay.addWidget(self._preview_fav_btn)
+        self._preview_tags_lbl = QLabel(tr("tags_none"))
+        self._preview_tags_lbl.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        meta_lay.addWidget(self._preview_tags_lbl, 1)
+        self._preview_tags_btn = QPushButton(tr("btn_edit_tags"))
+        self._preview_tags_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._preview_tags_btn.clicked.connect(self._edit_tags_selected)
+        meta_lay.addWidget(self._preview_tags_btn)
+        self._preview_meta.setVisible(False)
+        box_lay.addWidget(self._preview_meta)
         self._preview_scroll = QScrollArea()
         self._preview_scroll.setWidgetResizable(True)
         if is_glass_active():
@@ -5767,6 +6153,8 @@ class YouBoardApp(QMainWindow):
              self._delete_selected)
         _add(cfg.get("hk_pin", _ACTION_HOTKEY_DEFAULTS["hk_pin"]),
              self._toggle_pin_selected)
+        _add(cfg.get("hk_fav", _ACTION_HOTKEY_DEFAULTS["hk_fav"]),
+             self._toggle_fav_selected)
         _add(cfg.get("hk_next_tab", _ACTION_HOTKEY_DEFAULTS["hk_next_tab"]),
              self._next_tab)
         _add(cfg.get("hk_prev_tab", _ACTION_HOTKEY_DEFAULTS["hk_prev_tab"]),
@@ -5959,6 +6347,8 @@ class YouBoardApp(QMainWindow):
             if self._file_kind != "all":
                 entries = [e for e in entries
                            if kinds.get(id(e)) == self._file_kind]
+        # 标签 / 收藏筛选（在所有标签页都生效）
+        entries = self._refresh_filters(etype, entries)
         total_all = len(entries)
         shown = entries[:DISPLAY_LIMIT]
         table.setRowCount(len(shown))
@@ -5974,6 +6364,7 @@ class YouBoardApp(QMainWindow):
             except ValueError:
                 time_str = ts[:19] if len(ts) >= 19 else ts
             is_pin = entry["hash"] in self._pinned_hashes
+            is_fav = entry_is_fav(entry)
             missing = (row_type == "file" and
                        self._file_missing.get(entry.get("hash", ""), False))
             status = "\U0001f4cc" if is_pin else ""
@@ -6051,6 +6442,9 @@ class YouBoardApp(QMainWindow):
                 if (_flex_col is not None and col == _flex_col and is_pin):
                     # 置顶的记录额外画一个主题色小胶囊，任何分类里都能一眼看出
                     item.setData(_InlineImageDelegate.PIN_ROLE, tr("btn_pin"))
+                if (_flex_col is not None and col == _flex_col and is_fav):
+                    # 已收藏：内容前加一颗主题色星
+                    item.setData(_InlineImageDelegate.FAV_ROLE, True)
                 # 序号 / 时间 / 状态居中；数量·格式·尺寸·大小 这几个小列也跟着表头居中，
                 # 否则表头居中、数值左对齐，看上去就"没对上"
                 if col in (0, 1, 2) or (etype in ("image", "file") and col >= 4):
@@ -6381,6 +6775,7 @@ class YouBoardApp(QMainWindow):
         self._preview_gen += 1
         self._cur_image_path = None
         self._cur_image_entry = None
+        self._refresh_preview_meta(None)
         self._clear_preview()
         lbl = QLabel(tr("preview_placeholder"))
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -6403,6 +6798,7 @@ class YouBoardApp(QMainWindow):
             self._show_preview_placeholder()
             return
         etype = entry.get("type", "text")
+        self._refresh_preview_meta(entry)
         if etype == "text":
             self._preview_text(entry)
         elif etype == "image":
@@ -6411,6 +6807,44 @@ class YouBoardApp(QMainWindow):
             self._preview_url(entry)
         else:
             self._preview_files(entry)
+
+    def _refresh_preview_meta(self, entry):
+        """预览顶部的收藏 / 标签条：没选中记录时整条隐藏。"""
+        bar = getattr(self, "_preview_meta", None)
+        if bar is None:
+            return
+        self._preview_hash = entry.get("hash") if entry else None
+        if not entry:
+            bar.setVisible(False)
+            return
+        bar.setVisible(True)
+        fav = entry_is_fav(entry)
+        self._preview_fav_btn.setText(tr("btn_faved") if fav else tr("btn_fav"))
+        # 实心星 = 已收藏，空心星 = 未收藏（矢量画，不依赖字体字形）
+        self._preview_fav_btn.setIcon(
+            _star_icon(14, C['ACCENT'] if fav else C['TEXT_SEC'], fav))
+        self._preview_fav_btn.setIconSize(QSize(13, 13))
+        if fav:
+            self._preview_fav_btn.setStyleSheet(
+                f"QPushButton {{ background: {C['ACCENT_DIM']};"
+                f" color: {C['ACCENT']}; border: 1px solid {C['ACCENT']};"
+                f" border-radius: 11px; padding: 3px 10px; font-size: 11px;"
+                f" font-weight: 700; }}")
+        else:
+            self._preview_fav_btn.setStyleSheet(
+                f"QPushButton {{ background: {C['SURFACE2']};"
+                f" color: {C['TEXT_SEC']}; border: 1px solid {C['BORDER']};"
+                f" border-radius: 11px; padding: 3px 10px; font-size: 11px; }}"
+                f"QPushButton:hover {{ background: {C['SURFACE3']};"
+                f" color: {C['TEXT']}; }}")
+        tags = entry_tags(entry)
+        text = "   ".join("#" + t for t in tags) if tags else tr("tags_none")
+        if len(text) > 90:
+            text = text[:90] + "…"
+        self._preview_tags_lbl.setText(text)
+        self._preview_tags_lbl.setStyleSheet(
+            f"color: {C['ACCENT'] if tags else C['TEXT_MUTED']};"
+            f" font-size: 12px; background: transparent;")
 
     def _preview_text(self, entry):
         self._preview_gen += 1
@@ -6857,6 +7291,65 @@ class YouBoardApp(QMainWindow):
         self._after_mutate(tr("st_pin_toggled", a=pinned, b=unpinned))
         self.lightbar.surge(42.0, 0.9)
 
+    def _all_selected_fav(self):
+        """选中的记录是不是都已经收藏了（决定菜单里显示"收藏"还是"取消收藏"）。"""
+        hashes = self._get_selected_hashes()
+        return bool(hashes) and all(self.store.is_fav(h) for h in hashes)
+
+    def _toggle_fav_selected(self):
+        """收藏 / 取消收藏（多选整批处理，与「置顶」的多选行为一致）。"""
+        hashes = self._get_selected_hashes()
+        if not hashes:
+            return
+        all_fav = all(self.store.is_fav(h) for h in hashes)
+        n = self.store.set_fav_many(hashes, not all_fav)
+        self._after_mutate(tr("st_fav_unset", n=n) if all_fav
+                           else tr("st_fav_set", n=n))
+        self.lightbar.surge(52.0, 0.9)
+
+    def _toggle_fav_preview(self):
+        """预览面板上的收藏按钮：只作用于当前预览的那一条。"""
+        h = self._preview_hash
+        if not h:
+            return
+        flag = self.store.toggle_fav(h)
+        if flag is None:
+            return
+        self._after_mutate(tr("st_fav_set", n=1) if flag
+                           else tr("st_fav_unset", n=1))
+
+    def _edit_tags_selected(self):
+        """编辑标签：选一条是完整编辑，选多条是"批量添加"。"""
+        hashes = self._get_selected_hashes()
+        if not hashes:
+            self._set_status(tr("st_tags_none"), "warn")
+            return
+        first = self._entry_index.get(hashes[0])
+        if first is None:
+            return
+        known = self.store.all_tags()
+        if len(hashes) == 1:
+            dlg = _TagsDialog(self, self, entry_tags(first), known,
+                              mode="edit", count=1)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            if self.store.set_tags(hashes[0], dlg.selected_tags()):
+                self._after_mutate(tr("st_tags_saved", n=1))
+            return
+        # 多选：把选中记录已有的标签并起来当"已有标签"（批量添加不会重复加）
+        merged = []
+        for h in hashes:
+            merged.extend(entry_tags(self._entry_index.get(h) or {}))
+        dlg = _TagsDialog(self, self, merged, known,
+                          mode="add", count=len(hashes))
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        picked = dlg.selected_tags()
+        if not picked:
+            return
+        n = self.store.add_tags(hashes, picked)
+        self._after_mutate(tr("st_tags_saved", n=n))
+
     def _delete_selected(self):
         hashes = self._get_selected_hashes()
         if not hashes:
@@ -7022,6 +7515,10 @@ class YouBoardApp(QMainWindow):
             menu.addAction(tr("m_copy_paths"), lambda: self._copy_file_paths(entry))
         menu.addSeparator()
         menu.addAction(tr("m_toggle_pin"), self._toggle_pin_selected)
+        # 标签 / 收藏：同样放在分隔线下方，和置顶 / 删除归为一组操作
+        menu.addAction(tr("m_fav_off") if self._all_selected_fav()
+                       else tr("m_fav_on"), self._toggle_fav_selected)
+        menu.addAction(tr("m_edit_tags"), self._edit_tags_selected)
         menu.addAction(tr("m_delete_n", n=n) if n > 1 else tr("m_delete"), self._delete_selected)
         menu.exec(table.viewport().mapToGlobal(pos))
 
@@ -8002,6 +8499,7 @@ _ACTION_HOTKEY_DEFAULTS = {
     "hk_copy": "enter",
     "hk_delete": "delete",
     "hk_pin": "space",
+    "hk_fav": "ctrl+d",
     "hk_next_tab": "tab",
     "hk_prev_tab": "shift+tab",
 }
@@ -8453,7 +8951,7 @@ class _HotkeyDialog(QDialog):
         outer.addWidget(content, 1)
         self._add_row(lay, "hotkey", tr("set_hotkey_title"))
         lay.addWidget(self._make_sep())
-        for key in ("hk_copy", "hk_delete", "hk_pin",
+        for key in ("hk_copy", "hk_delete", "hk_pin", "hk_fav",
                     "hk_next_tab", "hk_prev_tab"):
             self._add_row(lay, key, tr(key))
         lay.addStretch()
@@ -10342,7 +10840,7 @@ class SettingsDialog(QDialog):
 
     def _init_hotkey_values(self, cfg):
         vals = {"hotkey": _canon_hotkey(cfg.get("hotkey", "alt+q"))}
-        for key in ("hk_copy", "hk_delete", "hk_pin",
+        for key in ("hk_copy", "hk_delete", "hk_pin", "hk_fav",
                     "hk_next_tab", "hk_prev_tab"):
             vals[key] = _canon_hotkey(
                 cfg.get(key, _ACTION_HOTKEY_DEFAULTS[key]))

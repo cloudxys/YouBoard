@@ -113,6 +113,51 @@ def test_core():
     check("upload decode", yp._decode_upload_image(buf.getvalue()) is not None)
     check("upload decode junk", yp._decode_upload_image(b"xx") is None)
 
+    # ---- 3.2.7 标签 / 收藏（纯本地） ----
+    tag_store = yc.ClipboardStore(path=os.path.join(tmp, "tags.json"))
+    tag_store.clear()
+    tag_store.add_text("标签功能回归样本一")
+    tag_store.add_text("标签功能回归样本二")
+    rows = tag_store.get_by_type("text")
+    th1, th2 = rows[0]["hash"], rows[1]["hash"]
+    check("tags: normalize", yc.normalize_tags([" 工作 ", "#工作", ""]) == ["工作"])
+    check("tags: set + read", tag_store.set_tags(th1, ["工作", "重要"])
+          and yc.entry_tags([e for e in tag_store.get_by_type("text")
+                             if e["hash"] == th1][0]) == ["工作", "重要"])
+    check("tags: counts", tag_store.tag_counts() == [("工作", 1), ("重要", 1)],
+          str(tag_store.tag_counts()))
+    check("tags: search hits tag", len(tag_store.search("重要", "text")) == 1)
+    check("tags: add/remove", tag_store.add_tags([th2], ["工作"]) == 1
+          and len(tag_store.entries_with_tag("工作")) == 2
+          and tag_store.remove_tags([th2], ["工作"]) == 1
+          and len(tag_store.entries_with_tag("工作")) == 1)
+    check("tags: fav toggle", tag_store.toggle_fav(th1) is True
+          and tag_store.is_fav(th1) and tag_store.fav_count() == 1
+          and tag_store.toggle_fav(th1) is False)
+    check("tags: set_fav_many", tag_store.set_fav_many([th1, th2], True) == 2
+          and tag_store.fav_count() == 2)
+    tag_store.add_text("标签功能回归样本一")      # 重复复制：标签 / 收藏不能丢
+    again = [e for e in tag_store.get_by_type("text") if e["hash"] == th1]
+    check("tags: kept on recopy",
+          len(again) == 1 and yc.entry_tags(again[0]) == ["工作", "重要"]
+          and bool(again[0].get("fav")))
+    tag_store.flush()
+    reloaded = yc.ClipboardStore(path=os.path.join(tmp, "tags.json"))
+    check("tags: persisted",
+          yc.entry_tags([e for e in reloaded.get_by_type("text")
+                         if e["hash"] == th1][0]) == ["工作", "重要"])
+    tag_store.merge_history({"text": {"pinned": [], "entries": [
+        {"hash": th1, "type": "text", "content": "标签功能回归样本一",
+         "timestamp": "2030-01-01T00:00:00", "length": 9}]},
+        "image": {"pinned": [], "entries": []},
+        "file": {"pinned": [], "entries": []},
+        "url": {"pinned": [], "entries": []}})
+    merged = [e for e in tag_store.get_by_type("text") if e["hash"] == th1][0]
+    check("tags: survive cloud merge",
+          yc.entry_tags(merged) == ["工作", "重要"] and bool(merged.get("fav")))
+    check("tags: legacy entry has none",
+          all(yc.entry_tags(e) == [] for e in store2.get_by_type("text")))
+
 
 def test_phone():
     import youboard_core as yc
@@ -304,6 +349,74 @@ def test_gui():
           all_table.item(0, 3).data(yq._InlineImageDelegate.BADGE_ROLE)
           in ("文本", "图片", "文件", "网址"))
     check("all no bracket", not all_table.item(0, 3).text().startswith("["))
+
+    # ---- 3.2.7 标签 / 收藏：筛选胶囊、星标、弹层 ----
+    fav_target = None
+    for i in range(all_table.rowCount()):
+        h = win._iid_to_hash["all"].get(i)
+        e = win._entry_index.get(h)
+        if e and e.get("type") == "text":
+            fav_target = e
+            break
+    if fav_target is None:
+        # 用户历史里万一没有文本记录，就地补一条，保证这段断言有对象
+        store.add_text("标签回归文本样本")
+        win._refresh_all()
+        fav_target = store.get_by_type("text")[0]
+    check("tags: sample entry available", fav_target is not None)
+    store.set_tags(fav_target["hash"], ["回归标签"])
+    store.set_fav(fav_target["hash"], True)
+    win._refresh_all()
+    for _ in range(6):
+        app.processEvents()
+    fav_chip = win._fav_chips.get("all")
+    check("tags: filter row built", fav_chip is not None
+          and "回归标签" in [t for t, _c in
+                             win._tag_chips["all"].values()],
+          str(list(win._tag_chips["all"].keys())))
+    check("tags: fav chip count", fav_chip is not None
+          and fav_chip.text().endswith("1"), fav_chip.text() if fav_chip else "")
+    rows_all = all_table.rowCount()
+    win._toggle_fav_filter()
+    for _ in range(6):
+        app.processEvents()
+    check("tags: fav filter works", 0 < all_table.rowCount() < rows_all
+          or all_table.rowCount() == 1,
+          "before=%s after=%s" % (rows_all, all_table.rowCount()))
+    check("tags: star flag on fav rows",
+          all(all_table.item(i, 3).data(yq._InlineImageDelegate.FAV_ROLE)
+              for i in range(all_table.rowCount())))
+    win._toggle_fav_filter()
+    win._toggle_tag_filter("回归标签")
+    for _ in range(6):
+        app.processEvents()
+    check("tags: tag filter works", all_table.rowCount() >= 1
+          and all_table.rowCount() <= rows_all,
+          "rows=%s" % all_table.rowCount())
+    win._toggle_tag_filter("回归标签")
+    pin_dlg = yq._TagsDialog(win, win, ["回归标签"], store.all_tags(),
+                             mode="edit", count=1)
+    check("tags: dialog seeded", pin_dlg.selected_tags() == ["回归标签"],
+          str(pin_dlg.selected_tags()))
+    pin_dlg._edit.setText("第二个标签")
+    pin_dlg._add_typed()
+    check("tags: dialog accepts typed",
+          sorted(pin_dlg.selected_tags()) == sorted(["回归标签", "第二个标签"]))
+    pin_dlg.close()
+    batch_dlg = yq._TagsDialog(win, win, ["回归标签"], store.all_tags(),
+                               mode="add", count=2)
+    batch_dlg._toggle("回归标签")
+    check("tags: add mode keeps existing out",
+          batch_dlg.selected_tags() == [])
+    batch_dlg.close()
+    check("tags: star drawn vectorially",
+          not yq._star_pixmap(13).isNull()
+          and yq._star_pixmap(13, filled=False).isNull() is False)
+    store.set_fav(fav_target["hash"], False)
+    store.set_tags(fav_target["hash"], [])
+    win._refresh_all()
+    for _ in range(4):
+        app.processEvents()
 
     # 快速面板已移除；Win+V 改为开关主窗口
     check("quick panel removed",

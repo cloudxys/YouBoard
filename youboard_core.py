@@ -71,6 +71,9 @@ SAVE_DEBOUNCE_SEC = 0.8
 # 关键词搜索时，外置正文超过该大小就不再逐字读取（避免搜索卡顿）
 SEARCH_READ_LIMIT = 8 * 1024 * 1024
 MAX_ENTRIES = None          # 无上限：不限制历史记录条数
+# 标签 / 收藏（3.2.7）：单条记录最多挂多少个标签、单个标签最长多少字符
+MAX_TAGS_PER_ENTRY = 20
+MAX_TAG_LEN = 24
 POLL_INTERVAL = 0.5
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 URL_PATTERN = re.compile(r'https?://\S+|www\.\S+')
@@ -1093,6 +1096,52 @@ def entry_full_text(entry):
     return entry.get("content", "") or ""
 
 
+def normalize_tag(name):
+    """标签归一化：去首尾空白与开头的 #、把连续空白压成一个空格、限长。
+
+    空标签（只有空白 / # 的输入）返回 ""。
+    """
+    if name is None:
+        return ""
+    text = str(name).replace("\u3000", " ").strip()
+    while text.startswith("#"):
+        text = text[1:].lstrip()
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > MAX_TAG_LEN:
+        text = text[:MAX_TAG_LEN]
+    return text
+
+
+def normalize_tags(tags):
+    """标签列表归一化：去空、去重（不区分大小写，保留先出现的写法）、限数量。"""
+    out, seen = [], set()
+    for raw in (tags or []):
+        tag = normalize_tag(raw)
+        if not tag:
+            continue
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+        if len(out) >= MAX_TAGS_PER_ENTRY:
+            break
+    return out
+
+
+def entry_tags(entry):
+    """读一条记录的标签列表（老数据没有该字段时返回空列表）。"""
+    if not isinstance(entry, dict):
+        return []
+    tags = entry.get("tags")
+    return list(tags) if isinstance(tags, list) else []
+
+
+def entry_is_fav(entry):
+    """这条记录是否已收藏。"""
+    return bool(isinstance(entry, dict) and entry.get("fav"))
+
+
 class ClipboardStore:
     def __init__(self, path=HISTORY_FILE, max_entries=MAX_ENTRIES):
         self.path = path
@@ -1343,6 +1392,7 @@ class ClipboardStore:
                 entry["content_size"] = len(text)
         with self._lock:
             cat = self.categories["text"]
+            self._carry_meta_locked(entry, h)
             cat["entries"] = [e for e in cat["entries"] if e["hash"] != h]
             cat["entries"].insert(0, entry)
             if self.max_entries and len(cat["entries"]) > self.max_entries:
@@ -1375,8 +1425,7 @@ class ClipboardStore:
         fmt = pil_image.format or "PNG"
         with self._lock:
             cat = self.categories["image"]
-            cat["entries"] = [e for e in cat["entries"] if e["hash"] != image_hash]
-            cat["entries"].insert(0, {
+            new_entry = {
                 "hash": image_hash, "type": "image",
                 "filename": f"images/{image_hash}.png",
                 "original_format": fmt,
@@ -1384,7 +1433,11 @@ class ClipboardStore:
                 "width": pil_image.width, "height": pil_image.height,
                 "file_size": os.path.getsize(save_path),
                 "timestamp": datetime.now().isoformat(),
-            })
+            }
+            # 重新复制同一张图时，先继承旧记录的标签 / 收藏，再替换
+            self._carry_meta_locked(new_entry, image_hash)
+            cat["entries"] = [e for e in cat["entries"] if e["hash"] != image_hash]
+            cat["entries"].insert(0, new_entry)
             if self.max_entries and len(cat["entries"]) > self.max_entries:
                 cat["entries"] = cat["entries"][:self.max_entries]
             self._save()
@@ -1401,14 +1454,16 @@ class ClipboardStore:
                 file_sizes.append(-1)
         with self._lock:
             cat = self.categories["file"]
-            cat["entries"] = [e for e in cat["entries"] if e["hash"] != files_hash]
-            cat["entries"].insert(0, {
+            new_entry = {
                 "hash": files_hash, "type": "file",
                 "file_paths": list(file_paths),
                 "file_sizes": file_sizes,
                 "file_count": len(file_paths),
                 "timestamp": datetime.now().isoformat(),
-            })
+            }
+            self._carry_meta_locked(new_entry, files_hash)
+            cat["entries"] = [e for e in cat["entries"] if e["hash"] != files_hash]
+            cat["entries"].insert(0, new_entry)
             if self.max_entries and len(cat["entries"]) > self.max_entries:
                 cat["entries"] = cat["entries"][:self.max_entries]
             self._save()
@@ -1422,11 +1477,13 @@ class ClipboardStore:
         h = self._text_hash(url)
         with self._lock:
             cat = self.categories["url"]
-            cat["entries"] = [e for e in cat["entries"] if e["hash"] != h]
-            cat["entries"].insert(0, {
+            new_entry = {
                 "hash": h, "type": "url", "content": url,
                 "timestamp": datetime.now().isoformat(), "length": len(url),
-            })
+            }
+            self._carry_meta_locked(new_entry, h)
+            cat["entries"] = [e for e in cat["entries"] if e["hash"] != h]
+            cat["entries"].insert(0, new_entry)
             if self.max_entries and len(cat["entries"]) > self.max_entries:
                 cat["entries"] = cat["entries"][:self.max_entries]
             self._save()
@@ -1503,6 +1560,194 @@ class ClipboardStore:
                 self._save()
         return count
 
+    # ---- tags / favorites（3.2.7：纯本地，标签与收藏都存在历史里） ----
+
+    def _scan_locked(self, entry_hash):
+        """在持锁状态下按 hash 找记录，返回 (cat, 列表名, 下标, 记录)；找不到返回 None。"""
+        if not entry_hash:
+            return None
+        for cat in self.categories.values():
+            for name in ("pinned", "entries"):
+                entries = cat.get(name) or []
+                for i, e in enumerate(entries):
+                    if e.get("hash") == entry_hash:
+                        return cat, name, i, e
+        return None
+
+    def _carry_meta_locked(self, entry, entry_hash):
+        """同 hash 重新收录时，把标签 / 收藏状态继承过来（重复复制同一内容不丢标签）。"""
+        found = self._scan_locked(entry_hash)
+        if not found:
+            return
+        prev = found[3]
+        tags = normalize_tags(entry_tags(prev))
+        if tags:
+            entry["tags"] = tags
+        if prev.get("fav"):
+            entry["fav"] = True
+
+    def set_tags(self, entry_hash, tags):
+        """整条替换某记录的标签；标签为空则清掉该字段。返回是否命中记录。"""
+        clean = normalize_tags(tags)
+        with self._lock:
+            found = self._scan_locked(entry_hash)
+            if not found:
+                return False
+            entry = found[3]
+            if clean:
+                entry["tags"] = clean
+            else:
+                entry.pop("tags", None)
+            self._save()
+            return True
+
+    def add_tags(self, hashes, tags):
+        """给多条记录追加标签（已有的不重复加），返回实际改动的条数。"""
+        clean = normalize_tags(tags)
+        if not clean:
+            return 0
+        changed = 0
+        with self._lock:
+            for h in (hashes or []):
+                found = self._scan_locked(h)
+                if not found:
+                    continue
+                entry = found[3]
+                cur = entry_tags(entry)
+                merged = normalize_tags(cur + clean)
+                if merged != cur:
+                    entry["tags"] = merged
+                    changed += 1
+        if changed:
+            self._save()
+        return changed
+
+    def remove_tags(self, hashes, tags):
+        """从多条记录里移除指定标签（不区分大小写），返回实际改动的条数。"""
+        drop = {normalize_tag(t).lower() for t in (tags or [])}
+        drop.discard("")
+        if not drop:
+            return 0
+        changed = 0
+        with self._lock:
+            for h in (hashes or []):
+                found = self._scan_locked(h)
+                if not found:
+                    continue
+                entry = found[3]
+                cur = entry_tags(entry)
+                kept = [t for t in cur if t.lower() not in drop]
+                if len(kept) != len(cur):
+                    changed += 1
+                    if kept:
+                        entry["tags"] = kept
+                    else:
+                        entry.pop("tags", None)
+        if changed:
+            self._save()
+        return changed
+
+    def all_tags(self, entry_type=None):
+        """全部标签，按记录数多的在前、同数量按名称排。"""
+        return [tag for tag, _ in self.tag_counts(entry_type)]
+
+    def tag_counts(self, entry_type=None):
+        """[(标签, 记录数)]：供筛选按钮显示数量用。"""
+        counts = {}
+        with self._lock:
+            for e in self._iter_locked(entry_type):
+                for tag in entry_tags(e):
+                    counts[tag] = counts.get(tag, 0) + 1
+        return sorted(counts.items(),
+                      key=lambda kv: (-kv[1], kv[0].lower()))
+
+    def tag_count(self, tag):
+        want = normalize_tag(tag).lower()
+        if not want:
+            return 0
+        with self._lock:
+            return sum(1 for e in self._iter_locked(None)
+                       if any(t.lower() == want for t in entry_tags(e)))
+
+    def entries_with_tag(self, tag, entry_type=None):
+        """带某标签的记录（顺序与列表页一致：置顶在前、其余按时间倒序）。"""
+        want = normalize_tag(tag).lower()
+        if not want:
+            return []
+        with self._lock:
+            return [e for e in self._iter_locked(entry_type)
+                    if any(t.lower() == want for t in entry_tags(e))]
+
+    def toggle_fav(self, entry_hash):
+        """切换收藏，返回切换后的状态；记录不存在时返回 None。"""
+        with self._lock:
+            found = self._scan_locked(entry_hash)
+            if not found:
+                return None
+            entry = found[3]
+            flag = not bool(entry.get("fav"))
+            if flag:
+                entry["fav"] = True
+            else:
+                entry.pop("fav", None)
+            self._save()
+            return flag
+
+    def set_fav(self, entry_hash, flag):
+        """设置收藏状态，返回是否命中记录（值没变也算命中）。"""
+        with self._lock:
+            found = self._scan_locked(entry_hash)
+            if not found:
+                return False
+            entry = found[3]
+            if flag:
+                entry["fav"] = True
+            else:
+                entry.pop("fav", None)
+            self._save()
+            return True
+
+    def set_fav_many(self, hashes, flag):
+        """批量设置收藏状态，返回实际改动的条数。"""
+        changed = 0
+        with self._lock:
+            for h in (hashes or []):
+                found = self._scan_locked(h)
+                if not found:
+                    continue
+                entry = found[3]
+                if bool(entry.get("fav")) != bool(flag):
+                    if flag:
+                        entry["fav"] = True
+                    else:
+                        entry.pop("fav", None)
+                    changed += 1
+        if changed:
+            self._save()
+        return changed
+
+    def is_fav(self, entry_hash):
+        with self._lock:
+            found = self._scan_locked(entry_hash)
+            return bool(found and found[3].get("fav"))
+
+    def fav_count(self, entry_type=None):
+        with self._lock:
+            return sum(1 for e in self._iter_locked(entry_type) if e.get("fav"))
+
+    def get_favorites(self, entry_type=None):
+        with self._lock:
+            return [e for e in self._iter_locked(entry_type) if e.get("fav")]
+
+    def _iter_locked(self, entry_type=None):
+        """在持锁状态下遍历记录（置顶在前）；不传类型就遍历四个分类。"""
+        keys = [entry_type] if entry_type else list(self.categories.keys())
+        for key in keys:
+            cat = self.categories.get(key) or {}
+            for name in ("pinned", "entries"):
+                for e in (cat.get(name) or []):
+                    yield e
+
     # ---- read ----
 
     def get_by_type(self, entry_type):
@@ -1544,8 +1789,22 @@ class ClipboardStore:
                         if not h:
                             continue
                         cur = seen.get(h)
-                        if cur is None or (e.get("timestamp", "") or "") >= (cur.get("timestamp", "") or ""):
+                        if cur is None:
                             seen[h] = e
+                            continue
+                        if ((e.get("timestamp", "") or "")
+                                >= (cur.get("timestamp", "") or "")):
+                            newer, older = e, cur
+                        else:
+                            newer, older = cur, e
+                        # 合并同一条记录：较新的一份留正文 / 时间，
+                        # 但两边的标签与收藏状态都要保住（本地打过标签的不能被云端覆盖掉）
+                        if older.get("fav"):
+                            newer["fav"] = True
+                        tags = normalize_tags(entry_tags(newer) + entry_tags(older))
+                        if tags:
+                            newer["tags"] = tags
+                        seen[h] = newer
                     merged[lst] = sorted(seen.values(),
                                          key=lambda x: x.get("timestamp", "") or "",
                                          reverse=True)
@@ -1936,6 +2195,10 @@ class ClipboardStore:
                 cat = self.categories.get(key, {"pinned": [], "entries": []})
                 for lst_name in ("pinned", "entries"):
                     for e in cat[lst_name]:
+                        # 标签也算命中：搜标签名就能把打了这条标签的记录捞出来
+                        if any(kw in str(t).lower() for t in entry_tags(e)):
+                            result.append(e)
+                            continue
                         if key in ("text", "url"):
                             head = e.get("content", "") or ""
                             if kw in head.lower():
