@@ -2867,7 +2867,10 @@ class _UpdateDialog(QDialog):
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # 窗口级模态：只挡住宿主窗口，桌面小组件（独立顶层窗口）仍然可以点、可以复制
+        # （应用级模态会把整个程序的所有窗口禁用，包括小组件）
         self.setModal(True)
+        self.setWindowModality(Qt.WindowModality.WindowModal)
         self.resize(900, 700)
 
         outer = QVBoxLayout(self)
@@ -3241,7 +3244,9 @@ class _CardOverlayDialog(QDialog):
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        # 同 _UpdateDialog：窗口级模态，别把桌面小组件一起禁掉
         self.setModal(True)
+        self.setWindowModality(Qt.WindowModality.WindowModal)
         self.resize(900, 700)
 
         outer = QVBoxLayout(self)
@@ -9623,7 +9628,9 @@ class _HotkeyDialog(QDialog):
     def __init__(self, parent, values):
         super().__init__(parent)
         header = _make_frameless_dialog(self, tr("set_hotkeys_title"))
+        # 窗口级模态：只挡住宿主窗口，桌面小组件仍然可用
         self.setModal(True)
+        self.setWindowModality(Qt.WindowModality.WindowModal)
         self.setMinimumWidth(520 if LANG == "en" else 440)
         self._values = dict(values)
         self._rows = {}
@@ -9691,6 +9698,7 @@ class _HotkeyDialog(QDialog):
     def _change(self, key, cur_lbl):
         dlg = QDialog(self)
         dialog_header = _make_frameless_dialog(dlg, tr("hk_dialog_title"))
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
         dlg.setModal(True)
         dlg.setMinimumWidth(340)
         outer = QVBoxLayout(dlg)
@@ -10877,6 +10885,9 @@ class SettingsDialog(QDialog):
         super().__init__(app)
         self.app = app
         header = _make_frameless_dialog(self, tr("settings_title"))
+        # 窗口级模态：设置窗口只挡住宿主窗口，桌面小组件照样能点、能复制
+        # （应用级模态会禁用整个程序的所有窗口，包括小组件）
+        self.setWindowModality(Qt.WindowModality.WindowModal)
         self.resize(620 if LANG == "en" else 500, 740)
         self.setMinimumSize(560 if LANG == "en" else 460, 560)
         if LOGO_ICO and os.path.exists(LOGO_ICO):

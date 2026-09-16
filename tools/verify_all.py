@@ -737,7 +737,8 @@ def test_gui():
     sdlg = yq.SettingsDialog(win)
     check("ai: settings page row only", sdlg._ai_lbl.text() != ""
           and not hasattr(sdlg, "_ai_provider"))
-    cfg_dlg = yq._AISettingsDialog(sdlg, win, sdlg._ai_values)
+    # 用内置默认预设构造，避免用户自己存过 AI 配置后这里断言不到默认值
+    cfg_dlg = yq._AISettingsDialog(sdlg, win, yq.default_ai_settings())
     check("ai: config dialog is card style",
           isinstance(cfg_dlg, yq._CardOverlayDialog)
           and cfg_dlg.card.styleSheet()
