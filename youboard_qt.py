@@ -109,12 +109,12 @@ from youboard_sync import (
     SyncError, GistSyncClient, WebDAVSyncClient,
     encrypt_bundle, decrypt_bundle, protect_secret, unprotect_secret,
 )
+# 版本号唯一来源：youboard_version.py（改版本只改那一个文件）
+from youboard_version import APP_NAME, APP_VERSION
 
 # ===========================================================================
 # Constants
 # ===========================================================================
-APP_NAME = "YouBoard"
-APP_VERSION = "3.2.5"
 LOGO_ICO = get_icon_path()
 # 四个数据分类；「全部」是 3.1.0 新增的聚合标签，只用于界面展示
 DATA_TYPES = ("text", "image", "file", "url")

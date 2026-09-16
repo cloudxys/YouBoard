@@ -1,8 +1,8 @@
-﻿; YouBoard v3.2.5 Inno Setup 安装脚本
+﻿; YouBoard Inno Setup 安装脚本
 ; 功能：多盘检测选最大空闲盘根目录安装，数据保留更新，uninstall.exe，自定义图标
 
-#define MyAppName "YouBoard"
-#define MyAppVersion "3.2.5"
+; 版本号唯一来源 youboard_version.py；version_defines.iss 由 tools/sync_version.py 生成
+#include "version_defines.iss"
 #define MyAppPublisher "YouBoard"
 #define MyAppExeName "YouBoard.exe"
 #define MyAppURL "https://github.com/cloudxys/YouBoard"

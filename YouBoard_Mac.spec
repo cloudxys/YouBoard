@@ -8,6 +8,12 @@
 产物：dist/YouBoard.app
 """
 
+import os
+import sys
+
+# 版本号唯一来源：仓库根目录的 youboard_version.py
+sys.path.insert(0, SPECPATH)
+from youboard_version import APP_VERSION  # noqa: E402
 
 a = Analysis(
     ['youboard_qt.py'],
@@ -80,8 +86,8 @@ app = BUNDLE(
     info_plist={
         'CFBundleDisplayName': 'YouBoard',
         'CFBundleName': 'YouBoard',
-    'CFBundleShortVersionString': '3.2.5',
-    'CFBundleVersion': '3.2.5',
+        'CFBundleShortVersionString': APP_VERSION,
+        'CFBundleVersion': APP_VERSION,
         'NSHighResolutionCapable': True,
         'LSMinimumSystemVersion': '11.0',
         'NSHumanReadableCopyright': 'YouBoard - Clipboard History Manager',

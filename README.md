@@ -2,7 +2,17 @@
 
 一款轻量级 Windows 剪贴板管理工具，自动记录复制历史，支持文本、图片、文件、网址四大分类，附带桌面实时小组件与手机传输，随取随用。
 
-## 🆕 v3.2.5 更新内容
+[![Latest release](https://img.shields.io/github/v/release/cloudxys/YouBoard?color=2fb3a0&label=version)](https://github.com/cloudxys/YouBoard/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/cloudxys/YouBoard/total?color=2fb3a0&label=downloads)](https://github.com/cloudxys/YouBoard/releases)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-2fb3a0)
+[![License](https://img.shields.io/badge/license-MIT-2fb3a0)](https://github.com/cloudxys/YouBoard/blob/main/LICENSE)
+[![Stars](https://img.shields.io/github/stars/cloudxys/YouBoard?color=2fb3a0&label=stars)](https://github.com/cloudxys/YouBoard/stargazers)
+
+## 🆕 v3.2.6 更新内容
+
+- **发版前自动跑回归测试（新增门禁）** — 回归测试脚本搬进仓库（`tools/verify_all.py`），CI 在打包**之前**先跑一遍，不通过就不打包、不发版；换机器 / 在 CI 上都不用改路径，失败会以非 0 退出码中断流程
+- **版本号只有一个来源** — 新增 `youboard_version.py`（唯一来源）与 `tools/sync_version.py`（生成 `version_info.txt`、`version_defines.iss`，并可一并更新文档里的下载文件名）。程序本体、macOS 的 CFBundleVersion、CI 产物名都直接读它，安装包用 `#include "version_defines.iss"`——以后发版只改一个文件
+- **README 顶部加了徽章** — 最新版本 / 下载量 / 支持平台 / License / Star，由 shields.io 动态生成，发新版后版本号徽章会自动更新
 
 - **修掉"从上往下扫过按钮时手型光标不出现"** — 设置窗口里鼠标从上往下经过按钮，光标不变手型，只有从下往上才有。根因是那个"光标兜底刷新"依赖 `QApplication.widgetAt`，而它在自己的无边框 / 半透明窗口上经常取不到控件（返回 None），整条兜底就失效了；现在改成沿窗口自己的控件树用 `childAt` 查找（重叠时优先对话框、再取最具体的那个窗口）
 - **可点控件的光标统一** — 之前开关、以及少数按钮（设置里的「选择背景图片」「恢复默认」、手机传输里的「复制链接 / 刷新二维码 / 关闭」等）没设手型光标，现在统一补齐（只在控件可用、可见时生效）
@@ -84,7 +94,7 @@
 ## 📥 下载安装
 
 ### 安装版（推荐）
-下载 `YouBoard_Setup_v3.2.4.exe`，双击安装，自动创建快捷方式和卸载程序。
+下载 `YouBoard_Setup_v3.2.6.exe`，双击安装，自动创建快捷方式和卸载程序。
 覆盖安装时自动保留所有用户数据（剪贴板历史、配置、背景图、快捷键设置）。
 
 ### 便携版
@@ -162,7 +172,7 @@ pyinstaller --noconsole --onefile --name YouBoard --icon=YouBoard.ico --add-data
 
 安装 [Inno Setup 7](https://jrsoftware.org/isdl.php) 后，打开 `youboard_setup.iss` 编译即可。
 
-输出：`YouBoard_Setup_v3.2.4.exe`
+输出：`YouBoard_Setup_v3.2.6.exe`
 
 ## 📁 项目结构
 
@@ -205,6 +215,18 @@ YouBoard/
 ```
 
 ## 📜 更新日志
+
+### YouBoard v3.2.6
+
+- 🧪 **发版门禁：CI 先跑回归再打包**
+  - 回归脚本从仓库外搬进 `tools/verify_all.py`，路径按脚本位置推导（本机 / CI 通用），失败时以非 0 退出码中断
+  - `.github/workflows/build.yml` 的 Windows 任务里，在"构建 EXE"之前增加 `Regression suite (gate)` 步骤；测试不过 → 不打包、不发布
+- 🔢 **版本号单一来源**
+  - 新增 `youboard_version.py`（唯一真源）与 `tools/sync_version.py`（`--docs` 顺带同步文档里的下载文件名，`--print` 供 CI 取版本）
+  - 生成物：`version_info.txt`（EXE 版本资源）、`version_defines.iss`（安装包 `#include` 它）
+  - `youboard_qt.py` 改为 `from youboard_version import APP_VERSION`；`YouBoard_Mac.spec` 的 `CFBundleVersion`、`build_mac.sh` 的 DMG 名、CI 的产物名（改用通配符 / `$APP_VERSION`）都不再写死版本号
+  - 效果：以前改个版本要动 8 个文件、39 处字符串；现在只改 `youboard_version.py` 一处，跑一次 `python tools/sync_version.py --docs`
+- 🏷️ **README 顶部徽章** — 用 shields.io 动态徽章显示最新版本 / 下载量 / 平台 / License / Star
 
 ### YouBoard v3.2.5
 
