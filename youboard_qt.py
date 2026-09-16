@@ -114,7 +114,7 @@ from youboard_sync import (
 # Constants
 # ===========================================================================
 APP_NAME = "YouBoard"
-APP_VERSION = "3.2.4"
+APP_VERSION = "3.2.5"
 LOGO_ICO = get_icon_path()
 # 四个数据分类；「全部」是 3.1.0 新增的聚合标签，只用于界面展示
 DATA_TYPES = ("text", "image", "file", "url")
@@ -3854,6 +3854,62 @@ class _CornerHandle(QWidget):
 # ===========================================================================
 # Custom Title Bar (frameless window)
 # ===========================================================================
+def _widget_under_cursor():
+    """取鼠标下方的控件——比 QApplication.widgetAt 可靠。
+
+    QApplication.widgetAt 依赖平台的 topLevelAt：本应用自己的无边框 / 半透明窗口
+    有时根本取不到（返回 None），那样下面这个光标兜底刷新就整条失效，表现就是
+    "从上往下扫过按钮时手型光标不出现，只有反向才有"。这里直接沿着应用自己的
+    窗口树用 childAt 找，不依赖平台。
+    """
+    pos = QCursor.pos()
+    try:
+        cands = []
+        for tl in QApplication.topLevelWidgets():
+            if not tl.isVisible() or tl.isMinimized():
+                continue
+            if not tl.frameGeometry().contains(pos):
+                continue
+            is_dialog = bool(tl.windowFlags() & Qt.WindowType.Dialog)
+            cands.append((0 if is_dialog else 1,
+                          tl.width() * tl.height(), tl))
+        # 多个窗口重叠时（对话框盖在主窗口上），优先对话框、再挑面积最小的
+        for _rank, _area, tl in sorted(cands, key=lambda x: (x[0], x[1])):
+            child = tl.childAt(tl.mapFromGlobal(pos))
+            w = child if child is not None else tl
+            # childAt 可能返回按钮内部的装饰子控件，向上找最近的可点控件
+            for _ in range(4):
+                if isinstance(w, (QPushButton, QCheckBox, QComboBox)):
+                    break
+                parent = w.parentWidget()
+                if parent is None:
+                    break
+                w = parent
+            return w
+    except Exception:
+        pass
+    return None
+
+
+def _apply_hand_cursor(root):
+    """给还没设光标的可点控件补上手型（按钮 / 开关 / 下拉）。
+
+    之前只有部分按钮设了手型，开关和少数按钮没有，导致"同样是能点的东西，
+    光标却不一样"。这里统一补齐（已禁用或不可见的跳过）。
+    """
+    try:
+        widgets = list(root.findChildren(QWidget)) + [root]
+    except Exception:
+        return
+    for w in widgets:
+        if not isinstance(w, (QPushButton, QCheckBox, QComboBox)):
+            continue
+        if not w.isEnabled() or not w.isVisible():
+            continue
+        if w.cursor().shape() != Qt.CursorShape.PointingHandCursor:
+            w.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+
 def _refresh_cursor_under_mouse(widget=None):
     """鼠标下方控件的光标兜底刷新（设置 / 云同步窗口里的定时器调用）。
 
@@ -3865,7 +3921,7 @@ def _refresh_cursor_under_mouse(widget=None):
       ③ 自己设过光标的手型按钮（滚动时容易不刷新）重新应用一次。
     """
     try:
-        w = widget if widget is not None else QApplication.widgetAt(QCursor.pos())
+        w = widget if widget is not None else _widget_under_cursor()
         if w is None or isinstance(w, (_EdgeHandle, _CornerHandle, _ResizeGrip)):
             return
         shape = w.cursor().shape()
@@ -5158,6 +5214,7 @@ class YouBoardApp(QMainWindow):
         super().showEvent(event)
         self._resume_motion()
         self._track_edge_cursor()          # 子控件也要汇报鼠标移动（光标才跟着走）
+        _apply_hand_cursor(self)           # 可点控件统一手型光标
         QTimer.singleShot(250, self._check_files_changed)
 
     def hideEvent(self, event):
@@ -8931,6 +8988,10 @@ class PhoneTransferDialog(QDialog):
         except Exception:
             pass
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        _apply_hand_cursor(self)          # 可点控件统一手型光标
+
     def closeEvent(self, event):
         self._qr_worker.stop()
         self._qr_worker.wait(1500)
@@ -10038,6 +10099,7 @@ class SettingsDialog(QDialog):
 
     def _force_cursor_refresh(self):
         """兜底光标刷新（只刷新按钮自己的手型光标，不再把缩放箭头钉到子控件上）。"""
+        _apply_hand_cursor(self)
         _refresh_cursor_under_mouse()
 
     def showEvent(self, event):
@@ -10782,6 +10844,7 @@ class CloudSyncDialog(QDialog):
 
     def _force_cursor_refresh(self):
         """兜底光标刷新（只刷新按钮自己的手型光标，不再把缩放箭头钉到子控件上）。"""
+        _apply_hand_cursor(self)
         _refresh_cursor_under_mouse()
 
     # ---- 配置 ----
