@@ -938,6 +938,8 @@ def test_gui():
         check("ai: file list text", "个文件" in _ftxt and "- " in _ftxt,
               _ftxt[:50].replace("\n", " | "))
     # 点 ✕ 收进托盘（默认关 = 直接退出）
+    check("app: quit-on-last-window disabled (tray app)",
+          app.quitOnLastWindowClosed() is False)
     _ccfg = yq.load_config()
     _ccfg["close_to_tray"] = True
     yq.save_config(_ccfg)

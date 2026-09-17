@@ -5962,6 +5962,12 @@ class YouBoardApp(QMainWindow):
 
     def __init__(self, store, monitor=None):
         super().__init__()
+        # 托盘程序：任何窗口被关掉都不该让进程自己结束（只有托盘退出 / 主窗口
+        # closeEvent 里的显式 quit 才退出），否则收进托盘或关掉某个对话框后
+        # 程序会悄悄消失，用户还得手动再打开一次
+        _app_inst = QApplication.instance()
+        if _app_inst is not None:
+            _app_inst.setQuitOnLastWindowClosed(False)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Window)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.store = store
@@ -8869,6 +8875,11 @@ class YouBoardApp(QMainWindow):
         if hasattr(self, '_tray') and self._tray:
             self._tray.hide()
         event.accept()
+        # 关掉主窗口就是要结束事件循环（上面关掉了"最后一个窗口自动退出"，
+        # 这里显式退；重启时 main() 的循环会据 restart_flag 再开一个新窗口）
+        if not getattr(self, "_restarting", False):
+            self._quitting = True
+        QApplication.quit()
 
     def _real_quit(self):
         self._quitting = True          # 真退出：别再被"收进托盘"拦下来
@@ -11224,6 +11235,16 @@ class ImportDialog(QDialog):
         _info_card(self, tr("port_title"),
                    tr("port_done", n=added) if added else tr("port_nothing"),
                    kind="latest" if added else "warning")
+        # 导入完成后确保主窗口看得见：即使用户是从托盘打开的导入窗口、
+        # 或者中途把窗口收进了托盘，也自动把工具显示出来，不用手动再开一次
+        try:
+            self.app.show()
+            if self.app.isMinimized():
+                self.app.showNormal()
+            self.app.raise_()
+            self.app.activateWindow()
+        except Exception:
+            pass
 
     def closeEvent(self, event):
         """关闭窗口时收好后台扫描线程，避免程序退出时线程仍在运行。"""
@@ -12950,6 +12971,10 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.installEventFilter(_ThemeTitleBarFilter(app))
+    # 托盘程序：绝不因为"最后一个窗口被关掉"就自己结束进程。
+    # 否则收进托盘 / 关掉导入窗口这类操作会让程序悄悄退出（用户要手动再打开）。
+    # 真正的退出只走托盘右键 → 退出，以及主窗口 closeEvent 里的显式 quit。
+    app.setQuitOnLastWindowClosed(False)
     # 任何槽函数/Signal 里的未捕获异常都打印并继续，避免直接退出应用（"卡退"）
     def _safe_excepthook(tp, val, tb):
         import traceback as _tb
