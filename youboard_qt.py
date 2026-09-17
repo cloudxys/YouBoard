@@ -115,6 +115,8 @@ from youboard_ai import (
     PROVIDERS, ai_text, load_ai_settings, save_ai_settings, provider_label,
     provider_info, prepare_request, default_ai_settings,
     prepare_chat_context, build_chat_messages, AI_CHAT_MAX_TURNS,
+    AI_IMAGE_ACTIONS, AI_FILE_ACTIONS, prepare_image_request,
+    prepare_image_chat_context, file_entries_text,
 )
 # 版本号唯一来源：youboard_version.py（改版本只改那一个文件）
 from youboard_version import APP_NAME, APP_VERSION
@@ -1560,6 +1562,19 @@ STRINGS = {
         "ai_chat_hint": "多轮对话只带最近 {n} 轮，不会把整段历史都发出去。",
         "ai_btn_export": "导出 TXT",
         "msg_export_failed": "导出失败：{err}",
+        # 图片 / 文件分类的 AI + 关闭行为开关（3.2.9）
+        "ai_act_describe": "描述这张图片", "ai_act_ocr": "提取图中文字",
+        "ai_act_img_translate": "翻译图中文字",
+        "ai_act_file_summary": "总结文件清单",
+        "ai_act_file_suggest": "给整理建议",
+        "ai_only_supported": "这条记录不支持 AI 处理",
+        "ai_image_note": "图片会先压到长边 1280 的 JPEG 再发送。",
+        "tray_still_running": "已收进托盘，还在后台运行（托盘图标右键可退出）",
+        "win_hidden_tray": "已收进托盘",
+        "set_close_tray": "点 ✕ 时收进托盘（不退出）",
+        "set_close_tray_desc": "关闭后点右上角 ✕ 只是把窗口收进托盘，"
+                               "复制记录、快捷键、手机传输都继续工作；"
+                               "要真正退出请用托盘右键 → 退出。",
         "btn_delete": "删除  Del", "btn_export": "导出", "btn_open": "打开  双击",
         "col_time": "时间", "col_preview": "内容预览", "col_filename": "文件名",
         "col_format": "格式", "col_dims": "尺寸", "col_size": "大小",
@@ -1958,6 +1973,22 @@ STRINGS = {
         "ai_chat_hint": "Only the last {n} turns are sent, so tokens stay bounded.",
         "ai_btn_export": "Export TXT",
         "msg_export_failed": "Export failed: {err}",
+        # image / file AI + close behaviour (3.2.9)
+        "ai_act_describe": "Describe this image",
+        "ai_act_ocr": "Extract text in the image",
+        "ai_act_img_translate": "Translate text in the image",
+        "ai_act_file_summary": "Summarize the file list",
+        "ai_act_file_suggest": "Suggest how to tidy it",
+        "ai_only_supported": "This entry does not support AI actions",
+        "ai_image_note": "Images are sent as JPEG, longest side 1280.",
+        "tray_still_running": "Kept in the tray and still running "
+                              "(right-click the tray icon to quit)",
+        "win_hidden_tray": "Moved to the tray",
+        "set_close_tray": "✕ keeps it in the tray (do not quit)",
+        "set_close_tray_desc": "When on, the ✕ button only hides the window "
+                               "to the tray: capture, hotkeys and phone "
+                               "transfer keep working. Use tray → Quit to "
+                               "really exit.",
         "btn_delete": "Delete  Del", "btn_export": "Export", "btn_open": "Open  Dbl-click",
         "col_time": "Time", "col_preview": "Preview", "col_filename": "Filename",
         "col_format": "Format", "col_dims": "Dimensions", "col_size": "Size",
@@ -4041,7 +4072,9 @@ class _AIDialog(_CardOverlayDialog):
                  custom_prompt="", lang=None, chat=False):
         self._app = app
         self._entry = entry or {}
-        self._action = action if action in AI_ACTIONS else "summarize"
+        _valid = tuple(AI_ACTIONS) + tuple(AI_IMAGE_ACTIONS) \
+            + tuple(AI_FILE_ACTIONS)
+        self._action = action if action in _valid else "summarize"
         self._custom = custom_prompt or ""
         self._lang = lang or LANG
         self._chat = bool(chat)
@@ -4053,6 +4086,7 @@ class _AIDialog(_CardOverlayDialog):
         self._context = []            # 对话模式：上下文消息
         self._transcript = ""         # 对话模式：整段对话（导出用）
         self._answer_start = 0        # 最近一次回答在 transcript 里的起点
+        self._notes = ""              # 截断 / 图片压缩这类提示，生成完也留着
         action_lbl = tr("ai_chat_title") if self._chat \
             else tr("ai_act_" + self._action)
         model = str(self._settings.get("model") or "").strip()
@@ -4187,18 +4221,55 @@ class _AIDialog(_CardOverlayDialog):
             f" padding: 8px 10px; font-size: 13px; }}")
 
     # ---- 请求 ----
+    def _image_path(self):
+        """图片记录对应的本地文件路径。"""
+        if self._app is None:
+            return ""
+        try:
+            return self._app._image_full_path(self._entry)
+        except Exception:
+            return ""
+
+    def _build_request(self):
+        """按记录类型组装请求：文本 / 网址按正文，图片走视觉模型，文件走清单。"""
+        etype = self._entry.get("type")
+        if etype == "image":
+            return prepare_image_request(self._action, self._image_path(),
+                                         self._settings, self._custom,
+                                         self._lang)
+        if etype == "file":
+            return prepare_request(self._action, file_entries_text(self._entry),
+                                   self._settings, self._custom, self._lang)
+        return prepare_request(self._action, entry_full_text(self._entry),
+                               self._settings, self._custom, self._lang)
+
+    def _request_notes(self, request):
+        """把「截断 / 图片压缩」这类提示拼成一行状态文字。"""
+        notes = []
+        if request.get("truncated"):
+            notes.append(ai_text("truncated", self._lang,
+                                 n=request.get("sent_chars", 0)))
+        info = request.get("image") or {}
+        if info:
+            size = info.get("bytes") or 0
+            size_txt = ("%.2f MB" % (size / 1048576.0)) if size else "?"
+            if info.get("size"):
+                notes.append(ai_text("image_sent", self._lang,
+                                     w=info["size"][0], h=info["size"][1],
+                                     size=size_txt))
+            notes.append(ai_text("need_vision", self._lang))
+        return " · ".join(notes)
+
     def _start_request(self):
         if self._client.config_problem():
             self._need_config = True
             self._sync_buttons()
             return
-        request = prepare_request(self._action, entry_full_text(self._entry),
-                                  self._settings, self._custom, self._lang)
+        request = self._build_request()
         self._result = ""
         self._set_body(tr("ai_running"))
-        self._status.setText(
-            ai_text("truncated", self._lang, n=request["sent_chars"])
-            if request["truncated"] else "")
+        self._notes = self._request_notes(request)
+        self._status.setText(self._notes)
         self._worker = _AIWorker(self._client, request["messages"], self)
         self._worker.delta.connect(self._on_delta)
         self._worker.done.connect(self._on_done)
@@ -4245,7 +4316,8 @@ class _AIDialog(_CardOverlayDialog):
             if text.strip():
                 self._history.append({"role": "assistant", "content": text})
                 self._append_raw("\n")
-                self._status.setText(tr("ai_done", n=len(text)))
+                self._status.setText(self._compose_status(
+                    tr("ai_done", n=len(text))))
             elif not ok:
                 self._append_raw("\n" + message + "\n")
                 self._status.setText(message)
@@ -4257,13 +4329,20 @@ class _AIDialog(_CardOverlayDialog):
         if text.strip():
             self._set_body(text)
         if ok:
-            self._status.setText(tr("ai_done", n=len(text)))
+            self._status.setText(self._compose_status(
+                tr("ai_done", n=len(text))))
         elif text.strip():
-            self._status.setText("%s · %s" % (message, tr("ai_stopped")))
+            self._status.setText(self._compose_status(
+                "%s · %s" % (message, tr("ai_stopped"))))
         else:
             self._set_body(message, error=True)
             self._status.setText("")
         self._sync_buttons(running=False)
+
+    def _compose_status(self, head):
+        """状态行 = 主提示 + 之前记下的说明（截断 / 图片压缩等）。"""
+        parts = [p for p in (head, getattr(self, "_notes", "")) if p]
+        return " · ".join(parts)
 
     # ---- 自由对话 ----
     def _append_raw(self, text):
@@ -4276,13 +4355,21 @@ class _AIDialog(_CardOverlayDialog):
         self._out.moveCursor(QTextCursor.MoveOperation.End)
 
     def _prepare_chat(self):
-        """准备上下文（只发这一条记录 + 后续提问）。"""
-        request = prepare_chat_context(entry_full_text(self._entry),
-                                       self._settings, self._lang)
+        """准备上下文（只发这一条记录 + 后续提问；图片走视觉）。"""
+        etype = self._entry.get("type")
+        if etype == "image":
+            request = prepare_image_chat_context(self._image_path(),
+                                                 self._lang)
+        elif etype == "file":
+            request = prepare_chat_context(file_entries_text(self._entry),
+                                           self._settings, self._lang)
+        else:
+            request = prepare_chat_context(entry_full_text(self._entry),
+                                           self._settings, self._lang)
         self._context = request["messages"]
-        if request["truncated"]:
-            self._status.setText(
-                ai_text("truncated", self._lang, n=request["sent_chars"]))
+        self._notes = self._request_notes(request)
+        if self._notes:
+            self._status.setText(self._notes)
 
     def _send_chat(self):
         if not self._chat:
@@ -8315,13 +8402,25 @@ class YouBoardApp(QMainWindow):
     # Right-click context menu
     # ------------------------------------------------------------------
     # ---- AI 就地处理（只对文本 / 网址记录） ----
+    @staticmethod
+    def _ai_actions_for(etype):
+        """不同分类下能用的 AI 动作。"""
+        if etype == "image":
+            return AI_IMAGE_ACTIONS
+        if etype == "file":
+            return AI_FILE_ACTIONS
+        return ("summarize", "translate", "rewrite", "extract", "custom")
+
     def _ai_menu_for(self, menu, entry):
         """把「AI 处理 ▸」子菜单加进右键菜单；不支持的类型返回 None。"""
-        if (entry or {}).get("type") not in ("text", "url"):
+        etype = (entry or {}).get("type")
+        if etype not in ("text", "url", "image", "file"):
             return None
         sub = _RoundMenu(menu)
         sub.setTitle(tr("ai_menu"))
-        for act in ("summarize", "translate", "rewrite", "extract"):
+        for act in self._ai_actions_for(etype):
+            if act == "custom":
+                continue
             sub.addAction(tr("ai_act_" + act),
                           lambda a=act: self._run_ai(a))
         sub.addSeparator()
@@ -8331,12 +8430,12 @@ class YouBoardApp(QMainWindow):
         return sub
 
     def _ai_target_entry(self):
-        """当前选中的记录；不是文本 / 网址时提示并返回 None。"""
+        """当前选中的记录；四类记录都支持（图片走视觉模型、文件走清单）。"""
         entry = self._get_selected_entry()
         if not entry:
             return None
-        if entry.get("type") not in ("text", "url"):
-            self._set_status(tr("ai_only_text"), "warn")
+        if entry.get("type") not in ("text", "url", "image", "file"):
+            self._set_status(tr("ai_only_supported"), "warn")
             return None
         return entry
 
@@ -8641,8 +8740,42 @@ class YouBoardApp(QMainWindow):
         except Exception:
             pass
 
+    @staticmethod
+    def _close_to_tray_enabled():
+        """设置里是否开了「点 ✕ 收进托盘」。"""
+        try:
+            return bool(load_config().get("close_to_tray", False))
+        except Exception:
+            return False
+
+    def _hide_to_tray(self):
+        """收进托盘：保存几何 / 落盘，隐藏窗口；桌面小组件照常留着。"""
+        self._save_window_geometry()
+        try:
+            self.store.flush()
+        except Exception:
+            pass
+        self.hide()
+        tray = getattr(self, "_tray", None)
+        if tray is not None:
+            try:
+                if not getattr(self, "_tray_hint_shown", False):
+                    self._tray_hint_shown = True
+                    tray.showMessage(APP_NAME, tr("tray_still_running"),
+                                     QSystemTrayIcon.MessageIcon.Information,
+                                     3000)
+            except Exception:
+                pass
+        self._set_status(tr("win_hidden_tray"), "ok")
+
     def closeEvent(self, event):
-        """X = quit the app."""
+        """X 按钮：默认直接退出；开启「点 ✕ 收进托盘」后只隐藏窗口。"""
+        if (not getattr(self, "_quitting", False)
+                and not getattr(self, "_restarting", False)
+                and self._close_to_tray_enabled()):
+            self._hide_to_tray()
+            event.ignore()
+            return
         self._pending_image = None
         self._cancel_image_loader()
         self._wait_aux_workers()
@@ -8672,6 +8805,7 @@ class YouBoardApp(QMainWindow):
         event.accept()
 
     def _real_quit(self):
+        self._quitting = True          # 真退出：别再被"收进托盘"拦下来
         self._pending_image = None
         self._cancel_image_loader()
         self._wait_aux_workers()
@@ -9406,6 +9540,7 @@ class YouBoardApp(QMainWindow):
         self.raise_()
 
     def _tray_quit(self):
+        self._quitting = True
         self._real_quit()
         QApplication.quit()
 
@@ -11201,6 +11336,21 @@ class SettingsDialog(QDialog):
 
         # General card
         self._card(tr("set_general"))
+        # 点 ✕ 的行为（放在最前面）：默认直接退出，开启后收进托盘
+        close_row = QHBoxLayout()
+        ct_lbl = QLabel(tr("set_close_tray"))
+        ct_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
+        close_row.addWidget(ct_lbl, 1)
+        self._close_tray_cb = QCheckBox()
+        self._close_tray_cb.setChecked(
+            bool(cfg.get("close_to_tray", False)))
+        close_row.addWidget(self._close_tray_cb)
+        self._lay.addLayout(close_row)
+        ct_desc = QLabel(tr("set_close_tray_desc"))
+        ct_desc.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
+        ct_desc.setWordWrap(True)
+        self._lay.addWidget(ct_desc)
+        self._add_sep()
         auto_row = QHBoxLayout()
         t1 = QLabel(tr("set_autostart"))
         t1.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
@@ -11908,6 +12058,7 @@ class SettingsDialog(QDialog):
             cfg["snd_paste_file"] = self._snd_file.get("paste", "") or ""
             cfg["takeover_winv"] = self._winv_cb.isChecked()
             cfg["temporary_session"] = self._session_cb.isChecked()
+            cfg["close_to_tray"] = self._close_tray_cb.isChecked()
             for k, v in self._hotkey_values.items():
                 if k != "hotkey":
                     cfg[k] = v

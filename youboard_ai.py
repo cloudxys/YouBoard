@@ -14,6 +14,7 @@
 """
 
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -34,7 +35,13 @@ AI_DEFAULT_TIMEOUT = 60
 AI_DEFAULT_RETRIES = 2
 # 多轮对话只带最近这么多轮（一问一答算一轮），避免 token 越滚越多
 AI_CHAT_MAX_TURNS = 6
+# 图片先压到这个长边再发（体积/费用可控；1280 对识图与 OCR 都够用）
+AI_IMAGE_MAX_SIDE = 1280
+AI_IMAGE_QUALITY = 82
 AI_ACTIONS = ("summarize", "translate", "rewrite", "extract", "custom")
+# 图片 / 文件分类下的动作
+AI_IMAGE_ACTIONS = ("describe", "ocr", "img_translate", "custom")
+AI_FILE_ACTIONS = ("file_summary", "file_suggest", "custom")
 # 设置里的服务商展示顺序：国内能直连的放前面
 AI_PROVIDER_ORDER = ("deepseek", "dashscope", "zhipu", "openai", "ollama",
                      "custom")
@@ -121,6 +128,15 @@ AI_TEXT = {
                      "en": "Provider error: {detail}"},
     "truncated": {"zh": "内容过长，只发送了前 {n} 个字符",
                   "en": "Content too long — only the first {n} characters were sent"},
+    "err_image_missing": {"zh": "图片文件不在了，没法分析",
+                          "en": "The image file is gone — cannot analyse it"},
+    "image_sent": {"zh": "已按 {w}×{h} 压缩后发送（{size}）",
+                   "en": "Sent as {w}×{h} after compression ({size})"},
+    "need_vision": {"zh": "图片分析需要支持视觉的模型，例如 deepseek-v4-flash-vision-exp、"
+                          "gpt-5.6、qwen3.5-omni-plus、glm-5v 或本地视觉模型",
+                    "en": "Image analysis needs a vision model, e.g. "
+                          "deepseek-v4-flash-vision-exp, gpt-5.6, "
+                          "qwen3.5-omni-plus, glm-5v or a local vision model"},
 }
 
 
@@ -312,6 +328,58 @@ AI_CHAT_CONTEXT = {
           "for this conversation. I will keep asking questions — answer with "
           "the result only, no greetings.\n\n{begin}\n{body}\n{end}",
 }
+
+# 「图片」分类：让模型看图（需要支持视觉的模型）
+AI_IMAGE_PROMPT = {
+    "describe": {
+        "zh": "请描述这张图片：主体是什么、什么场景、画面里有没有文字、整体风格。"
+              "用简洁的要点（3-6 条）。",
+        "en": "Describe this image: main subject, scene, any visible text, "
+              "overall style. Use 3-6 concise bullets.",
+    },
+    "ocr": {
+        "zh": "请把这张图片里的文字按原样提取出来（保留分行，不要翻译、不要解释）；"
+              "如果图里没有文字，就直接回答「没有文字」。",
+        "en": "Extract the text in this image verbatim (keep the line breaks; "
+              "do not translate or explain). If there is no text, just say "
+              "\"no text\".",
+    },
+    "img_translate": {
+        "zh": "请把这张图片里的文字翻译一下：图中是中文就译成英文，否则译成简体中文。"
+              "只输出译文，保留原有分行。",
+        "en": "Translate the text in this image: if it is Chinese, translate "
+              "into English; otherwise into Simplified Chinese. Output the "
+              "translation only, keeping the original line breaks.",
+    },
+    "custom": {
+        "zh": "请按下面的要求处理这张图片：{instruction}\n只输出结果。",
+        "en": "Handle this image following the instruction below: "
+              "{instruction}\nOutput the result only.",
+    },
+}
+
+# 「文件」分类：模型看不到文件内容，只能看清单（文件名 / 格式 / 大小）
+AI_FILE_PROMPT = {
+    "file_summary": {
+        "zh": "下面是我这次复制的文件清单（只有名称、格式、大小）。请总结："
+              "大概是什么内容或项目、有没有明显的重复、体积异常或缺失；用要点回答。",
+        "en": "Below is a list of files I copied (names, formats and sizes "
+              "only). Summarise what this likely is, and flag obvious "
+              "duplicates, oversized or missing items. Use bullets.",
+    },
+    "file_suggest": {
+        "zh": "请根据这份文件清单给出整理建议：怎么归档、要不要重命名、可以怎么分类；"
+              "简明列点，能直接照做。",
+        "en": "Suggest how to tidy this file list: how to archive it, whether "
+              "to rename anything, and how to group it. Keep it short and "
+              "actionable.",
+    },
+    "custom": {
+        "zh": "下面是我这次复制的文件清单。请按这个要求处理：{instruction}\n只输出结果。",
+        "en": "Below is a list of files I copied. Handle it following this "
+              "instruction: {instruction}\nOutput the result only.",
+    },
+}
 AI_TARGET = {"zh": {"zh": "简体中文", "en": "英文"},
              "en": {"zh": "Simplified Chinese", "en": "English"}}
 
@@ -382,6 +450,27 @@ def prepare_chat_context(text, settings=None, lang="zh"):
     }
 
 
+def prepare_image_chat_context(image_path, lang="zh"):
+    """图片记录的对话上下文：把图片本身作为参考资料。"""
+    lang = "en" if str(lang or "").lower().startswith("en") else "zh"
+    data_url, info = encode_image_data_url(image_path)
+    note = ("下面这张图片是我从剪贴板里复制的，作为这次对话的参考资料。"
+            "接下来我会继续提问，请结合它回答。"
+            if lang == "zh" else
+            "The image below is from my clipboard; use it as reference for "
+            "this conversation. I will keep asking questions.")
+    return {
+        "messages": [
+            {"role": "system", "content": AI_SYSTEM[lang]},
+            {"role": "user", "content": [
+                {"type": "text", "text": note},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ]},
+        ],
+        "truncated": False, "sent_chars": 0, "total_chars": 0, "image": info,
+    }
+
+
 def build_chat_messages(context_messages, history, user_text,
                         max_turns=AI_CHAT_MAX_TURNS):
     """多轮对话请求：上下文 + 最近若干轮 + 本次提问（限制轮数，token 才可控）。"""
@@ -392,6 +481,101 @@ def build_chat_messages(context_messages, history, user_text,
     msgs.extend(turns)
     msgs.append({"role": "user", "content": user_text or ""})
     return msgs
+
+
+# ===========================================================================
+# 图片 / 文件：多模态请求与文件清单
+# ===========================================================================
+
+def _fmt_bytes(n):
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return "?"
+    if n < 0:
+        return "?"
+    for unit, step in (("GB", 1024.0 ** 3), ("MB", 1024.0 ** 2),
+                       ("KB", 1024.0)):
+        if n >= step:
+            return "%.1f %s" % (n / step, unit)
+    return "%d B" % int(n)
+
+
+def encode_image_data_url(path, max_side=AI_IMAGE_MAX_SIDE,
+                          quality=AI_IMAGE_QUALITY):
+    """把本地图片压成长边 max_side 的 JPEG data URL；返回 (data_url, info)。"""
+    if not path or not os.path.exists(path):
+        raise AIError(ai_text("err_image_missing"), "image")
+    import base64
+    import io
+    try:
+        from PIL import Image
+        with Image.open(path) as raw_img:
+            img = raw_img.convert("RGB")
+            src_w, src_h = img.size
+            scale = min(1.0, float(max_side) / max(1, src_w, src_h))
+            if scale < 1.0:
+                img = img.resize((max(1, int(src_w * scale)),
+                                  max(1, int(src_h * scale))),
+                                 Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=quality, optimize=True)
+            data = buf.getvalue()
+            out_size = (img.width, img.height)
+        return ("data:image/jpeg;base64," + base64.b64encode(data).decode("ascii"),
+                {"bytes": len(data), "size": out_size,
+                 "original": (src_w, src_h)})
+    except AIError:
+        raise
+    except Exception:
+        # 没有 Pillow 或图片异常：原样发送（大图可能被服务商拒，但至少能试）
+        import mimetypes
+        mime = mimetypes.guess_type(path)[0] or "image/png"
+        with open(path, "rb") as f:
+            data = f.read()
+        return ("data:%s;base64,%s" % (mime, base64.b64encode(data).decode("ascii")),
+                {"bytes": len(data), "size": None, "original": None})
+
+
+def prepare_image_request(action, image_path, settings=None,
+                          custom_prompt="", lang="zh"):
+    """组装图片分析请求（文本指令 + 图片），返回与 prepare_request 同结构。"""
+    lang = "en" if str(lang or "").lower().startswith("en") else "zh"
+    action = action if action in AI_IMAGE_PROMPT else "describe"
+    if action == "custom":
+        tip = (custom_prompt or "").strip() or AI_IMAGE_PROMPT["describe"][lang]
+        instruction = AI_IMAGE_PROMPT[action][lang].format(instruction=tip)
+    else:
+        instruction = AI_IMAGE_PROMPT[action][lang]
+    data_url, info = encode_image_data_url(image_path)
+    user = instruction
+    messages = [
+        {"role": "system", "content": AI_SYSTEM[lang]},
+        {"role": "user", "content": [
+            {"type": "text", "text": user},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]},
+    ]
+    return {"action": action, "messages": messages, "truncated": False,
+            "sent_chars": len(user), "total_chars": len(user),
+            "image": info, "target": ""}
+
+
+def file_entries_text(entry, max_files=200):
+    """把一条「文件」记录渲染成给模型看的清单文本（只有名称 / 格式 / 大小）。"""
+    paths = list((entry or {}).get("file_paths") or [])
+    sizes = list((entry or {}).get("file_sizes") or [])
+    lines = []
+    for i, path in enumerate(paths[:max_files]):
+        name = os.path.basename(path) or path
+        ext = os.path.splitext(path)[1].lstrip(".").upper() or "无后缀"
+        size = sizes[i] if i < len(sizes) else -1
+        lines.append("- %s  (%s, %s)" % (name, ext, _fmt_bytes(size)))
+    if len(paths) > max_files:
+        lines.append("…（共 %d 个文件，只列前 %d 个）" % (len(paths), max_files))
+    total = sum(s for s in sizes if isinstance(s, (int, float)) and s > 0)
+    head = "共 %d 个文件，合计 %s：" % (len(paths), _fmt_bytes(total) if total else "?")
+    return head + "\n" + "\n".join(lines)
 
 
 # ===========================================================================

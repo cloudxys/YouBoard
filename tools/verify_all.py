@@ -753,10 +753,10 @@ def test_gui():
     check("ai: unconfigured shows hint", nc.calls == []
           and "API Key" in adlg4._status.text(), adlg4._status.text()[:30])
     adlg4.close()
-    check("ai: submenu only for text/url",
+    check("ai: submenu for text/url but not for unknown types",
           win._ai_menu_for(yq._RoundMenu(win), ai_entry) is not None
-          and win._ai_menu_for(yq._RoundMenu(win), {"hash": "h",
-                                                    "type": "image"}) is None)
+          and win._ai_menu_for(yq._RoundMenu(win),
+                               {"hash": "h", "type": "weird"}) is None)
     sdlg = yq.SettingsDialog(win)
     check("ai: settings page row only", sdlg._ai_lbl.text() != ""
           and not hasattr(sdlg, "_ai_provider"))
@@ -889,6 +889,64 @@ def test_gui():
     win.show()
     for _ in range(6):
         app.processEvents()
+
+    # ---- v3.2.9：图片 / 文件分类的 AI + 点 ✕ 收进托盘开关 ----
+    import youboard_ai as _yai9
+    _imgs = store.get_by_type("image")
+    _files = store.get_by_type("file")
+    check("ai: image entry available", bool(_imgs))
+    check("ai: file entry available", bool(_files))
+    if _imgs:
+        _imenu = win._ai_menu_for(yq._RoundMenu(win), _imgs[0])
+        _ilabels = [a.text() for a in _imenu.actions() if a.text()]
+        check("ai: image menu actions",
+              _ilabels[:3] == [yq.tr("ai_act_describe"), yq.tr("ai_act_ocr"),
+                               yq.tr("ai_act_img_translate")], str(_ilabels))
+        _ipath = os.path.join(dst, _imgs[0].get("filename", ""))
+        _ireq = yq.prepare_image_request("describe", _ipath, lang="zh")
+        _icontent = _ireq["messages"][1]["content"]
+        check("ai: image request is multimodal",
+              isinstance(_icontent, list) and len(_icontent) == 2
+              and _icontent[1]["type"] == "image_url"
+              and _icontent[1]["image_url"]["url"].startswith(
+                  "data:image/jpeg;base64,"))
+        check("ai: image downscaled before sending",
+              _ireq["image"]["size"][0] <= _yai9.AI_IMAGE_MAX_SIDE
+              and _ireq["image"]["size"][1] <= _yai9.AI_IMAGE_MAX_SIDE,
+              str(_ireq["image"]["size"]))
+    if _files:
+        _fmenu = win._ai_menu_for(yq._RoundMenu(win), _files[0])
+        _flabels = [a.text() for a in _fmenu.actions() if a.text()]
+        check("ai: file menu actions",
+              _flabels[:2] == [yq.tr("ai_act_file_summary"),
+                               yq.tr("ai_act_file_suggest")], str(_flabels))
+        _ftxt = yq.file_entries_text(_files[0])
+        check("ai: file list text", "个文件" in _ftxt and "- " in _ftxt,
+              _ftxt[:50].replace("\n", " | "))
+    # 点 ✕ 收进托盘（默认关 = 直接退出）
+    _ccfg = yq.load_config()
+    _ccfg["close_to_tray"] = True
+    yq.save_config(_ccfg)
+    check("close-to-tray: switch read from config",
+          win._close_to_tray_enabled() is True)
+    _cdlg = yq.SettingsDialog(win)
+    check("close-to-tray: switch sits in settings",
+          _cdlg._close_tray_cb is not None
+          and _cdlg._close_tray_cb.isChecked() is True)
+    _cdlg.close()
+    _vis_before = win.isVisible()
+    win.close()
+    for _ in range(6):
+        app.processEvents()
+    check("close-to-tray: X hides instead of quitting",
+          _vis_before and not win.isVisible())
+    win.show()
+    for _ in range(6):
+        app.processEvents()
+    _ccfg["close_to_tray"] = False
+    yq.save_config(_ccfg)
+    check("close-to-tray: turning it off restores direct exit",
+          win._close_to_tray_enabled() is False)
 
     # ---- v3.2.8：设置窗口尺寸 / 光标兜底 / 弹层抬小组件 ----
     _avail = yq.QApplication.primaryScreen().availableGeometry()
