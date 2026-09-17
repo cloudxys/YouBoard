@@ -55,6 +55,7 @@ PROVIDERS = {
         # 模型 id：deepseek-flash（= DeepSeek-V4.1-Flash）、deepseek-v4-pro（= V4-Pro-0813）
         "base_url": "https://api.deepseek.com",
         "model": "deepseek-flash",
+        "model_label": "DeepSeek-V4.1-Flash",
         "models": ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-pro-0813"],
         "needs_key": True,
     },
@@ -63,6 +64,7 @@ PROVIDERS = {
         "en": "Qwen (DashScope)",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "model": "qwen3.8-flash",
+        "model_label": "Qwen3.8-Flash",
         "models": ["qwen3.8-flash", "qwen3.7-plus", "qwen3.5-omni-plus"],
         "needs_key": True,
     },
@@ -71,6 +73,7 @@ PROVIDERS = {
         "en": "Zhipu GLM",
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
         "model": "glm-5.3-flash",
+        "model_label": "GLM-5.3-Flash",
         "models": ["glm-5.3-flash", "glm-5.3", "glm-5.2"],
         "needs_key": True,
     },
@@ -79,6 +82,7 @@ PROVIDERS = {
         "en": "OpenAI",
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-5.6",
+        "model_label": "GPT-5.6",
         "models": ["gpt-5.6", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-4o-mini"],
         "needs_key": True,
     },
@@ -87,6 +91,7 @@ PROVIDERS = {
         "en": "Ollama (local)",
         "base_url": "http://localhost:11434/v1",
         "model": "qwen3.5",
+        "model_label": "Qwen3.5（本地）",
         "models": ["qwen3.5", "qwen3", "glm-5", "deepseek-r1"],
         "needs_key": False,
     },
@@ -95,6 +100,7 @@ PROVIDERS = {
         "en": "Custom (OpenAI-compatible)",
         "base_url": "",
         "model": "",
+        "model_label": "",
         "models": [],
         "needs_key": True,
     },
@@ -163,6 +169,13 @@ def provider_label(pid, lang="zh"):
     return info.get(lang) or info.get("zh") or pid
 
 
+def model_display_name(settings):
+    """界面里展示用的模型名：优先用户自己填的显示名，其次真实模型 id。"""
+    settings = settings or {}
+    label = str(settings.get("model_label") or "").strip()
+    return label or str(settings.get("model") or "").strip()
+
+
 # ===========================================================================
 # 设置读写（配置里的 ai 段）
 # ===========================================================================
@@ -188,6 +201,7 @@ def default_ai_settings():
         "provider": "deepseek",
         "base_url": info["base_url"],
         "model": info["model"],
+        "model_label": info.get("model_label", ""),
         "api_key": "",
         "api_key_saved": False,
         "temperature": 0.3,
@@ -210,6 +224,7 @@ def load_ai_settings(config=None):
     info = PROVIDERS[provider]
     out["base_url"] = str(raw.get("base_url") or info["base_url"] or "")
     out["model"] = str(raw.get("model") or info["model"] or "")
+    out["model_label"] = str(raw.get("model_label") or "")
     out["temperature"] = min(2.0, max(0.0, _as_float(
         raw.get("temperature"), out["temperature"])))
     out["max_tokens"] = max(0, _as_int(raw.get("max_tokens"),
@@ -238,6 +253,7 @@ def save_ai_settings(settings, config=None):
         "provider": provider,
         "base_url": str(settings.get("base_url") or ""),
         "model": str(settings.get("model") or ""),
+        "model_label": str(settings.get("model_label") or "").strip(),
         "temperature": round(min(2.0, max(0.0, _as_float(
             settings.get("temperature"), 0.3))), 2),
         "max_tokens": max(0, _as_int(settings.get("max_tokens"),

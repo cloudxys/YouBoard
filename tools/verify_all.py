@@ -772,6 +772,20 @@ def test_gui():
           cfg_dlg._base.text() == "https://api.deepseek.com"
           and cfg_dlg._model.text() == "deepseek-flash",
           "%s / %s" % (cfg_dlg._base.text(), cfg_dlg._model.text()))
+    # 模型行：左边真实 id、右边可改的显示名；显示名绝不参与请求
+    check("ai: model row has real id + editable label",
+          cfg_dlg._model_label.text() == "DeepSeek-V4.1-Flash"
+          and cfg_dlg._model.text() == "deepseek-flash",
+          "%s | %s" % (cfg_dlg._model.text(), cfg_dlg._model_label.text()))
+    _lab_settings = yq.default_ai_settings()
+    _lab_settings["model_label"] = "我的小助手"
+    check("ai: display name is never sent",
+          yq.AIClient(_lab_settings).build_payload(
+              [{"role": "user", "content": "x"}])["model"] == "deepseek-flash"
+          and yq.model_display_name(_lab_settings) == "我的小助手")
+    _lab_settings["model_label"] = ""
+    check("ai: display name falls back to id",
+          yq.model_display_name(_lab_settings) == "deepseek-flash")
     check("ai: settings key hidden",
           cfg_dlg._key.echoMode() == yq.QLineEdit.EchoMode.Password)
     cfg_dlg._pick_provider("ollama")
@@ -936,7 +950,12 @@ def test_gui():
     check("close-to-tray: row shows the current value",
           _cdlg._close_tray_state is not None
           and _cdlg._close_tray_state.text() == yq.tr("set_close_tray_on")
-          and "set_close_tray_desc" not in yq.STRINGS["zh"])
+          and "set_close_tray_desc" not in yq.STRINGS["zh"]
+          and "set_close_tray_sub" not in yq.STRINGS["zh"])
+    check("close-to-tray: label not bold / same size as siblings",
+          "font-weight: 600" not in _cdlg._close_tray_lbl.styleSheet()
+          and "font-size" not in _cdlg._close_tray_lbl.styleSheet(),
+          _cdlg._close_tray_lbl.styleSheet())
     _cdlg._close_tray_cb.setChecked(False)
     for _ in range(3):
         app.processEvents()

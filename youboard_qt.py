@@ -117,6 +117,7 @@ from youboard_ai import (
     prepare_chat_context, build_chat_messages, AI_CHAT_MAX_TURNS,
     AI_IMAGE_ACTIONS, AI_FILE_ACTIONS, prepare_image_request,
     prepare_image_chat_context, file_entries_text,
+    model_display_name,
 )
 # 版本号唯一来源：youboard_version.py（改版本只改那一个文件）
 from youboard_version import APP_NAME, APP_VERSION
@@ -1572,8 +1573,12 @@ STRINGS = {
         "tray_still_running": "已收进托盘，还在后台运行（托盘图标右键可退出）",
         "win_hidden_tray": "已收进托盘",
         "set_close_tray": "关闭窗口行为",
-        "set_close_tray_sub": "点击窗口关闭按钮时的默认操作",
         "set_close_tray_on": "收进托盘", "set_close_tray_off": "直接退出",
+        "set_ai_model_label": "显示名",
+        "set_ai_model_ph": "接口真正用的模型 id",
+        "set_ai_model_label_ph": "显示名（可自行更改）",
+        "set_ai_model_tip": "左边是接口真正使用的模型 id；右边只是显示名，"
+                            "随便改，不影响调用",
         "btn_delete": "删除  Del", "btn_export": "导出", "btn_open": "打开  双击",
         "col_time": "时间", "col_preview": "内容预览", "col_filename": "文件名",
         "col_format": "格式", "col_dims": "尺寸", "col_size": "大小",
@@ -1984,8 +1989,12 @@ STRINGS = {
                               "(right-click the tray icon to quit)",
         "win_hidden_tray": "Moved to the tray",
         "set_close_tray": "Close window behavior",
-        "set_close_tray_sub": "What the window close button does",
         "set_close_tray_on": "Keep in tray", "set_close_tray_off": "Quit",
+        "set_ai_model_label": "Display name",
+        "set_ai_model_ph": "real model id used by the API",
+        "set_ai_model_label_ph": "display name (editable)",
+        "set_ai_model_tip": "Left is the real model id sent to the API; "
+                            "right is just a display name you can change freely",
         "btn_delete": "Delete  Del", "btn_export": "Export", "btn_open": "Open  Dbl-click",
         "col_time": "Time", "col_preview": "Preview", "col_filename": "Filename",
         "col_format": "Format", "col_dims": "Dimensions", "col_size": "Size",
@@ -3889,9 +3898,22 @@ class _AISettingsDialog(_CardOverlayDialog):
         lay.addLayout(self._fields)
 
         self._base = QLineEdit(str(self._values.get("base_url") or ""))
+        # 模型：左边是接口真正用的 id，右边是用户可自行更改的显示名（参考常见客户端做法）
         self._model = QLineEdit(str(self._values.get("model") or ""))
+        self._model.setPlaceholderText(tr("set_ai_model_ph"))
+        self._model_label = QLineEdit(
+            str(self._values.get("model_label") or ""))
+        self._model_label.setPlaceholderText(tr("set_ai_model_label_ph"))
+        _model_box = QWidget()
+        _mb = QHBoxLayout(_model_box)
+        _mb.setContentsMargins(0, 0, 0, 0)
+        _mb.setSpacing(8)
+        _mb.addWidget(self._model, 1)
+        _mb.addWidget(self._model_label, 1)
+        self._model.setToolTip(tr("set_ai_model_tip"))
+        self._model_label.setToolTip(tr("set_ai_model_tip"))
         self._add_field(tr("set_ai_base"), self._base)
-        self._add_field(tr("set_ai_model"), self._model)
+        self._add_field(tr("set_ai_model"), _model_box)
 
         self._key = QLineEdit()
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -3988,6 +4010,7 @@ class _AISettingsDialog(_CardOverlayDialog):
             info = provider_info(pid)
             self._base.setText(str(info.get("base_url") or ""))
             self._model.setText(str(info.get("model") or ""))
+            self._model_label.setText(str(info.get("model_label") or ""))
             self._test_lbl.setText("")
 
     # ---- 取值 / 保存 ----
@@ -3996,6 +4019,7 @@ class _AISettingsDialog(_CardOverlayDialog):
         values["provider"] = self._provider
         values["base_url"] = self._base.text().strip()
         values["model"] = self._model.text().strip()
+        values["model_label"] = self._model_label.text().strip()
         values["temperature"] = float(self._temp.value())
         values["proxy"] = self._proxy.text().strip()
         key = self._key.text().strip()
@@ -4086,7 +4110,7 @@ class _AIDialog(_CardOverlayDialog):
         self._notes = ""              # 截断 / 图片压缩这类提示，生成完也留着
         action_lbl = tr("ai_chat_title") if self._chat \
             else tr("ai_act_" + self._action)
-        model = str(self._settings.get("model") or "").strip()
+        model = model_display_name(self._settings)
         if self._chat:
             subtitle = (tr("ai_chat_sub", model=model) if model
                         else tr("ai_chat_title"))
@@ -11335,16 +11359,11 @@ class SettingsDialog(QDialog):
         self._card(tr("set_general"))
         # 点 ✕ 的行为（放在最前面）：默认直接退出，开启后收进托盘
         close_row = QHBoxLayout()
-        close_box = QVBoxLayout()
-        close_box.setSpacing(1)
         ct_lbl = QLabel(tr("set_close_tray"))
-        ct_lbl.setStyleSheet(
-            f"color: {C['TEXT']}; font-weight: 600;")
-        close_box.addWidget(ct_lbl)
-        ct_sub = QLabel(tr("set_close_tray_sub"))
-        ct_sub.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        close_box.addWidget(ct_sub)
-        close_row.addLayout(close_box, 1)
+        # 跟其它条目同一字号、不加粗，别抢模块标题的视觉重心
+        ct_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
+        self._close_tray_lbl = ct_lbl
+        close_row.addWidget(ct_lbl, 1)
         self._close_tray_state = QLabel("")
         close_row.addWidget(self._close_tray_state)
         self._close_tray_cb = QCheckBox()
@@ -12035,7 +12054,7 @@ class SettingsDialog(QDialog):
     def _ai_summary(self):
         """设置页里那行摘要：当前服务商 / 模型 / Key 状态。"""
         values = self._ai_values or {}
-        model = str(values.get("model") or "").strip()
+        model = model_display_name(values)
         if not model:
             return tr("set_ai_unset")
         key_state = (tr("set_ai_key_saved") if values.get("api_key_saved")
