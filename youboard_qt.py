@@ -134,6 +134,8 @@ TAB_TYPES = ("all", "text", "image", "file", "url")
 HEADER_TEXT_PAD = 10
 DISPLAY_LIMIT = 400
 HIST_DISPLAY = 60
+# AI 结果弹层里，说明文字与结果区之间额外留的高度（往下挪一点，别贴着结果）
+AI_STATUS_TOP_GAP = 12
 # 文字预览一次性显示的字数上限：正常大小的文本都会完整显示（超过才提示截断）
 PREVIEW_TEXT_LIMIT = 2000000
 PREVIEW_MAX = 1600
@@ -4080,6 +4082,39 @@ class _AISettingsDialog(_CardOverlayDialog):
         super().closeEvent(event)
 
 
+class _StatusNote(QLabel):
+    """弹层底部那行说明（生成完成 / 图片压缩提示…）。
+
+    卡片高度不够时 Qt 会先压缩布局间距，光加 margin 会被吃掉；
+    这里在文字或宽度变化时把外层容器的高度钉成「文字高度 + 上间距」，
+    间距就不会再被压掉，说明文字也就稳定地待在结果区下面一点。
+    """
+
+    def __init__(self, top_gap, parent=None):
+        super().__init__(parent)
+        self._top_gap = int(top_gap)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._pin_wrapper_height()
+
+    def setText(self, text):
+        super().setText(text)
+        self._pin_wrapper_height()
+
+    def _pin_wrapper_height(self):
+        wrap = self.parentWidget()
+        if wrap is None:
+            return
+        try:
+            need = self.heightForWidth(max(1, wrap.width()))
+            target = max(1, int(need)) + self._top_gap
+        except Exception:
+            return
+        if wrap.height() != target or wrap.minimumHeight() != target:
+            wrap.setFixedHeight(target)
+
+
 class _AIDialog(_CardOverlayDialog):
     """AI 结果弹层：流式显示结果 + 复制 / 另存为新条 / 替换本条。
 
@@ -4125,17 +4160,27 @@ class _AIDialog(_CardOverlayDialog):
         lay = self._lay
         self._out = QTextEdit()
         self._out.setReadOnly(True)
-        self._out.setMinimumHeight(250)
+        # 200 而不是 250：给下面那行说明留出余量，否则卡片高度紧张时
+        # 布局会先压掉间距（说明文字就被顶回结果区下面了）
+        self._out.setMinimumHeight(200)
         self._out.setStyleSheet(
             f"QTextEdit {{ background: {C['INPUT_BG']}; color: {C['TEXT']};"
             f" border: 1px solid {C['BORDER']}; border-radius: 8px;"
             f" padding: 8px 10px; font-size: 13px; }}")
         lay.addWidget(self._out)
 
-        self._status = QLabel("")
+        self._status = _StatusNote(AI_STATUS_TOP_GAP)
         self._status.setObjectName("retNote")
         self._status.setWordWrap(True)
-        lay.addWidget(self._status)
+        # 说明文字（生成完成 / 图片压缩提示等）往下挪一点，别紧贴着结果区。
+        # 用容器的上边距而不是 layout.addSpacing：卡片高度不足时 Qt 会把
+        # spacer 压扁，而 contentsMargins 不会被压缩，间距稳定。
+        self._status_wrap = QWidget()
+        _sw = QVBoxLayout(self._status_wrap)
+        _sw.setContentsMargins(0, AI_STATUS_TOP_GAP, 0, 0)
+        _sw.setSpacing(0)
+        _sw.addWidget(self._status)
+        lay.addWidget(self._status_wrap)
 
         # 对话模式：一个输入框 + 发送（回车也能发）
         self._input = QLineEdit()
