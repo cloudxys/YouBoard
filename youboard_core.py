@@ -1845,6 +1845,13 @@ class ClipboardStore:
                     merged[lst] = sorted(seen.values(),
                                          key=lambda x: x.get("timestamp", "") or "",
                                          reverse=True)
+                # 置顶优先：同一条记录（同 hash）不能既留在「置顶」又在「普通」里
+                # 出现第二份——导入时本机置顶的那条正好被别人也复制过，就会出现
+                # 这种"两条一样的记录"（一条带置顶标记、一条没有）
+                pinned_hashes = {e.get("hash") for e in merged["pinned"]}
+                if pinned_hashes:
+                    merged["entries"] = [e for e in merged["entries"]
+                                         if e.get("hash") not in pinned_hashes]
                 self.categories[cat_name] = merged
             if snapshots:
                 self._ensure_snapshots()

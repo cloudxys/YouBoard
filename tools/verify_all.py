@@ -169,6 +169,53 @@ def test_core():
     check("tags: legacy entry has none",
           all(yc.entry_tags(e) == [] for e in store2.get_by_type("text")))
 
+    # ---- 导入合并语义（v3.2.9）：合并而不是覆盖 + 完全重复只留一条 + 时间倒序 ----
+    ms = yc.ClipboardStore(path=os.path.join(tmp, "merge_semantics.json"))
+    ms.clear()
+    for i in range(700):
+        ms.add_text("合并语义本机 %03d" % i)
+    local = ms.get_by_type("text")
+    pin_h = [e["hash"] for e in local[:3]]
+    ms.pin_many(pin_h)
+    incoming = {"text": {"pinned": [], "entries": []},
+                "image": {"pinned": [], "entries": []},
+                "file": {"pinned": [], "entries": []},
+                "url": {"pinned": [], "entries": []}}
+    dups = [e for e in ms.get_by_type("text") if e["hash"] in pin_h][:1] + \
+        [e for e in ms.get_by_type("text") if e["hash"] not in pin_h][:49]
+    for e in dups:
+        incoming["text"]["entries"].append(dict(e))
+    for i in range(250):
+        incoming["text"]["entries"].append({
+            "hash": yc.ClipboardStore._text_hash("合并语义外部 %03d" % i),
+            "type": "text", "content": "合并语义外部 %03d" % i,
+            "timestamp": "2030-01-01T00:%02d:%02d" % (i // 60, i % 60),
+            "length": 12})
+    ms.merge_history(incoming)
+    merged_texts = ms.get_by_type("text")
+    merged_hashes = [e["hash"] for e in merged_texts]
+    check("merge: 合并而不是覆盖", ms.count() == 700 + 250,
+          "700 + 300(含 50 重复) -> %s（期望 950）" % ms.count())
+    check("merge: 完全重复只留一条",
+          len(merged_hashes) == len(set(merged_hashes)))
+    check("merge: 置顶仍然置顶且只有一份",
+          ms.pinned_count("text") == 3
+          and all(h in merged_hashes for h in pin_h))
+    _cat = ms.categories["text"]
+    _plist = [e["hash"] for e in _cat["pinned"]]
+    _elist = [e["hash"] for e in _cat["entries"]]
+    check("merge: 置顶与非置顶重复时保留置顶那份",
+          pin_h[0] in _plist and pin_h[0] not in _elist)
+    check("merge: 普通列表里不出现置顶记录",
+          not (set(_plist) & set(_elist)))
+    check("merge: 其余按时间倒序",
+          [e.get("timestamp", "") for e in merged_texts[3:]]
+          == sorted([e.get("timestamp", "") for e in merged_texts[3:]],
+                    reverse=True))
+    check("merge: 新导入的最新一条排在最前（置顶之后）",
+          merged_texts[3].get("content") == "合并语义外部 249",
+          merged_texts[3].get("content"))
+
 
 def test_phone():
     import youboard_core as yc
