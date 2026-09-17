@@ -1571,10 +1571,9 @@ STRINGS = {
         "ai_image_note": "图片会先压到长边 1280 的 JPEG 再发送。",
         "tray_still_running": "已收进托盘，还在后台运行（托盘图标右键可退出）",
         "win_hidden_tray": "已收进托盘",
-        "set_close_tray": "点 ✕ 时收进托盘（不退出）",
-        "set_close_tray_desc": "关闭后点右上角 ✕ 只是把窗口收进托盘，"
-                               "复制记录、快捷键、手机传输都继续工作；"
-                               "要真正退出请用托盘右键 → 退出。",
+        "set_close_tray": "关闭窗口行为",
+        "set_close_tray_sub": "点击窗口关闭按钮时的默认操作",
+        "set_close_tray_on": "收进托盘", "set_close_tray_off": "直接退出",
         "btn_delete": "删除  Del", "btn_export": "导出", "btn_open": "打开  双击",
         "col_time": "时间", "col_preview": "内容预览", "col_filename": "文件名",
         "col_format": "格式", "col_dims": "尺寸", "col_size": "大小",
@@ -1984,11 +1983,9 @@ STRINGS = {
         "tray_still_running": "Kept in the tray and still running "
                               "(right-click the tray icon to quit)",
         "win_hidden_tray": "Moved to the tray",
-        "set_close_tray": "✕ keeps it in the tray (do not quit)",
-        "set_close_tray_desc": "When on, the ✕ button only hides the window "
-                               "to the tray: capture, hotkeys and phone "
-                               "transfer keep working. Use tray → Quit to "
-                               "really exit.",
+        "set_close_tray": "Close window behavior",
+        "set_close_tray_sub": "What the window close button does",
+        "set_close_tray_on": "Keep in tray", "set_close_tray_off": "Quit",
         "btn_delete": "Delete  Del", "btn_export": "Export", "btn_open": "Open  Dbl-click",
         "col_time": "Time", "col_preview": "Preview", "col_filename": "Filename",
         "col_format": "Format", "col_dims": "Dimensions", "col_size": "Size",
@@ -11338,18 +11335,25 @@ class SettingsDialog(QDialog):
         self._card(tr("set_general"))
         # 点 ✕ 的行为（放在最前面）：默认直接退出，开启后收进托盘
         close_row = QHBoxLayout()
+        close_box = QVBoxLayout()
+        close_box.setSpacing(1)
         ct_lbl = QLabel(tr("set_close_tray"))
-        ct_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
-        close_row.addWidget(ct_lbl, 1)
+        ct_lbl.setStyleSheet(
+            f"color: {C['TEXT']}; font-weight: 600;")
+        close_box.addWidget(ct_lbl)
+        ct_sub = QLabel(tr("set_close_tray_sub"))
+        ct_sub.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
+        close_box.addWidget(ct_sub)
+        close_row.addLayout(close_box, 1)
+        self._close_tray_state = QLabel("")
+        close_row.addWidget(self._close_tray_state)
         self._close_tray_cb = QCheckBox()
         self._close_tray_cb.setChecked(
             bool(cfg.get("close_to_tray", False)))
+        self._close_tray_cb.toggled.connect(self._sync_close_tray_ui)
         close_row.addWidget(self._close_tray_cb)
         self._lay.addLayout(close_row)
-        ct_desc = QLabel(tr("set_close_tray_desc"))
-        ct_desc.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        ct_desc.setWordWrap(True)
-        self._lay.addWidget(ct_desc)
+        self._sync_close_tray_ui()
         self._add_sep()
         auto_row = QHBoxLayout()
         t1 = QLabel(tr("set_autostart"))
@@ -12019,6 +12023,15 @@ class SettingsDialog(QDialog):
         self.app._apply_retention_policy()
 
     # ---- AI 服务（自带 Key；只发送选中的那一条记录） ----
+    def _sync_close_tray_ui(self, *_args):
+        """把「关闭窗口行为」的当前取值显示在开关左边。"""
+        on = self._close_tray_cb.isChecked()
+        self._close_tray_state.setText(
+            tr("set_close_tray_on") if on else tr("set_close_tray_off"))
+        self._close_tray_state.setStyleSheet(
+            f"color: {C['ACCENT'] if on else C['TEXT_SEC']};"
+            f" font-size: 11px;")
+
     def _ai_summary(self):
         """设置页里那行摘要：当前服务商 / 模型 / Key 状态。"""
         values = self._ai_values or {}

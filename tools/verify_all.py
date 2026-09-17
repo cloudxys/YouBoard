@@ -933,6 +933,16 @@ def test_gui():
     check("close-to-tray: switch sits in settings",
           _cdlg._close_tray_cb is not None
           and _cdlg._close_tray_cb.isChecked() is True)
+    check("close-to-tray: row shows the current value",
+          _cdlg._close_tray_state is not None
+          and _cdlg._close_tray_state.text() == yq.tr("set_close_tray_on")
+          and "set_close_tray_desc" not in yq.STRINGS["zh"])
+    _cdlg._close_tray_cb.setChecked(False)
+    for _ in range(3):
+        app.processEvents()
+    check("close-to-tray: label follows the switch",
+          _cdlg._close_tray_state.text() == yq.tr("set_close_tray_off"),
+          _cdlg._close_tray_state.text())
     _cdlg.close()
     _vis_before = win.isVisible()
     win.close()
