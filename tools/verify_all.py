@@ -468,6 +468,100 @@ def test_ai():
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_bridge():
+    """浏览器扩展桥：只监听 127.0.0.1 + 令牌鉴权 + 文本/图片/历史/复制/收藏。"""
+    import base64
+    import io
+    import urllib.error
+    import urllib.request
+    sys.path.insert(0, SRC)
+    import youboard_bridge as br
+    import youboard_core as yc
+    tmp = tempfile.mkdtemp(prefix="yb_bridge_")
+    yc.CONTENT_DIR = os.path.join(tmp, "content")
+    yc.IMAGES_DIR = os.path.join(tmp, "images")
+    yc.FILE_CACHE_DIR = os.path.join(tmp, "file_cache")
+    yc.KEY_FILE = os.path.join(tmp, "youboard.key")
+    os.makedirs(yc.IMAGES_DIR, exist_ok=True)
+    store = yc.ClipboardStore(path=os.path.join(tmp, ".youboard.json"))
+    store.clear()
+
+    copied = []
+    _orig = br.set_clipboard_text
+    br.set_clipboard_text = lambda t: copied.append(t)
+    token = "gate-token"
+    server = br.BridgeServer(store, port=0, token=token)
+    port = server.start()
+    base = "http://127.0.0.1:%d" % port
+
+    def call(path, method="GET", body=None, tok=token):
+        req = urllib.request.Request(base + path, method=method)
+        if tok:
+            req.add_header("X-YouBoard-Token", tok)
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, data=data, timeout=10) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            try:
+                return err.code, json.loads(err.read())
+            except Exception:
+                return err.code, {}
+
+    try:
+        code, data = call("/api/ping")
+        check("bridge: ping with token", code == 200
+              and data.get("app") == "YouBoard", str(data)[:60])
+        check("bridge: rejects wrong token",
+              call("/api/ping", tok="")[0] == 401
+              and call("/api/ping", tok="nope")[0] == 401)
+        check("bridge: binds 127.0.0.1 only",
+              server._httpd.server_address[0] == "127.0.0.1")
+        code, _ = call("/api/items", "POST",
+                       {"type": "text", "content": "来自扩展的文本"})
+        check("bridge: add text", code == 200 and any(
+            e.get("content") == "来自扩展的文本"
+            for e in store.get_by_type("text")))
+        buf = io.BytesIO()
+        from PIL import Image as _Img
+        _Img.new("RGB", (60, 40), (10, 200, 120)).save(buf, "PNG")
+        data_url = ("data:image/png;base64,"
+                    + base64.b64encode(buf.getvalue()).decode())
+        code, data = call("/api/items", "POST",
+                          {"type": "image", "content": data_url})
+        check("bridge: add image", code == 200 and data.get("type") == "image")
+        code, data = call("/api/history?limit=10")
+        items = data.get("items") or []
+        check("bridge: history fields",
+              code == 200 and items
+              and all("hash" in i and "type" in i and "ts" in i
+                      for i in items), str(len(items)))
+        h = next((i["hash"] for i in items if i["type"] == "text"), "")
+        code, _ = call("/api/copy", "POST", {"hash": h})
+        check("bridge: copy + self-copy mark",
+              code == 200 and copied and store.is_self_copy() is True)
+        check("bridge: fav", call("/api/fav", "POST",
+                                  {"hash": h, "fav": True})[0] == 200
+              and store.is_fav(h) is True)
+        req = urllib.request.Request(base + "/api/history", method="OPTIONS")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            check("bridge: cors preflight", resp.status == 204
+                  and resp.headers.get("Access-Control-Allow-Origin") == "*")
+        server2 = br.BridgeServer(store, port=port, token=token)
+        port2 = server2.start()
+        check("bridge: port fallback when busy", port2 not in (0, port),
+              "%s -> %s" % (port, port2))
+        server2.stop()
+    finally:
+        br.set_clipboard_text = _orig
+        server.stop()
+        shutil.rmtree(tmp, ignore_errors=True)
+    check("bridge: stopped", server.running is False)
+
+
 def test_gui():
     tmp = tempfile.mkdtemp(prefix="yb_gui_")
     dst = os.path.join(tmp, "YouBoard")
@@ -1026,6 +1120,32 @@ def test_gui():
     check("close-to-tray: turning it off restores direct exit",
           win._close_to_tray_enabled() is False)
 
+    # ---- v3.3.0：浏览器扩展桥的设置卡片 ----
+    check("bridge: settings card present",
+          hasattr(sdlg, "_bridge_cb") and hasattr(sdlg, "_bridge_conn_lbl"))
+    _bline, _ = sdlg._bridge_conn_text()
+    check("bridge: connection line format",
+          _bline.startswith("127.0.0.1:") and "|" in _bline, _bline[:40])
+    check("bridge: app exposes status",
+          isinstance(win.bridge_status(), dict)
+          and "running" in win.bridge_status())
+    _bcfg = yq.load_config()
+    _bcfg["bridge_enabled"] = True
+    yq.save_config(_bcfg)
+    win._apply_bridge()
+    for _ in range(8):
+        app.processEvents()
+    _st = win.bridge_status()
+    check("bridge: starts when enabled in config",
+          _st.get("running") is True and _st.get("port"), str(_st)[:80])
+    _bcfg["bridge_enabled"] = False
+    yq.save_config(_bcfg)
+    win._apply_bridge()
+    for _ in range(8):
+        app.processEvents()
+    check("bridge: stops when disabled",
+          win.bridge_status().get("running") is False)
+
     # ---- v3.2.8：设置窗口尺寸 / 光标兜底 / 弹层抬小组件 ----
     _avail = yq.QApplication.primaryScreen().availableGeometry()
     s_probe = yq.SettingsDialog(win)
@@ -1140,6 +1260,8 @@ def main():
     test_phone()
     print("== ai ==")
     test_ai()
+    print("== bridge ==")
+    test_bridge()
     print("== gui ==")
     test_gui()
     print("RESULT=" + ("ALL_PASS" if not FAIL else "FAILED:" + ",".join(FAIL)))

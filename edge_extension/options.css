@@ -1,0 +1,80 @@
+:root {
+  --bg: #111a16;
+  --surface: #16241d;
+  --surface2: #1d3226;
+  --border: #2c4a38;
+  --text: #e9f6ec;
+  --text-sec: #a9c6b6;
+  --accent: #58c98a;
+  --danger: #e0625f;
+}
+
+body {
+  margin: 0;
+  padding: 22px 26px 40px;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.6 "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  max-width: 620px;
+}
+
+h1 { font-size: 17px; margin: 0 0 16px; }
+h2 { font-size: 14px; margin: 0 0 8px; color: var(--accent); }
+
+section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.note { color: var(--text-sec); font-size: 12px; margin: 0 0 10px; }
+
+label { display: block; font-size: 12px; color: var(--text-sec); margin: 8px 0 4px; }
+label.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  margin: 6px 0;
+}
+
+input[type="text"], input[type="number"], textarea {
+  width: 100%;
+  background: #0d1713;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  outline: none;
+}
+input:focus, textarea:focus { border-color: var(--accent); }
+input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+
+.row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+
+button {
+  background: var(--surface2);
+  color: var(--text-sec);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 12px;
+  cursor: pointer;
+}
+button:hover { color: var(--text); }
+button.primary {
+  background: var(--accent);
+  color: #071116;
+  border: none;
+  font-weight: 600;
+}
+
+.result { font-size: 12px; color: var(--text-sec); }
+.result.ok { color: var(--accent); }
+.result.bad { color: var(--danger); }
+
+details { margin-top: 10px; }
+summary { font-size: 12px; color: var(--text-sec); cursor: pointer; }

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>YouBoard 剪贴板伴侣 · 设置</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <h1>YouBoard 剪贴板伴侣 · 设置</h1>
+
+  <section>
+    <h2>连接本机 YouBoard</h2>
+    <p class="note">
+      打开 YouBoard 桌面版 → 设置 → 浏览器扩展 →「复制连接信息」，
+      把那一行粘贴到下面即可。只连本机 127.0.0.1，不经过任何服务器。
+    </p>
+    <label for="conn">连接信息（一行粘贴）</label>
+    <input id="conn" type="text" placeholder="127.0.0.1:8765|令牌">
+    <div class="row">
+      <button id="btn-apply" class="primary">解析并保存</button>
+      <button id="btn-test">测试连接</button>
+      <span id="test-result" class="result"></span>
+    </div>
+    <details>
+      <summary>手动填写</summary>
+      <label for="url">本机地址</label>
+      <input id="url" type="text" placeholder="http://127.0.0.1:8765">
+      <label for="token">令牌</label>
+      <input id="token" type="text" placeholder="YouBoard 设置里显示的那串令牌">
+    </details>
+  </section>
+
+  <section>
+    <h2>捕获与同步</h2>
+    <label class="check">
+      <input id="capture" type="checkbox">
+      捕获网页里的复制（Ctrl+C / 剪切）
+    </label>
+    <label class="check">
+      <input id="sync" type="checkbox">
+      同时写进本机 YouBoard（关掉就只存在浏览器里）
+    </label>
+    <label for="max">浏览器本地最多保留多少条</label>
+    <input id="max" type="number" min="20" max="1000" step="10">
+    <label for="ignore">不捕获的网站（每行一个，可留空）</label>
+    <textarea id="ignore" rows="3" placeholder="example.com&#10;mail.google.com"></textarea>
+  </section>
+
+  <section>
+    <h2>浏览器本地数据</h2>
+    <p class="note" id="stat">已存 0 条</p>
+    <div class="row">
+      <button id="btn-clear">清空浏览器本地数据</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>隐私</h2>
+    <p class="note">
+      扩展不向任何远程服务器发送数据：捕获的内容只存在浏览器本地，
+      或者发给本机 127.0.0.1 上的 YouBoard。读取剪贴板的权限只有在你点
+      「读剪贴板并保存」时才会申请。
+    </p>
+  </section>
+
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+{
+  "manifest_version": 3,
+  "name": "YouBoard 剪贴板伴侣",
+  "version": "1.0.0",
+  "description": "把网页里复制的内容存进 YouBoard，并在任意网页输入框里快速粘贴历史记录。需要本机 YouBoard 桌面版配合。",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "YouBoard 剪贴板伴侣",
+    "default_popup": "panel.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "clipboardWrite",
+    "activeTab",
+    "scripting",
+    "alarms"
+  ],
+  "optional_permissions": [
+    "clipboardRead"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ]
+}

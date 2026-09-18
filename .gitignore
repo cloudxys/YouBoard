@@ -21,6 +21,9 @@ images/
 # ---- 可执行文件（通过 GitHub Releases 分发，不进仓库）----
 *.exe
 
+# ---- 浏览器扩展的打包产物（上架时本地生成，不进仓库）----
+edge_extension/*.zip
+
 # ---- IDE / 工具 ----
 .qoder/
 .claude.json
