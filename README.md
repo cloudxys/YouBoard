@@ -133,6 +133,14 @@ YouBoard/
 
 <video src="https://github.com/cloudxys/YouBoard/releases/download/v1.9.0/01.mp4" controls width="640"></video>
 
+## ☕ 支持作者
+
+如果 YouBoard 帮到了你，可以在爱发电请我喝杯咖啡 —— **完全自愿，不影响任何功能**。
+
+[![化原/cloudxys 的爱发电](res/afdian.jpg)](https://afdian.com/a/mingdan?utm_source=copylink&utm_medium=link)
+
+作者：**化原/cloudxys**　·　爱发电主页：<https://afdian.com/a/mingdan>
+
 ## 📄 License
 
 MIT © cloudxys
