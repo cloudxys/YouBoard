@@ -135,7 +135,7 @@ YouBoard/
 
 ## ☕ 支持作者
 
-如果 YouBoard 帮到了你，可以在爱发电请我喝杯咖啡 —— **完全自愿，不影响任何功能**。
+如果 YouBoard 帮到了你，可以在爱发电请我喝杯咖啡嘛（感谢各位的鼎力支持）。
 
 [![化原/cloudxys 的爱发电](res/afdian.jpg)](https://afdian.com/a/mingdan?utm_source=copylink&utm_medium=link)
 
