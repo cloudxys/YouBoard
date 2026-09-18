@@ -1578,16 +1578,15 @@ STRINGS = {
         "win_hidden_tray": "已收进托盘",
         "set_close_tray": "关闭窗口行为",
         "set_bridge": "浏览器扩展",
-        "set_bridge_desc": "让 Edge / Chrome 的 YouBoard 伴侣扩展把网页里复制的内容"
-                           "存进来、并一键粘贴历史。只连本机 127.0.0.1，不经过任何服务器。",
-        "set_bridge_enable": "启用本机桥接（浏览器扩展用）",
+        "set_bridge_sub": "只连本机 127.0.0.1",
+        "set_bridge_off": "未启用",
+        "set_bridge_enable": "启用本机桥接",
         "set_bridge_conn": "连接信息",
         "set_bridge_copy": "复制连接信息",
         "set_bridge_status_on": "运行中：127.0.0.1:{port}",
         "set_bridge_status_off": "未运行",
         "set_bridge_seen": "扩展上次连接：{t}",
-        "set_bridge_hint": "在扩展里打开「设置」，把这一行连接信息粘进去即可。"
-                           "关掉上面的开关会立刻断开。",
+        "set_bridge_hint": "在扩展的「设置」里粘贴这一行",
         "bridge_copied": "已按扩展的请求复制到系统剪贴板",
         "set_close_tray_on": "收进托盘", "set_close_tray_off": "直接退出",
         "set_ai_model_label": "显示名",
@@ -2006,18 +2005,15 @@ STRINGS = {
         "win_hidden_tray": "Moved to the tray",
         "set_close_tray": "Close window behavior",
         "set_bridge": "Browser extension",
-        "set_bridge_desc": "Lets the YouBoard companion extension for Edge / "
-                           "Chrome store what you copy on web pages and paste "
-                           "history back. Localhost only — no server involved.",
-        "set_bridge_enable": "Enable local bridge (for the extension)",
+        "set_bridge_sub": "Localhost only (127.0.0.1)",
+        "set_bridge_off": "Not enabled",
+        "set_bridge_enable": "Enable local bridge",
         "set_bridge_conn": "Connection info",
         "set_bridge_copy": "Copy connection info",
         "set_bridge_status_on": "Running on 127.0.0.1:{port}",
         "set_bridge_status_off": "Not running",
         "set_bridge_seen": "Extension last connected: {t}",
-        "set_bridge_hint": "Open the extension's Settings, then paste this "
-                           "line into it. Turning the switch off disconnects "
-                           "immediately.",
+        "set_bridge_hint": "Paste this line into the extension's settings",
         "bridge_copied": "Copied to the system clipboard (requested by the extension)",
         "set_close_tray_on": "Keep in tray", "set_close_tray_off": "Quit",
         "set_ai_model_label": "Display name",
@@ -4141,6 +4137,130 @@ class _StatusNote(QLabel):
             return
         if wrap.height() != target or wrap.minimumHeight() != target:
             wrap.setFixedHeight(target)
+
+
+class _BridgeDialog(_CardOverlayDialog):
+    """浏览器扩展的本机桥配置（卡片弹层，设置页因此只留一行）。"""
+
+    def __init__(self, owner, app):
+        super().__init__(owner, app, "⇄", tr("set_bridge"),
+                         tr("set_bridge_sub"))
+        self.app = app
+        lay = self._lay
+        cfg = load_config()
+        _enabled, port, token = ensure_bridge_config(cfg)
+
+        sw_row = QHBoxLayout()
+        sw_lbl = QLabel(tr("set_bridge_enable"))
+        sw_lbl.setObjectName("retSub")
+        sw_row.addWidget(sw_lbl, 1)
+        self._cb = QCheckBox()
+        self._cb.setChecked(bool(cfg.get("bridge_enabled", False)))
+        self._cb.toggled.connect(self._sync_ui)
+        sw_row.addWidget(self._cb)
+        lay.addLayout(sw_row)
+
+        conn_row = QHBoxLayout()
+        conn_row.setSpacing(8)
+        conn_lbl = QLabel(tr("set_bridge_conn"))
+        conn_lbl.setObjectName("retSub")
+        conn_lbl.setFixedWidth(64)
+        conn_row.addWidget(conn_lbl)
+        self._conn = QLineEdit(conn_line(port, token))
+        self._conn.setReadOnly(True)
+        self._conn.setStyleSheet(
+            f"QLineEdit {{ background-color: {C['INPUT_BG']};"
+            f" color: {C['TEXT_SEC']}; border: 1px solid {C['BORDER']};"
+            f" border-radius: 7px; padding: 5px 8px; font-size: 12px;"
+            f" font-family: Consolas,monospace; }}")
+        conn_row.addWidget(self._conn, 1)
+        self._copy_btn = QPushButton(tr("set_bridge_copy"))
+        self._copy_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._copy_btn.clicked.connect(self._copy_conn)
+        conn_row.addWidget(self._copy_btn)
+        lay.addLayout(conn_row)
+
+        self._state = QLabel("")
+        self._state.setObjectName("retNote")
+        self._state.setWordWrap(True)
+        lay.addWidget(self._state)
+
+        hint = QLabel(tr("set_bridge_hint"))
+        hint.setObjectName("retNote")
+        lay.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton(tr("btn_save"))
+        save.setObjectName("retSave")
+        save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        save.clicked.connect(self._save_and_close)
+        buttons.addWidget(save)
+        lay.addLayout(buttons)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._sync_ui)
+        self._timer.start(2000)
+        self._sync_ui()
+
+    def _current_line(self):
+        """运行中就用真实端口，否则用配置里的端口。"""
+        st = self.app.bridge_status() if self.app is not None else {}
+        cfg = load_config()
+        _enabled, port, token = ensure_bridge_config(cfg)
+        if st.get("port"):
+            port = st["port"]
+        return conn_line(port or DEFAULT_BRIDGE_PORT, token)
+
+    def _sync_ui(self, *_args):
+        on = self._cb.isChecked()
+        self._conn.setText(self._current_line())
+        self._conn.setEnabled(on)
+        self._copy_btn.setEnabled(on)
+        st = self.app.bridge_status() if self.app is not None else {}
+        if on and st.get("running"):
+            text = tr("set_bridge_status_on", port=st.get("port") or "-")
+            if st.get("last_seen_text"):
+                text += "  ·  " + tr("set_bridge_seen",
+                                     t=st["last_seen_text"])
+            self._state.setText(text)
+            self._state.setStyleSheet(
+                f"color: {C['ACCENT']}; font-size: 12px;")
+        else:
+            self._state.setText(tr("set_bridge_status_off") if on
+                                else tr("set_bridge_off"))
+            self._state.setStyleSheet(
+                f"color: {C['TEXT_SEC']}; font-size: 12px;")
+
+    def _copy_conn(self):
+        try:
+            set_clipboard_text(self._current_line())
+        except Exception:
+            return
+        self._state.setText(tr("st_copied_preview",
+                               n=len(self._current_line())))
+        self._state.setStyleSheet(f"color: {C['SUCCESS']}; font-size: 12px;")
+
+    def _save_and_close(self):
+        cfg = load_config()
+        _enabled, port, token = ensure_bridge_config(cfg)
+        cfg["bridge_enabled"] = self._cb.isChecked()
+        cfg["bridge_port"] = port
+        cfg["bridge_token"] = token
+        save_config(cfg)
+        try:
+            self.app._apply_bridge()      # 改完立刻生效
+        except Exception:
+            pass
+        self.accept()
+
+    def closeEvent(self, event):
+        self._timer.stop()
+        super().closeEvent(event)
 
 
 class _AIDialog(_CardOverlayDialog):
@@ -11742,44 +11862,19 @@ class SettingsDialog(QDialog):
         ai_row.addWidget(ai_open)
         self._lay.addLayout(ai_row)
 
-        # 浏览器扩展 card（本机桥：只监听 127.0.0.1）
+        # 浏览器扩展 card（详细配置在独立卡片弹层里，设置页只留一行）
         self._card(tr("set_bridge"))
-        br_desc = QLabel(tr("set_bridge_desc"))
-        br_desc.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        br_desc.setWordWrap(True)
-        self._lay.addWidget(br_desc)
         br_row = QHBoxLayout()
-        br_lbl = QLabel(tr("set_bridge_enable"))
-        br_lbl.setStyleSheet(f"color: {C['TEXT']}; font-weight: 500;")
-        br_row.addWidget(br_lbl, 1)
-        self._bridge_cb = QCheckBox()
-        self._bridge_cb.setChecked(bool(cfg.get("bridge_enabled", False)))
-        br_row.addWidget(self._bridge_cb)
+        self._bridge_lbl = QLabel(self._bridge_summary())
+        self._bridge_lbl.setStyleSheet(
+            f"color: {C['TEXT_SEC']}; font-size: 11px;")
+        self._bridge_lbl.setWordWrap(True)
+        br_row.addWidget(self._bridge_lbl, 1)
+        br_open = QPushButton(tr("set_ai_open"))
+        br_open.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        br_open.clicked.connect(self._open_bridge)
+        br_row.addWidget(br_open)
         self._lay.addLayout(br_row)
-        br_conn_row = QHBoxLayout()
-        self._bridge_conn_lbl = QLabel("")
-        self._bridge_conn_lbl.setStyleSheet(
-            f"color: {C['TEXT_SEC']}; font-size: 11px;"
-            f" font-family: Consolas,monospace;")
-        self._bridge_conn_lbl.setWordWrap(True)
-        self._bridge_conn_lbl.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse)
-        br_conn_row.addWidget(self._bridge_conn_lbl, 1)
-        br_copy = QPushButton(tr("set_bridge_copy"))
-        br_copy.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        br_copy.clicked.connect(self._copy_bridge_conn)
-        br_conn_row.addWidget(br_copy)
-        self._lay.addLayout(br_conn_row)
-        self._bridge_state = QLabel("")
-        self._bridge_state.setStyleSheet(
-            f"color: {C['TEXT_MUTED']}; font-size: 11px;")
-        self._bridge_state.setWordWrap(True)
-        self._lay.addWidget(self._bridge_state)
-        br_hint = QLabel(tr("set_bridge_hint"))
-        br_hint.setStyleSheet(f"color: {C['TEXT_MUTED']}; font-size: 10px;")
-        br_hint.setWordWrap(True)
-        self._lay.addWidget(br_hint)
-        self._refresh_bridge_ui()
 
         # Win+V 接管 card（默认关闭，带风险提示）
         self._card(tr("set_winv"))
@@ -11961,24 +12056,11 @@ class SettingsDialog(QDialog):
         super().showEvent(event)
         self._refresh_button_cursors()
         self._start_cursor_timer()
-        self._start_bridge_timer()
-
-    def _start_bridge_timer(self):
-        """每 2 秒刷新一次桥接状态（能显示"扩展上次连接"的时间）。"""
-        timer = getattr(self, "_bridge_timer", None)
-        if timer is None:
-            timer = QTimer(self)
-            timer.timeout.connect(self._refresh_bridge_ui)
-            self._bridge_timer = timer
-        timer.start(2000)
 
     def hideEvent(self, event):
         timer = getattr(self, "_cursor_timer", None)
         if timer is not None:
             timer.stop()
-        btimer = getattr(self, "_bridge_timer", None)
-        if btimer is not None:
-            btimer.stop()
         self._clear_cursor_override()
         super().hideEvent(event)
 
@@ -12253,34 +12335,20 @@ class SettingsDialog(QDialog):
             port = st["port"]
         return conn_line(port or DEFAULT_BRIDGE_PORT, token), token
 
-    def _refresh_bridge_ui(self):
-        """刷新连接信息与运行状态（含"扩展上次连接"时间）。"""
-        line, _token = self._bridge_conn_text()
-        self._bridge_conn_lbl.setText(line if self._bridge_cb.isChecked()
-                                      else tr("set_bridge_status_off"))
+    def _bridge_summary(self):
+        """设置页那一行摘要：没开就写未启用，开了就写地址。"""
+        cfg = load_config()
+        enabled, port, _token = ensure_bridge_config(cfg)
+        if not enabled:
+            return tr("set_bridge_off")
         st = self.app.bridge_status() if self.app is not None else {}
-        if self._bridge_cb.isChecked() and st.get("running"):
-            text = tr("set_bridge_status_on", port=st.get("port") or "-")
-            if st.get("last_seen_text"):
-                text += "  ·  " + tr("set_bridge_seen",
-                                     t=st["last_seen_text"])
-            self._bridge_state.setText(text)
-            self._bridge_state.setStyleSheet(
-                f"color: {C['ACCENT']}; font-size: 11px;")
-        else:
-            self._bridge_state.setText(tr("set_bridge_status_off"))
-            self._bridge_state.setStyleSheet(
-                f"color: {C['TEXT_MUTED']}; font-size: 11px;")
+        return tr("set_bridge_status_on", port=st.get("port") or port)
 
-    def _copy_bridge_conn(self):
-        line, _token = self._bridge_conn_text()
-        try:
-            set_clipboard_text(line)
-        except Exception:
-            return
-        self._bridge_state.setText(tr("st_copied_preview", n=len(line)))
-        self._bridge_state.setStyleSheet(
-            f"color: {C['SUCCESS']}; font-size: 11px;")
+    def _open_bridge(self):
+        """打开浏览器扩展的卡片弹层（与「AI 服务」同一套风格）。"""
+        dlg = _BridgeDialog(self, self.app)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._bridge_lbl.setText(self._bridge_summary())
 
     def _sync_close_tray_ui(self, *_args):
         """把「关闭窗口行为」的当前取值显示在开关左边。"""
@@ -12330,11 +12398,6 @@ class SettingsDialog(QDialog):
             cfg["snd_paste_file"] = self._snd_file.get("paste", "") or ""
             cfg["takeover_winv"] = self._winv_cb.isChecked()
             cfg["temporary_session"] = self._session_cb.isChecked()
-            # 浏览器扩展桥：端口 / 令牌沿用配置里已有的，只改开关
-            _be, _bp, _bt = ensure_bridge_config(cfg)
-            cfg["bridge_enabled"] = self._bridge_cb.isChecked()
-            cfg["bridge_port"] = _bp
-            cfg["bridge_token"] = _bt
             cfg["close_to_tray"] = self._close_tray_cb.isChecked()
             for k, v in self._hotkey_values.items():
                 if k != "hotkey":
@@ -12342,10 +12405,6 @@ class SettingsDialog(QDialog):
             save_config(cfg)
             self.app.set_temporary_session(self._session_cb.isChecked())
             self.accept()
-            try:
-                self.app._apply_bridge()      # 桥接开关改完立刻生效
-            except Exception:
-                pass
             self.app.apply_settings(self._lang_sel, self._auto_cb.isChecked(),
                                     self._theme_sel, bg_changed,
                                     force_restart=bool(getattr(

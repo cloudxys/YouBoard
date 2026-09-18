@@ -1120,31 +1120,44 @@ def test_gui():
     check("close-to-tray: turning it off restores direct exit",
           win._close_to_tray_enabled() is False)
 
-    # ---- v3.3.0：浏览器扩展桥的设置卡片 ----
-    check("bridge: settings card present",
-          hasattr(sdlg, "_bridge_cb") and hasattr(sdlg, "_bridge_conn_lbl"))
-    _bline, _ = sdlg._bridge_conn_text()
+    # ---- v3.3.0：浏览器扩展桥——设置页一行 + 独立卡片弹层 ----
+    check("bridge: settings page keeps a single row",
+          hasattr(sdlg, "_bridge_lbl") and not hasattr(sdlg, "_bridge_cb")
+          and not hasattr(sdlg, "_bridge_conn_lbl")
+          and "set_bridge_desc" not in yq.STRINGS["zh"])
+    check("bridge: summary text", sdlg._bridge_lbl.text() != "",
+          sdlg._bridge_lbl.text())
+    _bdlg = yq._BridgeDialog(sdlg, win)
+    check("bridge: dialog is card style like the others",
+          isinstance(_bdlg, yq._CardOverlayDialog)
+          and _bdlg.card.styleSheet()
+          == yq._RetentionDialog(win, win, {"mode": "forever"}).card.styleSheet())
+    _bline = _bdlg._conn.text()
     check("bridge: connection line format",
           _bline.startswith("127.0.0.1:") and "|" in _bline, _bline[:40])
+    _bdlg._cb.setChecked(True)
+    for _ in range(3):
+        app.processEvents()
+    check("bridge: toggling the switch enables the field + copy button",
+          _bdlg._conn.isEnabled() and _bdlg._copy_btn.isEnabled())
+    _bdlg._save_and_close()
+    for _ in range(8):
+        app.processEvents()
+    check("bridge: saving starts it",
+          yq.load_config().get("bridge_enabled") is True
+          and win.bridge_status().get("running") is True,
+          str(win.bridge_status())[:70])
+    _bdlg2 = yq._BridgeDialog(sdlg, win)
+    _bdlg2._cb.setChecked(False)
+    _bdlg2._save_and_close()
+    for _ in range(8):
+        app.processEvents()
+    check("bridge: saving again stops it",
+          yq.load_config().get("bridge_enabled") is False
+          and win.bridge_status().get("running") is False)
     check("bridge: app exposes status",
           isinstance(win.bridge_status(), dict)
           and "running" in win.bridge_status())
-    _bcfg = yq.load_config()
-    _bcfg["bridge_enabled"] = True
-    yq.save_config(_bcfg)
-    win._apply_bridge()
-    for _ in range(8):
-        app.processEvents()
-    _st = win.bridge_status()
-    check("bridge: starts when enabled in config",
-          _st.get("running") is True and _st.get("port"), str(_st)[:80])
-    _bcfg["bridge_enabled"] = False
-    yq.save_config(_bcfg)
-    win._apply_bridge()
-    for _ in range(8):
-        app.processEvents()
-    check("bridge: stops when disabled",
-          win.bridge_status().get("running") is False)
 
     # ---- v3.2.8：设置窗口尺寸 / 光标兜底 / 弹层抬小组件 ----
     _avail = yq.QApplication.primaryScreen().availableGeometry()
