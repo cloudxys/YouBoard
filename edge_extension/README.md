@@ -59,7 +59,9 @@
 3. Partner Center → Edge 程序 → 「新建扩展」→ 上传 zip
 4. 按 [STORE_LISTING.md](STORE_LISTING.md) 里的文案逐项粘贴：
    - 单一用途说明、每个权限的理由、远程代码=否、数据使用声明
-   - 隐私政策 URL：把 [privacy.md](privacy.md) 放到一个公开链接（GitHub Pages 或仓库文件链接）后填入
+   - 隐私政策 URL：直接填
+     `https://github.com/cloudxys/YouBoard/blob/main/edge_extension/privacy.md`
+     （已随仓库公开，可访问）
 5. 提交 → 等审核（最长 7 个工作日）→ 通过后自动上架
 
 ### 顺手多铺两个商店

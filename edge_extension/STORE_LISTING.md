@@ -13,7 +13,7 @@
 | 默认语言 | 简体中文（可再加 English） |
 | 版本 | `1.0.0` |
 | 支持站点 | `https://github.com/cloudxys/YouBoard` |
-| 隐私政策 URL | `[需替换：把 privacy.md 发布成公开链接，例如 https://github.com/cloudxys/YouBoard/blob/main/edge_extension/privacy.md]` |
+| 隐私政策 URL | `https://github.com/cloudxys/YouBoard/blob/main/edge_extension/privacy.md` （已验证可公开访问） |
 | 支持邮箱 / 反馈 | `[需替换：你的邮箱或 issues 链接]` |
 
 ## 简短描述（≤ 132 字符）
