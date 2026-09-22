@@ -904,6 +904,54 @@ def test_gui():
     ved2._name_edit.setText("甲乙")
     check("vaultui: optional name captured", ved2.values()["name"] == "甲乙")
 
+    # 输入框右键：换成应用自己的中文圆角菜单（不是 Qt 自带那套英文直角菜单）
+    check("vaultui: fields use app-styled edit widgets",
+          isinstance(ved2._content_edit, yq._VaultTextEdit)
+          and isinstance(ved2._name_edit, yq._VaultLineEdit)
+          and isinstance(vwin._search, yq._VaultLineEdit))
+    ctx_items = []
+
+    class _ActSpy:
+        def setEnabled(self, _v):
+            pass
+
+    class _MenuSpyCtx:
+        def __init__(self, *a, **k):
+            pass
+
+        def addAction(self, *a):
+            ctx_items.append(a[0] if a else "")
+            return _ActSpy()
+
+        def addSeparator(self):
+            ctx_items.append("---")
+
+        def exec(self, *_a):
+            return None
+
+    _real_ctx_menu = yq._RoundMenu
+    yq._RoundMenu = _MenuSpyCtx
+    try:
+        yq._edit_context_menu(ved2._content_edit, True)
+    finally:
+        yq._RoundMenu = _real_ctx_menu
+    check("vaultui: context menu is localized",
+          ctx_items == [yq.tr("ctx_cut"), yq.tr("ctx_copy"),
+                        yq.tr("ctx_paste"), "---", yq.tr("m_select_all")],
+          str(ctx_items))
+
+    # 长内容一键复制（且不能进剪贴板历史）
+    long_text = "很长的密库内容" * 40
+    ved3 = yq._VaultEntryDialog(win, None)
+    ved3._content_edit.setPlainText(long_text)
+    store._self_copy_time = 0.0
+    ved3._copy_content()
+    import pyperclip as _clip
+    check("vaultui: copy-content copies the whole text",
+          _clip.paste() == long_text)
+    check("vaultui: copy-content marks self-copy",
+          store.is_self_copy())
+
     # 3.3.1 修补：弹层里的回车语义（输入框按回车不能变成"取消"，否则内容像消失了）
     from PyQt6.QtTest import QTest as _QTest
     enter_dlg = yq._VaultEntryDialog(win, None)

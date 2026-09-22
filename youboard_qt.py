@@ -1532,6 +1532,9 @@ STRINGS = {
         "btn_edit_tags": "编辑标签…",
         "m_fav_on": "加入收藏", "m_fav_off": "取消收藏", "m_edit_tags": "编辑标签…",
         "m_vault_add": "加入密库…",
+        # 输入框右键菜单（替掉 Qt 自带的英文直角菜单）
+        "ctx_cut": "剪切", "ctx_copy": "复制", "ctx_paste": "粘贴",
+        "vault_copy_content": "复制内容",
         "st_fav_set": "已收藏 {n} 条", "st_fav_unset": "已取消收藏 {n} 条",
         "st_fav_filter": "只看收藏（{n} 条）", "st_fav_filter_off": "已取消收藏筛选",
         "st_tag_filter": "只看标签 #{tag}", "st_tag_filter_off": "已取消标签筛选",
@@ -1993,6 +1996,8 @@ STRINGS = {
         "m_fav_on": "Add to favorites", "m_fav_off": "Remove from favorites",
         "m_edit_tags": "Edit tags…",
         "m_vault_add": "Save to Vault…",
+        "ctx_cut": "Cut", "ctx_copy": "Copy", "ctx_paste": "Paste",
+        "vault_copy_content": "Copy content",
         "st_fav_set": "{n} added to favorites", "st_fav_unset": "{n} removed from favorites",
         "st_fav_filter": "Favorites only ({n})", "st_fav_filter_off": "Favorites filter off",
         "st_tag_filter": "Filtering by #{tag}", "st_tag_filter_off": "Tag filter off",
@@ -13443,6 +13448,46 @@ class CloudSyncDialog(QDialog):
 # ===========================================================================
 # Vault（密库，3.3.1）：用户主动存放的私密数据
 # ===========================================================================
+def _edit_context_menu(widget, has_selection, read_only=False):
+    """输入框的应用风格右键菜单：中文项 + 圆角弹层（替掉 Qt 自带那套英文直角菜单）。"""
+    menu = _RoundMenu(widget)
+    act_cut = menu.addAction(tr("ctx_cut"))
+    act_cut.setEnabled(bool(has_selection) and not read_only)
+    act_copy = menu.addAction(tr("ctx_copy"))
+    act_copy.setEnabled(bool(has_selection))
+    act_paste = menu.addAction(tr("ctx_paste"))
+    act_paste.setEnabled(not read_only)
+    menu.addSeparator()
+    act_all = menu.addAction(tr("m_select_all"))
+    chosen = menu.exec(QCursor.pos())
+    if chosen is act_cut:
+        widget.cut()
+    elif chosen is act_copy:
+        widget.copy()
+    elif chosen is act_paste:
+        widget.paste()
+    elif chosen is act_all:
+        widget.selectAll()
+
+
+class _VaultLineEdit(QLineEdit):
+    """密库用的单行输入框：右键换成应用自己的中文圆角菜单。"""
+
+    def contextMenuEvent(self, event):
+        _edit_context_menu(self, self.hasSelectedText(),
+                           self.isReadOnly())
+        event.accept()
+
+
+class _VaultTextEdit(QPlainTextEdit):
+    """密库用的多行输入框：右键换成应用自己的中文圆角菜单。"""
+
+    def contextMenuEvent(self, event):
+        _edit_context_menu(self, self.textCursor().hasSelection(),
+                           self.isReadOnly())
+        event.accept()
+
+
 class _VaultEntryDialog(_CardOverlayDialog):
     """添加到密库 / 编辑密库内容：名称可选，留空就按内容显示。
 
@@ -13462,6 +13507,9 @@ class _VaultEntryDialog(_CardOverlayDialog):
         except Exception:
             pass
         self._kind = kind or entry.get("type") or "text"
+        # 复制内容时要标记 self-copy（密库内容不该被剪贴板监控再收一条）
+        self._app = (app or getattr(owner, "app", None)
+                     or (owner if hasattr(owner, "store") else None))
         self._image_name = str(entry.get("image") or "")
         # 从历史"加入密库"时带进来的是磁盘上的源文件，保存时才复制进密库目录
         self._image_src = str(entry.get("image_src") or "")
@@ -13480,13 +13528,13 @@ class _VaultEntryDialog(_CardOverlayDialog):
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(8)
 
-        self._name_edit = QLineEdit(str(entry.get("name", "") or ""))
+        self._name_edit = _VaultLineEdit(str(entry.get("name", "") or ""))
         self._name_edit.setPlaceholderText(tr("vault_ph_name"))
         form.addWidget(_label(tr("vault_f_name")), 0, 0)
         form.addWidget(self._name_edit, 0, 1)
 
         self._content_lbl = _label(tr("vault_f_content"), top=True)
-        self._content_edit = QPlainTextEdit()
+        self._content_edit = _VaultTextEdit()
         self._content_edit.setPlaceholderText(tr("vault_ph_content"))
         self._content_edit.setMinimumHeight(130)
         self._content_edit.setPlainText(str(entry.get("content", "") or ""))
@@ -13508,6 +13556,11 @@ class _VaultEntryDialog(_CardOverlayDialog):
         lay.addLayout(form)
 
         pick = QHBoxLayout()
+        self._copy_content_btn = QPushButton(tr("vault_copy_content"))
+        self._copy_content_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._copy_content_btn.setAutoDefault(False)
+        self._copy_content_btn.clicked.connect(self._copy_content)
+        pick.addWidget(self._copy_content_btn)
         pick.addStretch()
         self._pick_img_btn = QPushButton(tr("vault_pick_image"))
         self._pick_file_btn = QPushButton(tr("vault_pick_file"))
@@ -13568,6 +13621,27 @@ class _VaultEntryDialog(_CardOverlayDialog):
                                       or self._kind == "file")
         self._pick_file_btn.setVisible(True)
 
+    def _copy_content(self):
+        """一键复制正文（长内容不用手动全选）：复制出去不会被历史再收一条。"""
+        body = self._content_edit.toPlainText()
+        if not body:
+            return
+        app = getattr(self, "_app", None)
+        try:
+            if app is not None:
+                app._last_self_copy = time.time()
+                app.store.mark_self_copy()
+        except Exception:
+            pass
+        try:
+            set_clipboard_text(body)
+        except Exception as ex:
+            self._hint.setStyleSheet(f"color: {C['DANGER']}; font-size: 12px;")
+            self._hint.setText(str(ex))
+            return
+        self._hint.setStyleSheet(f"color: {C['SUCCESS']}; font-size: 12px;")
+        self._hint.setText(tr("vault_copied"))
+
     def _pick_image(self):
         path, _sel = QFileDialog.getOpenFileName(
             self, tr("vault_pick_image"), "",
@@ -13606,9 +13680,11 @@ class _VaultEntryDialog(_CardOverlayDialog):
         has_content = bool(vals["content"].strip() or vals["paths"]
                            or vals["image_src"] or vals["image"])
         if not vals["name"] and not has_content:
+            self._hint.setStyleSheet(f"color: {C['DANGER']}; font-size: 12px;")
             self._hint.setText(tr("vault_need_content"))
             return
         if self._kind in ("text", "url") and not vals["content"].strip():
+            self._hint.setStyleSheet(f"color: {C['DANGER']}; font-size: 12px;")
             self._hint.setText(tr("vault_need_content"))
             return
         super().accept()
@@ -13626,7 +13702,7 @@ class _VaultNameDialog(_CardOverlayDialog):
             self._icon_lbl.setPixmap(_lock_icon(34, C['TEXT']).pixmap(34, 34))
         except Exception:
             pass
-        self._edit = QLineEdit(str(current or ""))
+        self._edit = _VaultLineEdit(str(current or ""))
         self._edit.setPlaceholderText(tr("vault_ph_name"))
         self._lay.addWidget(self._edit)
         buttons = QHBoxLayout()
@@ -13753,7 +13829,7 @@ class VaultDialog(QDialog):
         root.addLayout(kinds_row)
 
         top = QHBoxLayout()
-        self._search = QLineEdit()
+        self._search = _VaultLineEdit()
         self._search.setPlaceholderText(tr("vault_search_ph"))
         self._search.textChanged.connect(lambda _t: self._reload())
         top.addWidget(self._search, 1)
