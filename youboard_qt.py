@@ -1529,6 +1529,7 @@ STRINGS = {
         "filter_fav": "收藏",
         "btn_edit_tags": "编辑标签…",
         "m_fav_on": "加入收藏", "m_fav_off": "取消收藏", "m_edit_tags": "编辑标签…",
+        "m_vault_add": "加入密库…",
         "st_fav_set": "已收藏 {n} 条", "st_fav_unset": "已取消收藏 {n} 条",
         "st_fav_filter": "只看收藏（{n} 条）", "st_fav_filter_off": "已取消收藏筛选",
         "st_tag_filter": "只看标签 #{tag}", "st_tag_filter_off": "已取消标签筛选",
@@ -1977,6 +1978,7 @@ STRINGS = {
         "btn_edit_tags": "Edit tags…",
         "m_fav_on": "Add to favorites", "m_fav_off": "Remove from favorites",
         "m_edit_tags": "Edit tags…",
+        "m_vault_add": "Save to Vault…",
         "st_fav_set": "{n} added to favorites", "st_fav_unset": "{n} removed from favorites",
         "st_fav_filter": "Favorites only ({n})", "st_fav_filter_off": "Favorites filter off",
         "st_tag_filter": "Filtering by #{tag}", "st_tag_filter_off": "Tag filter off",
@@ -3790,6 +3792,12 @@ class _TagsDialog(_CardOverlayDialog):
         save.clicked.connect(self.accept)
         buttons.addWidget(save)
         lay.addLayout(buttons)
+
+        # 回车只用来「把输入框里的标签加进来」：两个按钮都不抢回车，
+        # 否则输完标签一按回车，Qt 会去点默认按钮（取消），弹层被关掉、标签全丢
+        for b in (cancel, save):
+            b.setAutoDefault(False)
+            b.setDefault(False)
 
         self._rebuild_chips()
         QTimer.singleShot(0, self._edit.setFocus)
@@ -5898,6 +5906,15 @@ class DesktopClipboardWidget(QWidget):
         self._right_press = False
         try:
             menu = _RoundMenu(self)
+            # 小组件本身很小，菜单跟着用紧凑规格（字号 / 内边距都收一号）
+            menu.setStyleSheet(f"""
+                QMenu {{ background: {C['SURFACE2']}; color: {C['TEXT']};
+                    border: 1px solid {C['BORDER_LT']}; border-radius: 8px;
+                    padding: 3px; font-size: 11px; }}
+                QMenu::item {{ padding: 4px 14px; border-radius: 5px; }}
+                QMenu::item:selected {{ background: {C['ACCENT_DIM']};
+                    color: {C['ACCENT']}; }}
+            """)
             act_close = menu.addAction(tr("widget_close"))
             chosen = menu.exec(global_pos)
         except Exception:
@@ -8640,6 +8657,42 @@ class YouBoardApp(QMainWindow):
         n = self.store.add_tags(hashes, picked)
         self._after_mutate(tr("st_tags_saved", n=n))
 
+    def _add_selected_to_vault(self):
+        """把选中的文本 / 网址记录存进密库（密码字段预填内容，用户可再改）。
+
+        入口：列表右键 →「加入密库…」。密库条目和剪贴板历史是两份独立数据，
+        这里只是"把这条内容复制一份过去"，不会改动原记录。
+        """
+        entry = self._get_selected_entry()
+        if not entry:
+            self._set_status(tr("st_nothing_to_copy"), "warn")
+            return
+        etype = entry.get("type", "text")
+        if etype not in ("text", "url"):
+            return
+        content = (entry_full_text(entry) if etype == "text"
+                   else str(entry.get("content", "") or ""))
+        if not content.strip():
+            return
+        tags = entry_tags(entry)
+        title = tags[0] if tags else ""
+        if not title:
+            first = content.strip().splitlines()[0].strip()
+            title = first[:24] + ("…" if len(first) > 24 else "")
+        prefill = {
+            "title": title,
+            "username": "",
+            "secret": "" if etype == "url" else content,
+            "url": content if etype == "url" else "",
+            "note": "",
+        }
+        dlg = _VaultEntryDialog(self, self, prefill)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if self.vault.add(**dlg.values()) is None:
+            return
+        self._set_status(tr("vault_saved"), "ok")
+
     def _delete_selected(self):
         hashes = self._get_selected_hashes()
         if not hashes:
@@ -8908,6 +8961,9 @@ class YouBoardApp(QMainWindow):
         menu.addAction(tr("m_fav_off") if self._all_selected_fav()
                        else tr("m_fav_on"), self._toggle_fav_selected)
         menu.addAction(tr("m_edit_tags"), self._edit_tags_selected)
+        # 密库：文本 / 网址可以"手动存进密库"（图片和文件不是密钥类内容，不给这项）
+        if etype in ("text", "url"):
+            menu.addAction(tr("m_vault_add"), self._add_selected_to_vault)
         # AI 处理子菜单（只对文本 / 网址记录出现）
         self._ai_menu_for(menu, entry)
         menu.addAction(tr("m_delete_n", n=n) if n > 1 else tr("m_delete"), self._delete_selected)
@@ -13208,6 +13264,11 @@ class _VaultEntryDialog(_CardOverlayDialog):
         save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         save.clicked.connect(self.accept)
         buttons.addWidget(save)
+        # 回车 = 保存（在任意输入框里按回车都直接存下，别让用户以为"没反应"）
+        cancel.setAutoDefault(False)
+        cancel.setDefault(False)
+        save.setAutoDefault(True)
+        save.setDefault(True)
         lay.addLayout(buttons)
         QTimer.singleShot(0, self._title_edit.setFocus)
 

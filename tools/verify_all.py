@@ -828,6 +828,107 @@ def test_gui():
     check("vaultui: filled entry accepted",
           ved.result() == 1 and ved.values()["title"] == "Steam")
 
+    # 3.3.1 修补：弹层里的回车语义（输入框按回车不能变成"取消"，否则内容像消失了）
+    from PyQt6.QtTest import QTest as _QTest
+    enter_dlg = yq._VaultEntryDialog(win, None)
+    enter_dlg.show()
+    app.processEvents()
+    enter_dlg._title_edit.setText("回车保存")
+    enter_dlg._title_edit.setFocus()
+    app.processEvents()
+    _QTest.keyClick(enter_dlg._title_edit, yq.Qt.Key.Key_Return)
+    app.processEvents()
+    check("vaultui: Enter in field saves",
+          enter_dlg.result() == 1
+          and enter_dlg.values()["title"] == "回车保存",
+          "result=%s visible=%s" % (enter_dlg.result(), enter_dlg.isVisible()))
+    tag_enter = yq._TagsDialog(win, win, [], [], mode="edit", count=1)
+    tag_enter.show()
+    app.processEvents()
+    tag_enter._edit.setText("回车标签")
+    tag_enter._edit.setFocus()
+    app.processEvents()
+    _QTest.keyClick(tag_enter._edit, yq.Qt.Key.Key_Return)
+    app.processEvents()
+    check("tags: Enter adds tag and keeps dialog open",
+          tag_enter.isVisible() and tag_enter.selected_tags() == ["回车标签"],
+          "visible=%s selected=%s" % (tag_enter.isVisible(),
+                                      tag_enter.selected_tags()))
+    tag_enter.reject()
+
+    # ---- 3.3.1：右键「加入密库…」 ----
+    win._tabs.setCurrentIndex(yq.TAB_TYPES.index("text"))
+    app.processEvents()
+    text_tbl = win._tables["text"]
+    win._refresh_tab("text")
+    app.processEvents()
+    check("vault: text rows exist for right-click", text_tbl.rowCount() >= 1)
+    text_tbl.selectRow(0)
+    app.processEvents()
+    captured = []
+
+    class _MenuSpy:
+        def __init__(self, *a, **k):
+            pass
+
+        def setTitle(self, *_a):
+            pass
+
+        def setStyleSheet(self, *_a):
+            pass
+
+        def addAction(self, *a):
+            if a:
+                captured.append(a[0])
+            return a[0] if a else None
+
+        def addSeparator(self):
+            captured.append("---")
+
+        def addMenu(self, *_a):
+            return _MenuSpy()
+
+        def exec(self, *_a):
+            return None
+
+    _real_menu_cls = yq._RoundMenu
+    yq._RoundMenu = _MenuSpy
+    try:
+        win._on_right_click("text", yq.QPoint(12, 12))
+    finally:
+        yq._RoundMenu = _real_menu_cls
+    check("vault: right-click offers add-to-vault",
+          yq.tr("m_vault_add") in captured,
+          str([c for c in captured if c != "---"][:6]))
+
+    seen_prefill = {}
+
+    class _StubVaultEntry:
+        def __init__(self, owner, app, entry=None):
+            seen_prefill.update(entry or {})
+            self._vals = dict(entry or {})
+
+        def exec(self):
+            return 1
+
+        def values(self):
+            return dict(self._vals)
+
+    _real_entry_cls = yq._VaultEntryDialog
+    _vault_before = win.vault.count()
+    yq._VaultEntryDialog = _StubVaultEntry
+    try:
+        win._add_selected_to_vault()
+    finally:
+        yq._VaultEntryDialog = _real_entry_cls
+    check("vault: add-from-history prefills the content",
+          bool(seen_prefill.get("secret") or seen_prefill.get("url")),
+          str(sorted(seen_prefill.keys())))
+    check("vault: add-from-history stores entry",
+          win.vault.count() == _vault_before + 1)
+    check("vault: history untouched by vault add",
+          len(store.get_by_type("text")) >= 1)
+
     # ---- 3.3.1 小组件右键：能手动关闭，且不被当成左键复制 ----
     desk = yq.DesktopClipboardWidget(win)
     desk.show()
@@ -839,6 +940,9 @@ def test_gui():
     class _FakeMenu:
         def __init__(self, parent=None):
             pass
+
+        def setStyleSheet(self, css):
+            seen["css"] = css
 
         def addAction(self, text):
             seen["action"] = text
@@ -855,6 +959,9 @@ def test_gui():
         yq._RoundMenu = _real_menu
     check("widget: right-click offers close",
           seen.get("action") == yq.tr("widget_close"), str(seen))
+    check("widget: context menu uses compact style",
+          "padding: 3px" in (seen.get("css") or "")
+          and "font-size: 11px" in (seen.get("css") or ""))
     check("widget: right-click closes widget", not desk.isVisible())
     store._self_copy_time = 0.0
     desk._right_press = True
