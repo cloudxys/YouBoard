@@ -4,7 +4,7 @@
     "description": "Extension name shown in the browser and the store listing."
   },
   "extDesc": {
-    "message": "Save what you copy on web pages into YouBoard, and paste your clipboard history straight into any input field. Requires the YouBoard desktop app on this machine.",
+    "message": "Save web copies into YouBoard and paste your history into any input field. Needs the YouBoard desktop app.",
     "description": "Extension description shown in the browser and the store listing."
   },
   "menuSaveSelection": {

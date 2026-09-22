@@ -4,7 +4,7 @@
     "description": "扩展在浏览器与商店里显示的名称。"
   },
   "extDesc": {
-    "message": "把网页里复制的内容存进 YouBoard，并在任意网页输入框里快速粘贴历史记录。需要本机安装 YouBoard 桌面版。",
+    "message": "把网页里复制的内容存进 YouBoard，并能把历史记录粘进任意网页输入框。需配合本机 YouBoard 桌面版。",
     "description": "扩展在浏览器与商店里显示的简介。"
   },
   "menuSaveSelection": {

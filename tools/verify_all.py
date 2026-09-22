@@ -1140,6 +1140,57 @@ def test_gui():
           len(store.get_by_type("text")) >= 1)
 
     # ---- 3.3.1 小组件右键：能手动关闭，且不被当成左键复制 ----
+    # ---- 卡片弹层窗口只包住卡片（截图工具抓窗口时不再是"全屏"） ----
+    card_probe = yq._TagsDialog(win, win, ["a"], ["a"], mode="edit", count=1)
+    card_probe.show()
+    for _ in range(8):
+        app.processEvents()
+    check("card overlay window is card-sized",
+          card_probe.width() <= 760 and card_probe.height() <= 620
+          and card_probe.width() < win.width(),
+          "%dx%d（主窗口 %dx%d）" % (card_probe.width(), card_probe.height(),
+                                     win.width(), win.height()))
+    card_probe.reject()
+    card_probe.close()
+
+    # ---- 本机桥：开关立即生效；启动失败要说出原因（扩展"连不上"的根因） ----
+    st0 = win.bridge_status()
+    check("bridge: starts stopped", not st0.get("running"), str(st0))
+    st1 = win.set_bridge_enabled(True)
+    check("bridge: enabling starts the server immediately",
+          bool(st1.get("running")) and bool(st1.get("port")), str(st1))
+    if st1.get("running"):
+        _en, _port, _token = yq.ensure_bridge_config(yq.load_config())
+        try:
+            _req = urllib.request.Request(
+                "http://127.0.0.1:%s/api/ping" % st1["port"],
+                headers={"X-YouBoard-Token": _token})
+            with urllib.request.urlopen(_req, timeout=5) as _resp:
+                ping_ok = _resp.status == 200
+        except Exception as ex:
+            ping_ok = False
+            check("bridge: /api/ping reachable", False, str(ex))
+        if ping_ok:
+            check("bridge: /api/ping reachable", True)
+    st2 = win.set_bridge_enabled(False)
+    check("bridge: disabling stops the server", not st2.get("running"), str(st2))
+
+    class _BoomBridge:
+        last_error = "boom: 端口被别的程序独占"
+
+        def __init__(self, *a, **k):
+            raise RuntimeError("boom")
+
+    _real_bridge_cls = yq.BridgeServer
+    yq.BridgeServer = _BoomBridge
+    try:
+        st3 = win.set_bridge_enabled(True)
+    finally:
+        yq.BridgeServer = _real_bridge_cls
+    check("bridge: failure reason is surfaced",
+          not st3.get("running") and bool(st3.get("error")), str(st3))
+    win.set_bridge_enabled(False)
+
     desk = yq.DesktopClipboardWidget(win)
     desk.show()
     for _ in range(4):

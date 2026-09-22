@@ -1652,6 +1652,7 @@ STRINGS = {
         "set_bridge_copy": "复制连接信息",
         "set_bridge_status_on": "运行中：127.0.0.1:{port}",
         "set_bridge_status_off": "未运行",
+        "set_bridge_failed": "启动失败：{err}",
         "set_bridge_seen": "扩展上次连接：{t}",
         "set_bridge_hint": "在扩展的「设置」里粘贴这一行",
         "bridge_copied": "已按扩展的请求复制到系统剪贴板",
@@ -2121,6 +2122,7 @@ STRINGS = {
         "set_bridge_copy": "Copy connection info",
         "set_bridge_status_on": "Running on 127.0.0.1:{port}",
         "set_bridge_status_off": "Not running",
+        "set_bridge_failed": "Failed to start: {err}",
         "set_bridge_seen": "Extension last connected: {t}",
         "set_bridge_hint": "Paste this line into the extension's settings",
         "bridge_copied": "Copied to the system clipboard (requested by the extension)",
@@ -3669,41 +3671,63 @@ class _CardOverlayDialog(QDialog):
         """)
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(3, 6, 10, 170))
+        """窗口只包住卡片本身，所以不在窗口底上画"压暗整屏"那一层——
+        否则卡片四周会多出一圈半透明黑边，窗口截图也会把它一起抓进去。"""
 
     def showEvent(self, event):
         super().showEvent(event)
         QTimer.singleShot(0, self._sync_to_host)
 
     def _sync_to_host(self):
+        """把卡片弹层定位到宿主中央——窗口只包住卡片本身，不铺满宿主。
+
+        以前这里 setGeometry(host.frameGeometry())：弹层窗口和主窗口一样大
+        （最大化时就是整屏），于是截图工具"抓窗口"抓到的永远是全屏。
+        现在窗口尺寸 = 卡片尺寸，抓窗口就是抓这张卡片。
+        """
         host = self._host
-        target = None
+        host_rect = None
         try:
             if host is not None and host.isVisible():
-                target = host.frameGeometry()
+                host_rect = host.frameGeometry()
         except Exception:
-            target = None
-        if target is None or target.width() < 200 or target.height() < 150:
-            # 宿主不可见时不能把卡片丢在屏幕角落（以前会停在默认位置，
-            # 看起来就像"弹到程序外面去了"）：改成在当前屏幕居中、只占卡片大小
-            try:
-                scr = QApplication.screenAt(QCursor.pos()) \
-                    or QApplication.primaryScreen()
-                avail = scr.availableGeometry()
-                w = min(max(self.CARD_WIDTH + 48, 360), avail.width() - 40)
-                h = min(560, avail.height() - 40)
-                target = QRect(avail.x() + (avail.width() - w) // 2,
-                               avail.y() + (avail.height() - h) // 2, w, h)
-            except Exception:
-                target = None
-        if target is not None:
-            try:
-                self.setGeometry(target)
-            except Exception:
-                pass
-        # 弹层会铺满宿主（主窗口最大化时就是整屏）。桌面小组件是独立的置顶窗口，
-        # 如果不重新抬一次，新的置顶弹层会排在它前面，把小组件整个盖住（点不到、没法复制）。
+            host_rect = None
+        try:
+            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+            avail = scr.availableGeometry()
+        except Exception:
+            avail = None
+        try:
+            hint = self.card.sizeHint()
+            w, h = hint.width(), hint.height()
+        except Exception:
+            w, h = self.CARD_WIDTH, 420
+        w = max(self.CARD_WIDTH, w) + 48          # 卡片四周留一圈透明边（当阴影用）
+        h = max(200, h) + 48
+        if avail is not None:
+            w = min(w, max(320, avail.width() - 40))
+            h = min(h, max(240, avail.height() - 40))
+        if host_rect is not None and host_rect.width() >= 200:
+            x = host_rect.x() + (host_rect.width() - w) // 2
+            y = host_rect.y() + (host_rect.height() - h) // 2
+        elif avail is not None:
+            # 宿主不可见时在当前屏幕居中，别把卡片丢到角落
+            x = avail.x() + (avail.width() - w) // 2
+            y = avail.y() + (avail.height() - h) // 2
+        else:
+            x = y = 0
+        if avail is not None:                     # 别跑到屏幕外
+            x = max(avail.x(), min(x, avail.x() + avail.width() - w))
+            y = max(avail.y(), min(y, avail.y() + avail.height() - h))
+        try:
+            self.setGeometry(int(x), int(y), int(w), int(h))
+        except Exception:
+            pass
+        # 窗口小了以后，窗口底不能再画那层"全屏压暗"，否则会在卡片四周留一圈黑边
+        try:
+            self.card.setMaximumHeight(int(h) - 48)
+        except Exception:
+            pass
         try:
             desk = getattr(host, "_desk_widget", None)
             if desk is not None and desk.isVisible():
@@ -4431,7 +4455,7 @@ class _BridgeDialog(_CardOverlayDialog):
         sw_row.addWidget(sw_lbl, 1)
         self._cb = QCheckBox()
         self._cb.setChecked(bool(cfg.get("bridge_enabled", False)))
-        self._cb.toggled.connect(self._sync_ui)
+        self._cb.toggled.connect(self._on_toggle)
         sw_row.addWidget(self._cb)
         lay.addLayout(sw_row)
 
@@ -4480,6 +4504,22 @@ class _BridgeDialog(_CardOverlayDialog):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._sync_ui)
         self._timer.start(2000)
+        # 打开时如果配置是"已启用"但服务没跑（比如上次启动失败），这里再试一次
+        if self._cb.isChecked():
+            st = self.app.bridge_status() if self.app is not None else {}
+            if not st.get("running"):
+                try:
+                    self.app._apply_bridge()
+                except Exception:
+                    pass
+        self._sync_ui()
+
+    def _on_toggle(self, on):
+        """开关一拨就立刻生效（以前要点了「保存」才启动，用户以为坏了）。"""
+        try:
+            self.app.set_bridge_enabled(bool(on))
+        except Exception:
+            pass
         self._sync_ui()
 
     def _current_line(self):
@@ -4506,10 +4546,17 @@ class _BridgeDialog(_CardOverlayDialog):
             self._state.setStyleSheet(
                 f"color: {C['ACCENT']}; font-size: 12px;")
         else:
-            self._state.setText(tr("set_bridge_status_off") if on
-                                else tr("set_bridge_off"))
-            self._state.setStyleSheet(
-                f"color: {C['TEXT_SEC']}; font-size: 12px;")
+            err = str(st.get("error") or "")
+            if on and err:
+                # 启动失败要把原因说出来，否则用户只看到"未运行"无从下手
+                self._state.setText(tr("set_bridge_failed", err=err[:160]))
+                self._state.setStyleSheet(
+                    f"color: {C['DANGER']}; font-size: 12px;")
+            else:
+                self._state.setText(tr("set_bridge_status_off") if on
+                                    else tr("set_bridge_off"))
+                self._state.setStyleSheet(
+                    f"color: {C['TEXT_SEC']}; font-size: 12px;")
 
     def _copy_conn(self):
         try:
@@ -6568,6 +6615,7 @@ class YouBoardApp(QMainWindow):
         QTimer.singleShot(600, self._apply_desktop_widget)
         # 浏览器扩展桥（只监听 127.0.0.1，默认关闭；设置里打开）
         self._bridge = None
+        self._bridge_error = ""
         QTimer.singleShot(900, self._apply_bridge)
         # 启动构建完成后回收一次内存垃圾，降低常驻占用
         QTimer.singleShot(3000, gc.collect)
@@ -9353,17 +9401,22 @@ class YouBoardApp(QMainWindow):
             if self._bridge is not None:
                 self._bridge.stop()
                 self._bridge = None
+            self._bridge_error = ""
             return
         if self._bridge is not None and self._bridge.running:
+            self._bridge_error = ""
             return
         try:
             bridge = BridgeServer(self.store, port=port, token=token,
                                   on_copy=self._on_bridge_copy)
             actual = bridge.start()
-        except Exception:
+        except Exception as ex:
             self._bridge = None
+            # 以前这里是静默失败：设置里只显示"未运行"，用户不知道哪出了问题
+            self._bridge_error = str(getattr(ex, "last_error", "") or ex)
             return
         self._bridge = bridge
+        self._bridge_error = ""
         if actual and actual != int(cfg.get("bridge_port") or 0):
             # 端口被占用时把真实端口写回配置，设置里显示的就是能用的那个
             cfg["bridge_port"] = int(actual)
@@ -9387,8 +9440,30 @@ class YouBoardApp(QMainWindow):
 
     def bridge_status(self):
         if self._bridge is None or not self._bridge.running:
-            return {"running": False, "port": 0, "last_seen_text": ""}
-        return self._bridge.status()
+            return {"running": False, "port": 0, "last_seen_text": "",
+                    "error": getattr(self, "_bridge_error", "")}
+        st = self._bridge.status()
+        st["error"] = ""
+        return st
+
+    def set_bridge_enabled(self, enabled):
+        """开关本机桥：立刻写配置并启动 / 停止，返回最新状态（供设置弹层用）。"""
+        try:
+            cfg = load_config()
+            _e, port, token = ensure_bridge_config(cfg)
+            cfg["bridge_enabled"] = bool(enabled)
+            cfg["bridge_port"] = port
+            cfg["bridge_token"] = token
+            save_config(cfg)
+        except Exception as ex:
+            self._bridge_error = str(ex)
+            return self.bridge_status()
+        if enabled:
+            self._apply_bridge()
+        else:
+            self._stop_bridge()
+            self._bridge_error = ""
+        return self.bridge_status()
 
     def _apply_desktop_widget(self):
         """Create/show or hide the optional desktop clipboard widget."""

@@ -366,6 +366,8 @@ class BridgeServer:
         self.token = str(token or "")
         self.on_copy = on_copy
         self.last_seen = 0.0
+        # 启动失败的原因（给设置里的状态行显示用，之前是静默失败）
+        self.last_error = ""
         self._httpd = None
         self._thread = None
 
@@ -387,7 +389,7 @@ class BridgeServer:
         for candidate in ([self.port] if self.port else []) + [0]:
             try:
                 httpd = _BridgeHTTPServer((BRIDGE_HOST, candidate), _Handler)
-            except OSError as err:
+            except Exception as err:
                 last_err = err
                 continue
             httpd.store = self.store            # type: ignore[attr-defined]
@@ -401,9 +403,12 @@ class BridgeServer:
                                       name="YouBoardBridge")
             thread.start()
             self._thread = thread
+            self.last_error = ""
             return self.actual_port
         if last_err:
+            self.last_error = "%s: %s" % (type(last_err).__name__, last_err)
             raise last_err
+        self.last_error = "无法绑定本机端口"
         return 0
 
     def stop(self):
@@ -415,6 +420,7 @@ class BridgeServer:
             except Exception:
                 pass
         self._thread = None
+        self.last_error = ""
 
     def status(self):
         seen = 0.0
