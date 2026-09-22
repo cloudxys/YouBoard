@@ -3214,9 +3214,9 @@ class _UpdateDialog(QDialog):
         card.setObjectName("updateCard")
         card.setFixedWidth(600)
         self._card = card
-        # 不加对齐标志：卡片直接铺满窗口（窗口尺寸就是照它算的），
-        # 这样"窗口矩形"和"卡片"永远严丝合缝，截图不带周围界面
-        outer.addWidget(card)
+        # 卡片按自身内容取首选尺寸（居中）；窗口随后严格贴合它，
+        # 这样卡片既不会被压小，窗口矩形也不会带进周围的界面
+        outer.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
 
         lay = QVBoxLayout(card)
         lay.setContentsMargins(30, 26, 30, 22)
@@ -3450,13 +3450,28 @@ class _UpdateDialog(QDialog):
         except Exception:
             avail = None
         try:
-            hint = self._card.sizeHint()
-            w, h = hint.width(), hint.height()
+            cw, ch = int(self._card.width()), int(self._card.height())
         except Exception:
-            w, h = 600, 560
-        # 窗口尺寸 = 卡片尺寸（同其它卡片弹层）：截图工具按窗口矩形截出来就是卡片本身
-        w = max(600, w)
-        h = max(280, h)
+            cw = ch = 0
+        # 先让内容按当前状态重算一遍布局，避免量到滞后一拍（偏小）的尺寸
+        try:
+            for _lay in (self._card.layout(), self.layout()):
+                if _lay is not None:
+                    _lay.invalidate()
+                    _lay.activate()
+            cw, ch = int(self._card.width()), int(self._card.height())
+        except Exception:
+            pass
+        # 两拍走：先让窗口足够大，卡片按自己的内容摊开到"自然尺寸"；等下一拍
+        # 再把窗口收紧到卡片实际尺寸——这样卡片既不会被压小，也不会被截断。
+        if cw < 120 or ch < 80:
+            if host_rect is not None and host_rect.width() >= 200:
+                try:
+                    self.setGeometry(host_rect)
+                except Exception:
+                    pass
+            return
+        w, h = max(600, cw), max(280, ch)
         if avail is not None:
             w = min(w, max(360, avail.width() - 40))
             h = min(h, max(320, avail.height() - 40))
@@ -3473,7 +3488,8 @@ class _UpdateDialog(QDialog):
             y = max(avail.y(), min(y, avail.y() + avail.height() - h))
         try:
             self.setGeometry(int(x), int(y), int(w), int(h))
-            self._card.setMaximumHeight(max(240, int(h)))
+            # 只限制更新说明区的高度（让长说明在卡片内滚动），卡片本身不再设上限，
+            # 否则卡片会被压小、底部按钮被截断（用户实测反馈）
             self._notes.setMaximumHeight(max(120, int(h) - 260))
         except Exception:
             pass
@@ -3633,8 +3649,8 @@ class _CardOverlayDialog(QDialog):
         card = QFrame()
         card.setObjectName("retCard")
         card.setFixedWidth(self.CARD_WIDTH)
-        # 同更新卡片：卡片铺满窗口，窗口矩形=卡片
-        outer.addWidget(card)
+        # 卡片按自身内容取首选尺寸（居中）；窗口随后严格贴合它
+        outer.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
         self.card = card
 
         lay = QVBoxLayout(card)
@@ -3739,19 +3755,29 @@ class _CardOverlayDialog(QDialog):
         except Exception:
             avail = None
         try:
-            lay = self.card.layout()
-            if lay is not None:
-                # 先让布局按当前内容（含"隐藏某几行"的状态）算一次，避免用到滞后一拍的缓存值
-                lay.invalidate()
-                lay.activate()
-            hint = self.card.sizeHint()
-            w, h = hint.width(), hint.height()
+            cw, ch = int(self.card.width()), int(self.card.height())
         except Exception:
-            w, h = self.CARD_WIDTH, 360
-        # 窗口尺寸 = 卡片尺寸（一点不富余）：截图工具按窗口矩形截出来就是卡片本身，
-        # 不会再把卡片周围的界面一起带进来
-        w = max(self.CARD_WIDTH, w)
-        h = max(160, h)
+            cw = ch = 0
+        # 先重算一遍布局，避免量到滞后一拍（偏小）的尺寸
+        try:
+            for _lay in (self.card.layout(), self.layout()):
+                if _lay is not None:
+                    _lay.invalidate()
+                    _lay.activate()
+            cw, ch = int(self.card.width()), int(self.card.height())
+        except Exception:
+            pass
+        # 两拍走：先让窗口足够大（铺满宿主），卡片按自身内容摊开到"自然尺寸"；
+        # 等下一拍再把窗口收紧到卡片实际尺寸——卡片不会被压小，也不会被截断。
+        if cw < 120 or ch < 80:
+            if host_rect is not None and host_rect.width() >= 200:
+                try:
+                    self.setGeometry(host_rect)
+                except Exception:
+                    pass
+            return
+        w = max(self.CARD_WIDTH, cw)
+        h = max(160, ch)
         if avail is not None:
             w = min(w, max(320, avail.width() - 40))
             h = min(h, max(240, avail.height() - 40))
