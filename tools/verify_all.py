@@ -1093,6 +1093,22 @@ def test_gui():
 
     _real_entry_cls = yq._VaultEntryDialog
     _vault_before = win.vault.count()
+    # 专门补几条独立样本用于"移入密库"，避免删掉别处用例依赖的记录
+    store.add_text("移入密库测试文本")
+    try:
+        from PIL import Image as _MPIL
+        _mp = _MPIL.new("RGB", (24, 18), (200, 60, 60))
+        store.add_image(_mp, store._image_hash(_mp), "move-test.png")
+    except Exception:
+        pass
+    _mvf = os.path.join(tmp, "move-test.txt")
+    with open(_mvf, "w", encoding="utf-8") as _mfh:
+        _mfh.write("move")
+    store.add_files([_mvf], "regression-move-file-hash")
+    win._refresh_all()
+    app.processEvents()
+    _text_before = [e["hash"] for e in store.get_by_type("text")]
+    _image_before = [e["hash"] for e in store.get_by_type("image")]
     yq._VaultEntryDialog = _StubVaultEntry
     try:
         win._tabs.setCurrentIndex(yq.TAB_TYPES.index("text"))
@@ -1136,8 +1152,95 @@ def test_gui():
           win.vault.count() > _vault_before)
     check("vault: image from history lands in vault",
           kinds_now.get("image", 0) >= 1, str(kinds_now))
-    check("vault: history untouched by vault add",
-          len(store.get_by_type("text")) >= 1)
+    # 3.3.2：移进密库 = 从剪贴板历史里删掉那条（密钥不该同时留在外面）
+    _text_after = [e["hash"] for e in store.get_by_type("text")]
+    _image_after = [e["hash"] for e in store.get_by_type("image")]
+    check("vault: moving removes the source from history",
+          len(_text_after) == max(0, len(_text_before) - 1)
+          and len(_image_after) == max(0, len(_image_before) - 1),
+          "文本 %d→%d  图片 %d→%d" % (len(_text_before), len(_text_after),
+                                      len(_image_before), len(_image_after)))
+    check("vault: moved hash really gone",
+          all(h not in _text_after for h in _text_before[:1]))
+
+    # 3.3.2：移入保留原时间；移出按原时间归位（不丢记录，只是"藏进密库"）
+    _old_ts = "2026-01-02T03:04:05"
+    _move_text = "归位测试文本-%d" % int(time.time())
+    store.add_text(_move_text)
+    _mv_hash = store._text_hash(_move_text)
+    for _e in store.get_by_type("text"):
+        if _e["hash"] == _mv_hash:
+            _e["timestamp"] = _old_ts
+    store.flush()
+    _v_entry = win.vault.add(kind="text", content=_move_text, ts=_old_ts)
+    _vwin2 = yq.VaultDialog(win)
+    _vwin2.show()
+    for _ in range(8):
+        app.processEvents()
+    _vwin2._reload()
+    _row = None
+    for _i in range(_vwin2._table.rowCount()):
+        _e = _vwin2._rows[_i] if _i < len(_vwin2._rows) else {}
+        if _e.get("id") == _v_entry["id"]:
+            _row = _i
+            break
+    check("vault: moved-in entry keeps the original time",
+          any(e["id"] == _v_entry["id"] and e.get("ts") == _old_ts
+              for e in win.vault.entries()))
+    if _row is not None:
+        _vwin2._table.selectRow(_row)
+        app.processEvents()
+        _vwin2._move_entry_out()
+        for _ in range(8):
+            app.processEvents()
+    _restored = [e for e in store.get_by_type("text") if e["hash"] == _mv_hash]
+    check("vault: move-out puts it back with the original timestamp",
+          bool(_restored) and _restored[0].get("timestamp") == _old_ts,
+          str(_restored[:1])[:120])
+    check("vault: move-out clears it from the vault",
+          not any(e["id"] == _v_entry["id"] for e in win.vault.entries()))
+    _stamps = [e.get("timestamp", "") for e in store.get_by_type("text")]
+    check("vault: restored record is sorted back by time",
+          _stamps == sorted(_stamps, reverse=True), str(_stamps[:4]))
+    _vwin2.close()
+
+    # 图片移出密库：要走真实的图片文件写回（images/ 里按内容 hash 落盘）
+    try:
+        from PIL import Image as _IPIL
+        _ip = _IPIL.new("RGB", (30, 20), (10, 200, 120))
+        _ipath = os.path.join(tmp, "move-image.png")
+        _ip.save(_ipath)
+        _iname = win.vault.store_image_file(_ipath)
+        _vimg = win.vault.add(kind="image", image=_iname, name="移出图片测试",
+                              ts="2026-01-03T04:05:06")
+        _vwin3 = yq.VaultDialog(win)
+        _vwin3.show()
+        for _ in range(8):
+            app.processEvents()
+        _vwin3._reload()
+        for _i in range(_vwin3._table.rowCount()):
+            if _i < len(_vwin3._rows) and \
+                    _vwin3._rows[_i].get("id") == _vimg["id"]:
+                _vwin3._table.selectRow(_i)
+                break
+        app.processEvents()
+        _vwin3._move_entry_out()
+        for _ in range(8):
+            app.processEvents()
+        _img_back = [e for e in store.get_by_type("image")
+                     if e.get("timestamp") == "2026-01-03T04:05:06"]
+        check("vault: image move-out restores the record",
+              bool(_img_back), str(store.count("image")))
+        if _img_back:
+            _fname = str(_img_back[0].get("filename") or "")
+            _full = os.path.join(yq.IMAGES_DIR, os.path.basename(_fname))
+            check("vault: image file written back to history dir",
+                  bool(_fname) and os.path.exists(_full), _full)
+        check("vault: image gone from the vault after move-out",
+              not any(e["id"] == _vimg["id"] for e in win.vault.entries()))
+        _vwin3.close()
+    except Exception as _ex:
+        check("vault: image move-out restores the record", False, str(_ex)[:120])
 
     # ---- 3.3.1 小组件右键：能手动关闭，且不被当成左键复制 ----
     # ---- 卡片弹层窗口只包住卡片（截图工具抓窗口时不再是"全屏"） ----

@@ -1215,6 +1215,7 @@ class VaultStore:
             return {"id": str(item.get("id") or uuid.uuid4().hex),
                     "type": kind, "name": name, "content": content,
                     "paths": [], "image": "", "size": 0,
+                    "ts": "", "tags": [], "fav": False, "pinned": False,
                     "created": str(item.get("created") or now),
                     "updated": str(item.get("updated") or now)}
 
@@ -1233,9 +1234,16 @@ class VaultStore:
             size = int(item.get("size") or 0)
         except (TypeError, ValueError):
             size = 0
+        # 3.3.2：从历史"移入"的记录要记住它原来的时间 / 标签 / 收藏 / 置顶，
+        # 这样"移出密库"时能按当初的时间归位，标记也不会丢。
+        tags = normalize_tags(item.get("tags") or [])
         return {"id": str(item.get("id") or uuid.uuid4().hex),
                 "type": kind, "name": name, "content": content,
                 "paths": paths, "image": image, "size": size,
+                "ts": str(item.get("ts") or ""),
+                "tags": tags,
+                "fav": bool(item.get("fav")),
+                "pinned": bool(item.get("pinned")),
                 "created": str(item.get("created") or now),
                 "updated": str(item.get("updated") or now)}
 
@@ -1339,13 +1347,18 @@ class VaultStore:
     # ---- mutate ----
 
     def add(self, kind="text", content="", paths=None, image="",
-            name="", size=0):
-        """新增一条；返回新记录（没有任何内容则不写入，返回 None）。"""
+            name="", size=0, ts="", tags=None, fav=False, pinned=False):
+        """新增一条；返回新记录（没有任何内容则不写入，返回 None）。
+
+        ts / tags / fav / pinned 是"从历史移入"时带过来的来源信息：
+        移出密库时按 ts 归位，标签与收藏也一起还回去。
+        """
         now = datetime.now().isoformat(timespec="seconds")
         entry = self._norm({
             "id": uuid.uuid4().hex, "type": kind, "content": content,
             "paths": list(paths or []), "image": image, "name": name,
             "size": size, "created": now, "updated": now,
+            "ts": ts, "tags": list(tags or []), "fav": fav, "pinned": pinned,
         })
         if entry is None:
             return None
@@ -2217,6 +2230,37 @@ class ClipboardStore:
 
     # ---- delete ----
 
+    def insert_entry(self, entry, pinned=False):
+        """把一条完整记录插回历史（保留它自己的时间戳，按时间归位）。
+
+        「移出密库」用它：记录当初是几点复制的，放回来还是那个时间，
+        在按时间排序的列表里就回到原来的位置；标签 / 收藏 / 置顶也一起带回来。
+        """
+        if not isinstance(entry, dict) or not entry.get("hash"):
+            return False
+        etype = entry.get("type")
+        if etype not in ("text", "image", "file", "url"):
+            etype = "text"
+        item = dict(entry)
+        item["type"] = etype
+        with self._lock:
+            cat = self.categories.setdefault(etype, {"pinned": [], "entries": []})
+            for name in ("pinned", "entries"):
+                cat[name] = [e for e in cat.get(name, [])
+                             if e.get("hash") != item["hash"]]
+            if pinned:
+                item.pop("pinned", None)      # 置顶由所在列表表示，不写字段
+                cat["pinned"].append(item)
+            else:
+                cat["entries"].append(item)
+            for name in ("pinned", "entries"):
+                cat[name].sort(key=lambda x: x.get("timestamp", "") or "",
+                               reverse=True)
+            if self.max_entries and len(cat["entries"]) > self.max_entries:
+                cat["entries"] = cat["entries"][:self.max_entries]
+            self._save()
+        return True
+
     def delete(self, entry_hash):
         with self._lock:
             for cat_name, cat in self.categories.items():
@@ -2229,6 +2273,7 @@ class ClipboardStore:
         return False
 
     def delete_many(self, hashes):
+        """按 hash 删除若干条（返回实际删除条数）。"""
         count = 0
         with self._lock:
             for h in hashes:

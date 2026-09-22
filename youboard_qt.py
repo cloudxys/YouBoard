@@ -1532,6 +1532,9 @@ STRINGS = {
         "btn_edit_tags": "编辑标签…",
         "m_fav_on": "加入收藏", "m_fav_off": "取消收藏", "m_edit_tags": "编辑标签…",
         "m_vault_add": "加入密库…",
+        "m_vault_out": "移出密库…",
+        "vault_move_out_done": "已移出密库，按原来的时间回到剪贴板历史",
+        "vault_move_out_failed": "移出失败：{err}",
         # 输入框右键菜单（替掉 Qt 自带的英文直角菜单）
         "ctx_cut": "剪切", "ctx_copy": "复制", "ctx_paste": "粘贴",
         "vault_copy_content": "复制内容",
@@ -1572,6 +1575,7 @@ STRINGS = {
         "vault_summary_file": "文件 · {n} 个",
         "vault_need_content": "名称和内容至少填一个",
         "vault_saved": "已保存到密库", "vault_deleted": "已从密库删除",
+        "st_vault_moved": "已移入密库，剪贴板历史里的那条已删除",
         "vault_renamed": "名称已更新",
         "vault_copied": "已复制到剪贴板（不会进剪贴板历史）",
         "vault_copied_image": "图片已复制到剪贴板",
@@ -1999,6 +2003,9 @@ STRINGS = {
         "m_fav_on": "Add to favorites", "m_fav_off": "Remove from favorites",
         "m_edit_tags": "Edit tags…",
         "m_vault_add": "Save to Vault…",
+        "m_vault_out": "Move out of Vault…",
+        "vault_move_out_done": "Moved out of the vault — back in history at its original time",
+        "vault_move_out_failed": "Move out failed: {err}",
         "ctx_cut": "Cut", "ctx_copy": "Copy", "ctx_paste": "Paste",
         "vault_copy_content": "Copy content",
         "st_fav_set": "{n} added to favorites", "st_fav_unset": "{n} removed from favorites",
@@ -2038,6 +2045,7 @@ STRINGS = {
         "vault_summary_file": "File · {n} item(s)",
         "vault_need_content": "Fill in a name or some content",
         "vault_saved": "Saved to vault", "vault_deleted": "Removed from vault",
+        "st_vault_moved": "Moved into the vault — the copy in clipboard history was deleted",
         "vault_renamed": "Name updated",
         "vault_copied": "Copied (not added to clipboard history)",
         "vault_copied_image": "Image copied to clipboard",
@@ -8954,11 +8962,12 @@ class YouBoardApp(QMainWindow):
         self._after_mutate(tr("st_tags_saved", n=n))
 
     def _add_selected_to_vault(self):
-        """把选中的记录（文本 / 图片 / 文件 / 网址）存进密库。
+        """把选中的记录（文本 / 图片 / 文件 / 网址）**移进**密库。
 
         入口：列表右键 →「加入密库…」。名称是可选的：默认取这条记录的标签，
         用户清空后就按内容显示。图片会把文件复制进密库目录，文件记路径；
-        密库和剪贴板历史是两份独立数据，源记录不受影响。
+        存进密库成功后，**把这条记录从剪贴板历史里删掉**——否则加进密库的
+        密钥在历史里还留着一份（会被手机传输/云同步带出去），等于白加。
         """
         entry = self._get_selected_entry()
         if not entry:
@@ -8966,7 +8975,12 @@ class YouBoardApp(QMainWindow):
             return
         etype = entry.get("type", "text")
         tags = entry_tags(entry)
-        prefill = {"name": tags[0] if tags else ""}
+        # 记住这条记录原来的时间 / 标签 / 收藏 / 置顶：移出密库时按原样归位
+        prefill = {"name": tags[0] if tags else "",
+                   "ts": str(entry.get("timestamp") or ""),
+                   "tags": list(tags),
+                   "fav": bool(entry.get("fav")),
+                   "pinned": bool(entry.get("hash") in self._pinned_hashes)}
         if etype == "image":
             src = self._image_full_path(entry)
             if not (src and os.path.exists(src)):
@@ -8991,7 +9005,20 @@ class YouBoardApp(QMainWindow):
             return
         if _vault_add_from_values(self.vault, dlg.values()) is None:
             return
-        self._set_status(tr("vault_saved"), "ok")
+        # 移进密库 = 从剪贴板历史里挪走这条（不是删掉：记录已带着原时间存进密库，
+        # 之后在密库里右键「移出密库」就能按当初的时间原样放回历史）
+        moved = False
+        try:
+            h = str(entry.get("hash") or "")
+            if h:
+                self.store.delete_many([h])
+                moved = True
+        except Exception:
+            moved = False
+        if moved:
+            self._after_mutate(tr("st_vault_moved"))
+        else:
+            self._set_status(tr("vault_saved"), "ok")
 
     def _delete_selected(self):
         hashes = self._get_selected_hashes()
@@ -13676,6 +13703,11 @@ class _VaultEntryDialog(_CardOverlayDialog):
         # 从历史"加入密库"时带进来的是磁盘上的源文件，保存时才复制进密库目录
         self._image_src = str(entry.get("image_src") or "")
         self._paths = [str(p) for p in (entry.get("paths") or []) if p]
+        # 从历史移入时带来的来源信息（时间 / 标签 / 收藏 / 置顶），原样带着走
+        self._origin = {"ts": str(entry.get("ts") or ""),
+                        "tags": list(entry.get("tags") or []),
+                        "fav": bool(entry.get("fav")),
+                        "pinned": bool(entry.get("pinned"))}
         lay = self._lay
 
         def _label(text, top=False):
@@ -13834,12 +13866,14 @@ class _VaultEntryDialog(_CardOverlayDialog):
     # ---- 取值 / 校验 ----
 
     def values(self):
-        return {"kind": self._kind,
+        vals = {"kind": self._kind,
                 "name": self._name_edit.text().strip(),
                 "content": self._content_edit.toPlainText(),
                 "paths": list(self._paths),
                 "image": self._image_name,
                 "image_src": self._image_src}
+        vals.update(getattr(self, "_origin", {}) or {})
+        return vals
 
     def accept(self):
         vals = self.values()
@@ -13896,23 +13930,28 @@ def _vault_add_from_values(vault, vals):
     """把弹层返回的值写进密库（图片先复制进密库自己的目录）。返回新条目或 None。"""
     kind = str(vals.get("kind") or "text")
     name = str(vals.get("name") or "")
+    # "从历史移入"带过来的来源信息：移出密库时要靠它回到原来的时间和位置
+    extra = {"ts": str(vals.get("ts") or ""),
+             "tags": list(vals.get("tags") or []),
+             "fav": bool(vals.get("fav")),
+             "pinned": bool(vals.get("pinned"))}
     if kind == "image":
         src = str(vals.get("image_src") or "")
         image = vault.store_image_file(src) if src else str(vals.get("image") or "")
         if not image:
             return None
-        return vault.add(kind="image", image=image, name=name)
+        return vault.add(kind="image", image=image, name=name, **extra)
     if kind == "file":
         paths = [p for p in (vals.get("paths") or []) if p]
         if not paths:
             return None
-        return vault.add(kind="file", paths=paths, name=name)
+        return vault.add(kind="file", paths=paths, name=name, **extra)
     content = str(vals.get("content") or "")
     if not content.strip():
         return None
     if kind == "url":
-        return vault.add(kind="url", content=content, name=name)
-    return vault.add_text(content, name=name)
+        return vault.add(kind="url", content=content, name=name, **extra)
+    return vault.add(kind="text", content=content, name=name, **extra)
 
 
 class VaultDialog(QDialog):
@@ -14021,6 +14060,10 @@ class VaultDialog(QDialog):
         self._table.setItemDelegate(_NoFocusDelegate(self._table))
         self._table.itemSelectionChanged.connect(self._sync_buttons)
         self._table.itemDoubleClicked.connect(lambda _i: self._activate_entry())
+        # 右键菜单：和主界面历史列表一套（只是「加入密库」换成「移出密库」）
+        self._table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_right_click)
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -14200,6 +14243,178 @@ class VaultDialog(QDialog):
             self._edit_entry()
         else:
             self._open_entry()
+
+    def _on_right_click(self, pos):
+        """密库列表的右键菜单：与历史列表同款，只是「加入密库」换成「移出密库」。"""
+        idx = self._table.indexAt(pos)
+        if idx.isValid():
+            self._table.selectRow(idx.row())
+        entry = self._current_entry()
+        if entry is None:
+            return
+        kind = str(entry.get("type") or "text")
+        menu = _RoundMenu(self._table)
+        if kind in ("text", "url"):
+            menu.addAction(tr("m_copy_content"), self._copy_entry)
+            menu.addAction(tr("m_export_txt"), self._export_entry)
+        elif kind == "image":
+            menu.addAction(tr("m_copy_image"), self._copy_entry)
+            menu.addAction(tr("m_open_viewer"), self._open_entry)
+            menu.addAction(tr("m_open_folder"),
+                           lambda: self._reveal_entry(entry))
+            menu.addAction(tr("m_copy_path"),
+                           lambda: self._copy_entry_path(entry))
+        else:
+            menu.addAction(tr("m_copy_files"), self._copy_entry)
+            menu.addAction(tr("m_open_locate"), self._open_entry)
+            menu.addAction(tr("m_open_folder"),
+                           lambda: self._reveal_entry(entry))
+            menu.addAction(tr("m_copy_paths"),
+                           lambda: self._copy_entry_path(entry))
+        menu.addSeparator()
+        menu.addAction(tr("vault_edit"), self._edit_entry)
+        menu.addAction(tr("vault_rename"), self._rename_entry)
+        menu.addAction(tr("m_vault_out"), self._move_entry_out)
+        menu.addSeparator()
+        menu.addAction(tr("vault_delete"), self._delete_entry)
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _copy_entry_path(self, entry):
+        """复制图片 / 文件在磁盘上的路径（和历史列表里的行为一致）。"""
+        if str(entry.get("type")) == "image":
+            path = vault_image_path(entry)
+        else:
+            paths = [p for p in (entry.get("paths") or []) if p]
+            path = paths[0] if paths else ""
+        if not path:
+            self._status.setText(tr("vault_no_file"))
+            return
+        try:
+            set_clipboard_text(path)
+        except Exception:
+            return
+        self._status.setText(tr("vault_copied"))
+
+    def _reveal_entry(self, entry):
+        """在资源管理器里定位这个文件。"""
+        if str(entry.get("type")) == "image":
+            path = vault_image_path(entry)
+        else:
+            paths = [p for p in (entry.get("paths") or []) if p]
+            path = paths[0] if paths else ""
+        if not path or not os.path.exists(path):
+            self._status.setText(tr("vault_no_file"))
+            return
+        try:
+            self.app._reveal_in_explorer(path)
+        except Exception:
+            pass
+
+    def _export_entry(self):
+        """导出文本 / 网址（和历史列表的「导出为 .txt…」一致）。"""
+        entry = self._current_entry()
+        if entry is None:
+            return
+        body = str(entry.get("content") or "")
+        if not body:
+            return
+        default = (entry.get("name") or "YouBoard").strip() or "YouBoard"
+        for ch in '\\/:*?"<>|':
+            default = default.replace(ch, "_")
+        path, _sel = QFileDialog.getSaveFileName(
+            self, tr("m_export_txt"), default + ".txt",
+            "Text (*.txt)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(body)
+        except OSError as ex:
+            self._status.setText(str(ex))
+            return
+        self._status.setText(tr("st_exported", name=os.path.basename(path)))
+
+    def _move_entry_out(self):
+        """移出密库：把这条放回剪贴板历史，时间仍是当初复制的时间。"""
+        entry = self._current_entry()
+        if entry is None:
+            return
+        item = self._to_history_entry(entry)
+        if item is None:
+            self._status.setText(tr("vault_no_file"))
+            return
+        store = getattr(self.app, "store", None)
+        if store is None:
+            return
+        try:
+            if not store.insert_entry(item, pinned=bool(entry.get("pinned"))):
+                return
+        except Exception as ex:
+            self._status.setText(tr("vault_move_out_failed", err=str(ex)[:80]))
+            return
+        self.vault.delete(entry["id"])
+        self._reload()
+        self._status.setText(tr("vault_move_out_done"))
+        try:
+            self.app._refresh_all()      # 主界面立刻能看到它按原时间归位
+            self.app._update_desk_widget()
+        except Exception:
+            pass
+
+    def _to_history_entry(self, entry):
+        """把密库条目还原成一条历史记录（保留原时间 / 标签 / 收藏）。"""
+        store = getattr(self.app, "store", None)
+        if store is None:
+            return None
+        kind = str(entry.get("type") or "text")
+        ts = str(entry.get("ts") or entry.get("created") or "")
+        tags = list(entry.get("tags") or [])
+        fav = bool(entry.get("fav"))
+        if kind in ("text", "url"):
+            content = str(entry.get("content") or "")
+            if not content:
+                return None
+            item = {"hash": store._text_hash(content), "type": kind,
+                    "content": content, "timestamp": ts}
+        elif kind == "image":
+            src = vault_image_path(entry)
+            if not (src and os.path.exists(src)):
+                return None
+            try:
+                from PIL import Image as PILImage
+                img = PILImage.open(src)
+                img.load()
+            except Exception:
+                return None
+            h = store._image_hash(img)
+            try:
+                store.add_image(img, h, source_name=str(entry.get("name") or ""))
+            except Exception:
+                return None
+            item = {"hash": h, "type": "image",
+                    "filename": "images/%s.png" % h,
+                    "original_format": img.format or "PNG",
+                    "source_name": str(entry.get("name") or ""),
+                    "width": img.width, "height": img.height,
+                    "timestamp": ts}
+        else:
+            paths = [p for p in (entry.get("paths") or []) if p]
+            if not paths:
+                return None
+            try:
+                sizes = [os.path.getsize(p) if os.path.exists(p) else -1
+                         for p in paths]
+            except OSError:
+                sizes = [-1] * len(paths)
+            item = {"hash": store._files_hash(paths), "type": "file",
+                    "file_paths": paths, "file_sizes": sizes,
+                    "file_count": len(paths), "timestamp": ts}
+        # 顺带把来源信息带回去：移出后还是原来那条（时间 / 标签 / 收藏）
+        if tags:
+            item["tags"] = tags
+        if fav:
+            item["fav"] = True
+        return item
 
     def _mark_self_copy(self):
         """密库复制同样要把内容挡在剪贴板历史之外。"""
