@@ -4676,9 +4676,14 @@ class _AIDialog(_CardOverlayDialog):
     CARD_WIDTH = 760
 
     def __init__(self, owner, app, entry, action, client=None,
-                 custom_prompt="", lang=None, chat=False):
+                 custom_prompt="", lang=None, chat=False,
+                 vault=None, vault_uid="", on_changed=None):
         self._app = app
         self._entry = entry or {}
+        # 密库模式：结果落点改到密库（另存 = 存进密库，替换 = 改这条密库条目）
+        self._vault = vault
+        self._vault_uid = str(vault_uid or "")
+        self._on_changed = on_changed
         _valid = tuple(AI_ACTIONS) + tuple(AI_IMAGE_ACTIONS) \
             + tuple(AI_FILE_ACTIONS)
         self._action = action if action in _valid else "summarize"
@@ -4843,6 +4848,10 @@ class _AIDialog(_CardOverlayDialog):
         if self._app is None:
             return ""
         try:
+            name = str((self._entry or {}).get("filename") or "")
+            # 密库里的图片放在 vault_files/ 下，这里直接给它绝对路径
+            if name and os.path.isabs(name):
+                return name
             return self._app._image_full_path(self._entry)
         except Exception:
             return ""
@@ -5050,15 +5059,31 @@ class _AIDialog(_CardOverlayDialog):
         self.accept()
 
     def _use_result_save(self):
-        if self._app is not None:
+        if self._vault is not None:
+            # 密库模式：AI 结果直接存成密库里的新条目
+            name = str((self._entry or {}).get("source_name") or "")
+            self._vault.add(kind="text", content=self._result, name=name)
+            self._notify_changed()
+        elif self._app is not None:
             self._app._ai_result_save(self._result)
         self.accept()
 
     def _use_result_replace(self):
-        if self._app is not None:
+        if self._vault is not None:
+            if self._vault_uid:
+                self._vault.update(self._vault_uid, content=self._result)
+                self._notify_changed()
+        elif self._app is not None:
             self._app._ai_result_replace(self._entry.get("hash"),
                                          self._result)
         self.accept()
+
+    def _notify_changed(self):
+        try:
+            if callable(self._on_changed):
+                self._on_changed()
+        except Exception:
+            pass
 
     def _open_ai_settings(self):
         if self._app is None:
@@ -14274,10 +14299,77 @@ class VaultDialog(QDialog):
         menu.addSeparator()
         menu.addAction(tr("vault_edit"), self._edit_entry)
         menu.addAction(tr("vault_rename"), self._rename_entry)
+        self._ai_menu_for(menu, entry)
         menu.addAction(tr("m_vault_out"), self._move_entry_out)
         menu.addSeparator()
         menu.addAction(tr("vault_delete"), self._delete_entry)
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    # ---- AI（与主界面历史列表同一套） ----
+
+    def _vault_proxy_entry(self, entry):
+        """把密库条目包装成"历史条目"的形状，让 AI 弹层原样复用。
+
+        图片给绝对路径（密库的图片在 vault_files/ 下），文件给 file_paths，
+        文本 / 网址给正文——AI 那边不用关心这条到底在密库还是历史里。
+        """
+        kind = str(entry.get("type") or "text")
+        proxy = {"type": kind, "hash": str(entry.get("id") or ""),
+                 "content": str(entry.get("content") or ""),
+                 "source_name": str(entry.get("name") or ""),
+                 "timestamp": str(entry.get("ts") or entry.get("created") or "")}
+        if kind == "image":
+            proxy["filename"] = vault_image_path(entry)
+        elif kind == "file":
+            paths = [p for p in (entry.get("paths") or []) if p]
+            proxy["file_paths"] = paths
+            proxy["file_sizes"] = [
+                os.path.getsize(p) if os.path.exists(p) else -1 for p in paths]
+        return proxy
+
+    def _ai_menu_for(self, menu, entry):
+        """「AI 处理 ▸」子菜单：动作和历史列表完全一致。"""
+        kind = str(entry.get("type") or "text")
+        sub = _RoundMenu(menu)
+        sub.setTitle(tr("ai_menu"))
+        for act in YouBoardApp._ai_actions_for(kind):
+            if act == "custom":
+                continue
+            sub.addAction(tr("ai_act_" + act),
+                          lambda a=act: self._run_ai(a))
+        sub.addSeparator()
+        sub.addAction(tr("ai_act_custom"), self._run_ai_custom)
+        sub.addAction(tr("ai_menu_chat"), self._run_ai_chat)
+        menu.addMenu(sub)
+        return sub
+
+    def _open_ai(self, action, custom_prompt="", chat=False):
+        entry = self._current_entry()
+        if entry is None:
+            return
+        dlg = _AIDialog(self, self.app, self._vault_proxy_entry(entry), action,
+                        custom_prompt=custom_prompt, chat=chat,
+                        vault=self.vault,
+                        vault_uid=str(entry.get("id") or ""),
+                        on_changed=self._reload)
+        dlg.exec()
+
+    def _run_ai(self, action, custom_prompt=""):
+        self._open_ai(action, custom_prompt=custom_prompt)
+
+    def _run_ai_custom(self):
+        entry = self._current_entry()
+        if entry is None:
+            return
+        ask = _AIPromptDialog(self, self.app, self._vault_proxy_entry(entry))
+        if ask.exec() != QDialog.DialogCode.Accepted:
+            return
+        prompt = ask.prompt_text()
+        if prompt:
+            self._open_ai("custom", custom_prompt=prompt)
+
+    def _run_ai_chat(self):
+        self._open_ai("summarize", chat=True)
 
     def _copy_entry_path(self, entry):
         """复制图片 / 文件在磁盘上的路径（和历史列表里的行为一致）。"""

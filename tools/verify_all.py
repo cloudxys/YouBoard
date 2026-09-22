@@ -1242,6 +1242,81 @@ def test_gui():
     except Exception as _ex:
         check("vault: image move-out restores the record", False, str(_ex)[:120])
 
+    # 3.3.2：密库里的内容也能用 AI（菜单项与历史列表一致，结果落点在密库）
+    _vai = win.vault.add(kind="text", content="AI 密库测试正文", name="AI密库")
+    _vwin4 = yq.VaultDialog(win)
+    _vwin4.show()
+    for _ in range(8):
+        app.processEvents()
+    _vwin4._reload()
+    _ai_items = []
+
+    class _SpyMenu:
+        def __init__(self, *a, **k):
+            self._title = ""
+
+        def setTitle(self, t):
+            self._title = t
+
+        def addAction(self, *a):
+            _ai_items.append(a[0] if a else "")
+            return a[0] if a else None
+
+        def addSeparator(self):
+            _ai_items.append("---")
+
+        def addMenu(self, sub):
+            _ai_items.append("SUB:" + getattr(sub, "_title", ""))
+
+        def exec(self, *_a):
+            return None
+
+    _real_menu_cls2 = yq._RoundMenu
+    yq._RoundMenu = _SpyMenu
+    try:
+        _vwin4._ai_menu_for(_SpyMenu(), {"type": "text"})
+        _txt_items = list(_ai_items)
+        _ai_items.clear()
+        _vwin4._ai_menu_for(_SpyMenu(), {"type": "image"})
+        _img_items = list(_ai_items)
+    finally:
+        yq._RoundMenu = _real_menu_cls2
+    check("vault: AI submenu mirrors the history menu",
+          ("SUB:" + yq.tr("ai_menu")) in _txt_items
+          and yq.tr("ai_act_summarize") in _txt_items
+          and yq.tr("ai_act_translate") in _txt_items
+          and yq.tr("ai_menu_chat") in _txt_items,
+          str(_txt_items))
+    check("vault: AI actions follow the entry type",
+          yq.tr("ai_act_describe") in _img_items
+          and yq.tr("ai_act_summarize") not in _img_items,
+          str(_img_items))
+    _proxy_img = _vwin4._vault_proxy_entry(
+        {"type": "image", "image": "x.png", "name": "n"})
+    _proxy_file = _vwin4._vault_proxy_entry({"type": "file", "paths": [__file__]})
+    _proxy_txt = _vwin4._vault_proxy_entry({"type": "text", "content": "abc"})
+    check("vault: AI proxy entry shapes",
+          os.path.isabs(_proxy_img.get("filename") or "")
+          and bool(_proxy_file.get("file_paths"))
+          and _proxy_txt.get("content") == "abc",
+          "%s | %s | %s" % (_proxy_img.get("filename"), _proxy_file.get("file_paths"),
+                            _proxy_txt.get("content")))
+    _vcount = win.vault.count()
+    _adlg = yq._AIDialog(_vwin4, win, _vwin4._vault_proxy_entry(_vai),
+                         "summarize", vault=win.vault, vault_uid=_vai["id"],
+                         on_changed=_vwin4._reload)
+    _adlg._result = "AI 生成的结果正文"
+    _adlg._use_result_save()
+    check("vault: AI result saves into the vault", win.vault.count() == _vcount + 1)
+    _adlg2 = yq._AIDialog(_vwin4, win, _vwin4._vault_proxy_entry(_vai),
+                          "summarize", vault=win.vault, vault_uid=_vai["id"])
+    _adlg2._result = "AI 替换后的正文"
+    _adlg2._use_result_replace()
+    check("vault: AI result replaces the vault entry",
+          (win.vault.get(_vai["id"]) or {}).get("content") == "AI 替换后的正文",
+          str((win.vault.get(_vai["id"]) or {}).get("content"))[:40])
+    _vwin4.close()
+
     # ---- 3.3.1 小组件右键：能手动关闭，且不被当成左键复制 ----
     # ---- 卡片弹层窗口只包住卡片（截图工具抓窗口时不再是"全屏"） ----
     card_probe = yq._TagsDialog(win, win, ["a"], ["a"], mode="edit", count=1)

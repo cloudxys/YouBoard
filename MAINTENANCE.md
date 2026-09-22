@@ -62,7 +62,9 @@
 
 ## 7. 发版
 
-1. 更新 `README.md` 顶部的「vX.Y.Z 更新内容」和 `RELEASE_NOTES.md`（Release 正文取它）。
+1. 更新 `README.md` 顶部的「🆕 最近更新」和 `RELEASE_NOTES.md`（Release 正文取它）。
+   - **README 的更新内容只保留"每个版本一两句短话"**（下载页要的是效率，不是流水账）；
+     详细说明写进 `RELEASE_NOTES.md`，并在 README 末尾的「📜 更新日志」补一行。
 2. 三个产物重出、冒烟通过、门禁全绿。
 3. 打 tag 推送 → GitHub Actions 出 Windows + macOS（arm64/x86_64）产物并自动建 Release。
 4. 发布后在应用里点一次「检查更新」，确认能正确识别版本号与更新说明。
