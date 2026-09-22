@@ -60,6 +60,11 @@ IMAGES_DIR = os.path.join(_BASE_DIR, "images")
 FILE_CACHE_DIR = os.path.join(_BASE_DIR, "file_cache")
 # 大文本正文外置目录：超大内容不再塞进历史 JSON，避免每次复制都重写整份文件
 CONTENT_DIR = os.path.join(_BASE_DIR, "content")
+# 密库（3.3.1）：用户主动放进去的私密数据（密码 / 密钥 / 备注）单独落盘，
+# 只由用户手动维护，不进剪贴板历史、不进手机传输、不进云同步
+VAULT_FILE = os.path.join(_BASE_DIR, "youboard_vault.json")
+# 密库单个字段的长度上限（标题 / 账号 / 密码 / 链接 / 备注）
+MAX_VAULT_FIELD_LEN = 4096
 # 单个物化文件大小上限：超过则跳过，避免一次性占用过大内存
 MAX_FGD_FILE_SIZE = 500 * 1024 * 1024
 # 超过该长度的文本改为「正文外置 + 历史只留头部」：历史文件保持小巧，复制不再卡顿
@@ -1140,6 +1145,176 @@ def entry_tags(entry):
 def entry_is_fav(entry):
     """这条记录是否已收藏。"""
     return bool(isinstance(entry, dict) and entry.get("fav"))
+
+
+class VaultStore:
+    """密库存储：用户主动放进去的私密数据（密码 / 密钥 / 备注）。
+
+    设计上和剪贴板历史完全分开：
+    - 单独一个文件（youboard_vault.json），同样用 Fernet 加密 + 原子写入；
+    - 只由用户在密库窗口里手动增删改，剪贴板监控不会往里写；
+    - 手机传输、云同步、快照回滚都只认剪贴板历史，密库天然不参与。
+    """
+
+    def __init__(self, path=VAULT_FILE):
+        self.path = path
+        self._lock = threading.Lock()
+        self._entries = []
+        self._load()
+
+    # ---- persistence ----
+
+    @staticmethod
+    def _norm(item):
+        """归一化一条密库记录；标题和密码都为空时视为无效（返回 None）。"""
+        if not isinstance(item, dict):
+            return None
+
+        def field(key):
+            val = item.get(key, "")
+            if val is None:
+                val = ""
+            return str(val)[:MAX_VAULT_FIELD_LEN]
+
+        title = field("title").strip()
+        secret = field("secret")
+        if not title and not secret:
+            return None
+        now = datetime.now().isoformat(timespec="seconds")
+        return {
+            "id": str(item.get("id") or uuid.uuid4().hex),
+            "title": title,
+            "username": field("username").strip(),
+            "secret": secret,
+            "url": field("url").strip(),
+            "note": field("note").strip(),
+            "created": str(item.get("created") or now),
+            "updated": str(item.get("updated") or now),
+        }
+
+    def _load(self):
+        if not os.path.exists(self.path):
+            return
+        try:
+            with open(self.path, "rb") as f:
+                raw = _decrypt_data(f.read())
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, IOError, OSError):
+            return
+        if not isinstance(data, dict):
+            return
+        items = data.get("entries")
+        if not isinstance(items, list):
+            return
+        clean = []
+        for item in items:
+            entry = self._norm(item)
+            if entry is not None:
+                clean.append(entry)
+        self._entries = clean
+
+    def _save(self):
+        """加密后原子落盘；返回是否写成功（失败时内存里的改动仍然生效）。"""
+        with self._lock:
+            payload = {"version": 1, "entries": self._entries}
+            raw = json.dumps(payload, ensure_ascii=False,
+                             indent=2).encode("utf-8")
+        try:
+            _atomic_write(self.path, _encrypt_data(raw))
+            return True
+        except (IOError, OSError, TypeError, ValueError):
+            return False
+
+    def flush(self):
+        return self._save()
+
+    # ---- query ----
+
+    def entries(self):
+        """全部记录，按更新时间倒序（最近改过的在最上面）。"""
+        with self._lock:
+            items = [dict(e) for e in self._entries]
+        items.sort(key=lambda e: (e.get("updated") or "", e.get("created") or ""),
+                   reverse=True)
+        return items
+
+    def count(self):
+        with self._lock:
+            return len(self._entries)
+
+    def get(self, uid):
+        with self._lock:
+            for e in self._entries:
+                if e.get("id") == uid:
+                    return dict(e)
+        return None
+
+    def search(self, keyword):
+        """按标题 / 账号 / 链接 / 备注筛选（密码本身不参与匹配，避免误暴露）。"""
+        kw = (keyword or "").strip().lower()
+        items = self.entries()
+        if not kw:
+            return items
+        out = []
+        for e in items:
+            hay = " ".join((e.get("title", ""), e.get("username", ""),
+                            e.get("url", ""), e.get("note", ""))).lower()
+            if kw in hay:
+                out.append(e)
+        return out
+
+    # ---- mutate ----
+
+    def add(self, title="", username="", secret="", url="", note=""):
+        """新增一条；返回新记录（标题和密码都为空则不写入，返回 None）。"""
+        now = datetime.now().isoformat(timespec="seconds")
+        entry = self._norm({
+            "id": uuid.uuid4().hex, "title": title, "username": username,
+            "secret": secret, "url": url, "note": note,
+            "created": now, "updated": now,
+        })
+        if entry is None:
+            return None
+        with self._lock:
+            self._entries.append(entry)
+        self._save()
+        return dict(entry)
+
+    def update(self, uid, title=None, username=None, secret=None,
+               url=None, note=None):
+        """整条更新；只传需要改的字段（传 None 表示保持原值）。"""
+        changed = None
+        with self._lock:
+            for entry in self._entries:
+                if entry.get("id") != uid:
+                    continue
+                cur = dict(entry)
+                for key, val in (("title", title), ("username", username),
+                                 ("secret", secret), ("url", url),
+                                 ("note", note)):
+                    if val is not None:
+                        cur[key] = val
+                cur["updated"] = datetime.now().isoformat(timespec="seconds")
+                norm = self._norm(cur)
+                if norm is None:
+                    return False
+                entry.clear()
+                entry.update(norm)
+                changed = uid
+                break
+        if changed is None:
+            return False
+        self._save()
+        return True
+
+    def delete(self, uid):
+        with self._lock:
+            before = len(self._entries)
+            self._entries = [e for e in self._entries if e.get("id") != uid]
+            removed = len(self._entries) != before
+        if removed:
+            self._save()
+        return removed
 
 
 class ClipboardStore:

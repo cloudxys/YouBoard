@@ -169,6 +169,37 @@ def test_core():
     check("tags: legacy entry has none",
           all(yc.entry_tags(e) == [] for e in store2.get_by_type("text")))
 
+    # ---- 密库（v3.3.1）：独立加密落盘、与剪贴板历史互不影响 ----
+    vpath = os.path.join(tmp, "vault.json")
+    vault = yc.VaultStore(path=vpath)
+    check("vault: starts empty", vault.count() == 0)
+    v1 = vault.add("邮箱密码", "me@example.com", "S3cret!",
+                   "https://mail.example.com", "备用")
+    check("vault: add", v1 is not None and vault.count() == 1)
+    check("vault: rejects empty", vault.add("", "", "") is None
+          and vault.count() == 1)
+    vault.add("银行", "6222", "123456")
+    check("vault: two entries", vault.count() == 2)
+    check("vault: search title/username",
+          len(vault.search("邮箱")) == 1 and len(vault.search("6222")) == 1)
+    check("vault: secret not searchable", vault.search("S3cret!") == [])
+    check("vault: update", vault.update(v1["id"], secret="NewPass!")
+          and vault.get(v1["id"])["secret"] == "NewPass!"
+          and vault.get(v1["id"])["username"] == "me@example.com")
+    check("vault: delete", vault.delete(v1["id"]) and vault.count() == 1
+          and vault.delete("missing") is False)
+    vault.flush()
+    with open(vpath, "rb") as fh:
+        vraw = fh.read()
+    check("vault: encrypted at rest",
+          vraw.startswith(b"gAAAA") and b"123456" not in vraw)
+    check("vault: separate from clipboard history",
+          os.path.abspath(vpath) != os.path.abspath(store.path)
+          and yc.entry_tags(store.get_by_type("text")[0]) == [])
+    vreload = yc.VaultStore(path=vpath)
+    check("vault: persisted",
+          vreload.count() == 1 and vreload.entries()[0]["title"] == "银行")
+
     # ---- 导入合并语义（v3.2.9）：合并而不是覆盖 + 完全重复只留一条 + 时间倒序 ----
     ms = yc.ClipboardStore(path=os.path.join(tmp, "merge_semantics.json"))
     ms.clear()
@@ -737,6 +768,99 @@ def test_gui():
     check("tags: star drawn vectorially",
           not yq._star_pixmap(13).isNull()
           and yq._star_pixmap(13, filled=False).isNull() is False)
+
+    # 3.3.1：输入框打了字直接点「保存」也要生效（以前只有按回车才算，字被丢掉）
+    save_dlg = yq._TagsDialog(win, win, ["回归标签"], store.all_tags(),
+                              mode="edit", count=1)
+    save_dlg._edit.setText("直接保存")
+    save_dlg.accept()
+    check("tags: save button commits typed text",
+          sorted(save_dlg.selected_tags()) == sorted(["回归标签", "直接保存"]),
+          str(save_dlg.selected_tags()))
+    save_dlg.close()
+    blank_dlg = yq._TagsDialog(win, win, ["回归标签"], store.all_tags(),
+                               mode="edit", count=1)
+    blank_dlg._edit.setText("   ")
+    blank_dlg.accept()
+    check("tags: blank input drops nothing",
+          blank_dlg.selected_tags() == ["回归标签"],
+          str(blank_dlg.selected_tags()))
+    blank_dlg.close()
+
+    # ---- 3.3.1 密库窗口：列表 / 复制不进历史 / 新增弹层校验 ----
+    win.vault = yq.VaultStore(path=os.path.join(tmp, "vault_ui.json"))
+    vwin = yq.VaultDialog(win)
+    vwin.show()
+    for _ in range(6):
+        app.processEvents()
+    check("vaultui: empty list", vwin._table.rowCount() == 0)
+    vwin.vault.add("Wi-Fi", "home", "wifi-pass")
+    vwin._reload()
+    check("vaultui: lists entry",
+          vwin._table.rowCount() == 1
+          and vwin._table.item(0, 0).text() == "Wi-Fi")
+    vwin._table.selectRow(0)
+    app.processEvents()
+    check("vaultui: action buttons enabled", vwin._copy_secret_btn.isEnabled())
+    store._self_copy_time = 0.0
+    vwin._copy_field("secret", "vault_copied_secret")
+    check("vaultui: copy marks self-copy (stays out of history)",
+          store.is_self_copy())
+    vwin._search.setText("找不到的关键词")
+    app.processEvents()
+    check("vaultui: search filters", vwin._table.rowCount() == 0)
+    vwin._search.clear()
+    app.processEvents()
+    check("vaultui: search clears", vwin._table.rowCount() == 1)
+    vwin.close()
+    ved = yq._VaultEntryDialog(win, None)
+    ved.accept()
+    check("vaultui: empty entry rejected",
+          ved.result() != 1 and bool(ved._hint.text()))
+    ved._title_edit.setText("Steam")
+    ved._secret_edit.setText("pw")
+    ved._hide_checked = ved._show_btn.isChecked()
+    ved._show_btn.setChecked(True)
+    check("vaultui: show/hide toggles echo",
+          ved._secret_edit.echoMode() == yq.QLineEdit.EchoMode.Normal)
+    ved._show_btn.setChecked(False)
+    ved.accept()
+    check("vaultui: filled entry accepted",
+          ved.result() == 1 and ved.values()["title"] == "Steam")
+
+    # ---- 3.3.1 小组件右键：能手动关闭，且不被当成左键复制 ----
+    desk = yq.DesktopClipboardWidget(win)
+    desk.show()
+    for _ in range(4):
+        app.processEvents()
+    check("widget: visible before close", desk.isVisible())
+    seen = {}
+
+    class _FakeMenu:
+        def __init__(self, parent=None):
+            pass
+
+        def addAction(self, text):
+            seen["action"] = text
+            return text
+
+        def exec(self, pos):
+            return seen.get("action")
+
+    _real_menu = yq._RoundMenu
+    yq._RoundMenu = _FakeMenu
+    try:
+        desk._show_context_menu(yq.QPoint(5, 5))
+    finally:
+        yq._RoundMenu = _real_menu
+    check("widget: right-click offers close",
+          seen.get("action") == yq.tr("widget_close"), str(seen))
+    check("widget: right-click closes widget", not desk.isVisible())
+    store._self_copy_time = 0.0
+    desk._right_press = True
+    desk._on_item_clicked(None)          # 右键期间到达的"点击"必须被忽略
+    check("widget: right press is not a copy click",
+          desk._right_press is False and not store.is_self_copy())
 
     # ---- 分类 / 标签胶囊行：窗口拉宽后不能被摊开（行尾留白要显式 stretch） ----
     def chip_gaps(btns):

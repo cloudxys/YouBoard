@@ -95,6 +95,7 @@ except Exception:
 from youboard_core import (
     ClipboardStore, ClipboardMonitor, HISTORY_FILE, TIME_FORMAT,
     IMAGES_DIR, FILE_CACHE_DIR,
+    VaultStore,
     set_clipboard_text, set_clipboard_image, set_clipboard_files,
     load_config, save_config, get_autostart, set_autostart,
     get_icon_path, get_app_icon,
@@ -636,6 +637,31 @@ ICO_MAX = _res_icon("zuida.ico")
 ICO_RESTORE = _res_icon("zuidahuifu.ico")
 ICO_CLOSE = _res_icon("guanbi.ico")
 ICO_SETTINGS = _res_icon("shezhi.ico")
+
+
+def _lock_icon(size=20, color=None):
+    """密库用的挂锁图标：随主题色现画（不额外往 res/ 里加图片资源）。"""
+    color = color or C["TEXT"]
+    pm = QPixmap(int(size), int(size))
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    s = float(size)
+    # 锁梁（上半圆环）
+    pen = QPen(QColor(color), max(1.4, s * 0.11))
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    shackle_w = s * 0.46
+    p.drawArc(QRectF((s - shackle_w) / 2.0, s * 0.13, shackle_w, s * 0.44),
+              0, 180 * 16)
+    # 锁体
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    p.drawRoundedRect(QRectF(s * 0.18, s * 0.42, s * 0.64, s * 0.44),
+                      s * 0.13, s * 0.13)
+    p.end()
+    return QIcon(pm)
 
 
 def _force_square_corners(widget):
@@ -1514,6 +1540,30 @@ STRINGS = {
         "tags_placeholder": "输入标签后回车", "tags_none": "无标签",
         "tags_known": "历史标签", "tags_hint_existing": "已有",
         "hk_fav": "收藏 / 取消收藏",
+        # 密库（3.3.1）：用户主动放进去的私密数据
+        "vault_btn": "密库",
+        "vault_title": "密库", "vault_sub": "只存在本机、加密保存；你主动添加的内容不会进剪贴板历史，也不会同步到手机 / 云端",
+        "vault_add": "新增", "vault_edit": "编辑", "vault_delete": "删除",
+        "vault_copy_user": "复制账号", "vault_copy_secret": "复制密码",
+        "vault_search_ph": "搜索名称 / 账号 / 备注",
+        "vault_col_title": "名称", "vault_col_user": "账号", "vault_col_note": "备注",
+        "vault_empty": "还没有记录，点「新增」放一条进来",
+        "vault_count": "共 {n} 条",
+        "vault_new_title": "新增密库记录", "vault_edit_title": "编辑密库记录",
+        "vault_new_sub": "内容加密后存在本机，只有你自己能看到",
+        "vault_f_title": "名称", "vault_f_user": "账号 / 用户名",
+        "vault_f_secret": "密码 / 密钥", "vault_f_url": "链接（可选）",
+        "vault_f_note": "备注（可选）",
+        "vault_ph_title": "例如：邮箱密码", "vault_ph_user": "例如：name@example.com",
+        "vault_ph_secret": "粘贴或输入", "vault_ph_url": "https://…",
+        "vault_ph_note": "其它要一起记住的信息",
+        "vault_show": "显示", "vault_hide": "隐藏",
+        "vault_saved": "已保存到密库", "vault_deleted": "已从密库删除",
+        "vault_copied_user": "账号已复制（不会进剪贴板历史）",
+        "vault_copied_secret": "密码已复制（不会进剪贴板历史）",
+        "vault_need_secret": "名称和密码至少填一个",
+        "vault_confirm_delete": "删除这条密库记录？",
+        "vault_confirm_delete_sub": "删除后无法恢复（密库不参与历史快照回滚）",
         # AI 就地处理（3.2.7+）
         "ai_menu": "AI 处理",
         "ai_act_summarize": "总结要点", "ai_act_translate": "翻译",
@@ -1768,6 +1818,7 @@ STRINGS = {
         "widget_empty": "暂无剪贴内容",
         "widget_history": "最近记录（点击可复制）",
         "widget_click_copy": "点击复制回剪贴板",
+        "widget_close": "关闭小组件",
         "st_copied": "已复制回剪贴板",
         "set_phone": "手机传输",
         "set_phone_desc": "手机扫码即可查看 / 复制剪贴板历史，也能把手机文字发回电脑（同一 Wi-Fi）",
@@ -1937,6 +1988,30 @@ STRINGS = {
         "tags_placeholder": "Type a tag, press Enter", "tags_none": "No tags",
         "tags_known": "Known tags", "tags_hint_existing": "existing",
         "hk_fav": "Favorite / unfavorite",
+        # Vault (3.3.1) — secrets you add by hand
+        "vault_btn": "Vault",
+        "vault_title": "Vault", "vault_sub": "Encrypted on this device only — entries you add by hand never enter clipboard history and are never synced to phone or cloud",
+        "vault_add": "Add", "vault_edit": "Edit", "vault_delete": "Delete",
+        "vault_copy_user": "Copy username", "vault_copy_secret": "Copy password",
+        "vault_search_ph": "Search name / username / note",
+        "vault_col_title": "Name", "vault_col_user": "Username", "vault_col_note": "Note",
+        "vault_empty": "No entries yet — click Add to store one",
+        "vault_count": "{n} entries",
+        "vault_new_title": "New vault entry", "vault_edit_title": "Edit vault entry",
+        "vault_new_sub": "Encrypted and stored on this device only",
+        "vault_f_title": "Name", "vault_f_user": "Username",
+        "vault_f_secret": "Password / key", "vault_f_url": "URL (optional)",
+        "vault_f_note": "Note (optional)",
+        "vault_ph_title": "e.g. Mail password", "vault_ph_user": "e.g. name@example.com",
+        "vault_ph_secret": "Paste or type", "vault_ph_url": "https://…",
+        "vault_ph_note": "Anything else worth remembering",
+        "vault_show": "Show", "vault_hide": "Hide",
+        "vault_saved": "Saved to vault", "vault_deleted": "Removed from vault",
+        "vault_copied_user": "Username copied (not added to history)",
+        "vault_copied_secret": "Password copied (not added to history)",
+        "vault_need_secret": "Fill in a name or a password",
+        "vault_confirm_delete": "Delete this vault entry?",
+        "vault_confirm_delete_sub": "This cannot be undone (the vault is not part of history snapshots)",
         # AI actions (3.2.7+)
         "ai_menu": "AI actions",
         "ai_act_summarize": "Summarize", "ai_act_translate": "Translate",
@@ -2196,6 +2271,7 @@ STRINGS = {
         "widget_empty": "Clipboard is empty",
         "widget_history": "Recent (click to copy)",
         "widget_click_copy": "Click to copy back to clipboard",
+        "widget_close": "Close widget",
         "st_copied": "Copied back to clipboard",
         "set_phone": "Phone Transfer / PHONE",
         "set_phone_desc": "Scan the QR code to browse / copy history on your phone, or send phone text back to the PC (same Wi-Fi)",
@@ -3362,6 +3438,8 @@ class _CardOverlayDialog(QDialog):
         icon_row.addWidget(icon)
         icon_row.addStretch()
         lay.addLayout(icon_row)
+        # 子类可以把它换成自绘图标（例如密库的挂锁）
+        self._icon_lbl = icon
 
         title = QLabel(title_text)
         title.setObjectName("retTitle")
@@ -3718,15 +3796,29 @@ class _TagsDialog(_CardOverlayDialog):
 
     def _add_typed(self):
         """输入框回车：把新标签加进待保存列表。"""
+        self._commit_typed()
+        self._rebuild_chips()
+
+    def _commit_typed(self):
+        """把输入框里"已打完但还没回车"的标签收进待保存列表。
+
+        以前只有按回车才会收字，用户打完直接点「保存」时那串文字被丢掉，
+        看起来就是"编辑标签没有用"——这里补上。
+        """
         tag = normalize_tag(self._edit.text())
         if not tag:
             self._edit.clear()
-            return
+            return False
         self._selected[tag.lower()] = tag
         if tag.lower() not in [t.lower() for t in self._known]:
             self._known.append(tag)
         self._edit.clear()
-        self._rebuild_chips()
+        return True
+
+    def accept(self):
+        """点「保存」：先把输入框里的残留文字一并收下，再关闭。"""
+        self._commit_typed()
+        super().accept()
 
     def _toggle(self, tag):
         key = tag.lower()
@@ -5490,6 +5582,8 @@ class DesktopClipboardWidget(QWidget):
         self._press_pos = None
         self._press_zone = None
         self._press_active = False
+        # 右键按下期间不把「点击条目」当成左键复制（右键要弹菜单）
+        self._right_press = False
         self._entries = []
         # 布局派生的 minimumSize 会把窗口锁在 ~87px 高，覆盖掉，
         # 下限由 MIN_W/MIN_H 与分级收敛逻辑共同管理
@@ -5775,6 +5869,10 @@ class DesktopClipboardWidget(QWidget):
 
     # ---- interactions ----
     def _on_item_clicked(self, item):
+        if getattr(self, "_right_press", False):
+            # 右键用于弹「关闭小组件」菜单，不当作左键复制
+            self._right_press = False
+            return
         row = self._hist_list.row(item)
         entries = getattr(self, "_hist_entries", self._entries[1:])
         if row < 0 or row >= len(entries):
@@ -5794,6 +5892,22 @@ class DesktopClipboardWidget(QWidget):
         cfg["desktop_widget"] = False
         save_config(cfg)
         self.hide()
+
+    def _show_context_menu(self, global_pos):
+        """右键菜单：手动关闭小组件（想再显示在设置里重新打开）。"""
+        self._right_press = False
+        try:
+            menu = _RoundMenu(self)
+            act_close = menu.addAction(tr("widget_close"))
+            chosen = menu.exec(global_pos)
+        except Exception:
+            return
+        if chosen is act_close:
+            self._close_to_config()
+
+    def contextMenuEvent(self, event):
+        self._show_context_menu(event.globalPos())
+        event.accept()
 
     # ---- drag / resize / persist geometry ----
     # 光标：子控件会继承父窗口的光标，而鼠标停在子控件上时父窗口收不到 move 事件，
@@ -5823,6 +5937,13 @@ class DesktopClipboardWidget(QWidget):
             w.installEventFilter(self)
 
     def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.MouseButtonPress \
+                and event.button() == Qt.MouseButton.RightButton:
+            self._right_press = True
+        elif event.type() == QEvent.Type.ContextMenu:
+            # 子控件（列表 / 标签）上的右键也要冒到这里：小组件只提供「关闭」
+            self._show_context_menu(event.globalPos())
+            return True
         if event.type() in (QEvent.Type.MouseMove, QEvent.Type.HoverMove,
                             QEvent.Type.Enter, QEvent.Type.Leave):
             self._apply_zone_cursor(self.mapFromGlobal(QCursor.pos()))
@@ -5869,7 +5990,13 @@ class DesktopClipboardWidget(QWidget):
         super().leaveEvent(event)
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.RightButton:
+            # 右键：上下文菜单由 _show_context_menu 处理
+            self._right_press = True
+            event.accept()
+            return
         if event.button() == Qt.MouseButton.LeftButton:
+            self._right_press = False
             # 按下不立即进入拖拽/缩放：普通点击的手抖（几像素）曾把
             # 组件意外拖动/缩小并写进配置，导致重启后跳位置、变小。
             self._press_zone = self._hit_zone(event.position().toPoint())
@@ -6120,6 +6247,8 @@ class YouBoardApp(QMainWindow):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.store = store
         self.monitor = monitor
+        # 密库（3.3.1）：与剪贴板历史分开的加密存储，只由用户手动维护
+        self.vault = VaultStore()
         # 默认落在第一个标签（3.1.0 起是「全部」），与 QTabWidget 的初始索引保持一致
         self._active_type = TAB_TYPES[0]
         self._tables = {}
@@ -6398,6 +6527,20 @@ class YouBoardApp(QMainWindow):
         self._header_count = QLabel(tr("total_records", n=0))
         self._header_count.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px; background: transparent;")
         hl.addWidget(self._header_count)
+
+        vault_btn = QPushButton()
+        vault_btn.setIcon(_lock_icon(20, C['TEXT']))
+        vault_btn.setIconSize(QSize(20, 20))
+        vault_btn.setFixedSize(30, 26)
+        vault_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        vault_btn.setToolTip(tr("vault_btn"))
+        vault_btn.setStyleSheet(
+            "QPushButton { border: none; background: transparent; border-radius: 6px; }"
+            "QPushButton:hover { background: rgba(128,128,128,0.18); }"
+            "QPushButton:pressed { background: rgba(128,128,128,0.30); }")
+        vault_btn.clicked.connect(self._open_vault)
+        hl.addWidget(vault_btn)
+        self._vault_btn = vault_btn
 
         settings_btn = QPushButton()
         settings_btn.setIcon(QIcon(ICO_SETTINGS))
@@ -8888,6 +9031,11 @@ class YouBoardApp(QMainWindow):
 
     def _open_phone_transfer(self):
         dlg = PhoneTransferDialog(self)
+        dlg.exec()
+
+    def _open_vault(self):
+        """密库窗口：用户主动存放的私密数据（独立加密文件，不进历史）。"""
+        dlg = VaultDialog(self)
         dlg.exec()
 
     def apply_settings(self, lang, autostart, theme="dark", bg_changed=False,
@@ -12978,6 +13126,318 @@ class CloudSyncDialog(QDialog):
         self._sync_gist_id = ""
         self._sync_toggle_fields()
         self._sync_status_lbl.setText(tr("sync_cleared"))
+
+
+# ===========================================================================
+# Vault（密库，3.3.1）：用户主动存放的私密数据
+# ===========================================================================
+class _VaultEntryDialog(_CardOverlayDialog):
+    """新增 / 编辑一条密库记录（卡片弹层，与「编辑标签」同一套样式）。"""
+
+    # 卡片铺在密库窗口（640 宽）里，比默认 620 收窄一点，避免被窗口裁掉
+    CARD_WIDTH = 560
+
+    def __init__(self, owner, app, entry=None):
+        editing = entry is not None
+        entry = entry or {}
+        super().__init__(owner, app, "", tr("vault_edit_title") if editing
+                         else tr("vault_new_title"),
+                         tr("vault_new_sub"))
+        try:
+            self._icon_lbl.setPixmap(_lock_icon(34, C['TEXT']).pixmap(34, 34))
+        except Exception:
+            pass
+        lay = self._lay
+        form = QGridLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+
+        self._title_edit = QLineEdit(str(entry.get("title", "") or ""))
+        self._title_edit.setPlaceholderText(tr("vault_ph_title"))
+        self._user_edit = QLineEdit(str(entry.get("username", "") or ""))
+        self._user_edit.setPlaceholderText(tr("vault_ph_user"))
+        self._secret_edit = QLineEdit(str(entry.get("secret", "") or ""))
+        self._secret_edit.setPlaceholderText(tr("vault_ph_secret"))
+        self._secret_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._url_edit = QLineEdit(str(entry.get("url", "") or ""))
+        self._url_edit.setPlaceholderText(tr("vault_ph_url"))
+        self._note_edit = QLineEdit(str(entry.get("note", "") or ""))
+        self._note_edit.setPlaceholderText(tr("vault_ph_note"))
+
+        self._show_btn = QPushButton(tr("vault_show"))
+        self._show_btn.setCheckable(True)
+        self._show_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._show_btn.toggled.connect(self._toggle_secret)
+
+        secret_row = QHBoxLayout()
+        secret_row.setContentsMargins(0, 0, 0, 0)
+        secret_row.setSpacing(6)
+        secret_row.addWidget(self._secret_edit, 1)
+        secret_row.addWidget(self._show_btn)
+        secret_box = QWidget()
+        secret_box.setLayout(secret_row)
+
+        rows = ((tr("vault_f_title"), self._title_edit),
+                (tr("vault_f_user"), self._user_edit),
+                (tr("vault_f_secret"), secret_box),
+                (tr("vault_f_url"), self._url_edit),
+                (tr("vault_f_note"), self._note_edit))
+        for i, (label_text, widget) in enumerate(rows):
+            label = QLabel(label_text)
+            label.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px;")
+            label.setAlignment(Qt.AlignmentFlag.AlignRight
+                               | Qt.AlignmentFlag.AlignVCenter)
+            form.addWidget(label, i, 0)
+            form.addWidget(widget, i, 1)
+        form.setColumnStretch(1, 1)
+        lay.addLayout(form)
+
+        self._hint = QLabel("")
+        self._hint.setObjectName("retSub")
+        self._hint.setStyleSheet(f"color: {C['DANGER']}; font-size: 12px;")
+        lay.addWidget(self._hint)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton(tr("btn_save"))
+        save.setObjectName("retSave")
+        save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        save.clicked.connect(self.accept)
+        buttons.addWidget(save)
+        lay.addLayout(buttons)
+        QTimer.singleShot(0, self._title_edit.setFocus)
+
+    def _toggle_secret(self, shown):
+        self._secret_edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password)
+        self._show_btn.setText(tr("vault_hide") if shown else tr("vault_show"))
+
+    def accept(self):
+        """名称和密码至少填一个，否则不放行（避免存出一条空记录）。"""
+        if not self._title_edit.text().strip() \
+                and not self._secret_edit.text().strip():
+            self._hint.setText(tr("vault_need_secret"))
+            return
+        super().accept()
+
+    def values(self):
+        return {"title": self._title_edit.text().strip(),
+                "username": self._user_edit.text().strip(),
+                "secret": self._secret_edit.text(),
+                "url": self._url_edit.text().strip(),
+                "note": self._note_edit.text().strip()}
+
+
+class VaultDialog(QDialog):
+    """密库独立窗口：用户主动存放的私密数据（密码 / 密钥 / 备注）。
+
+    - 独立文件 youboard_vault.json，Fernet 加密 + 原子写入；
+    - 复制时走 mark_self_copy()，密码不会被剪贴板监控记进历史；
+    - 不参与手机传输 / 云同步 / 历史快照。
+    """
+
+    COLS = ("title", "username", "note")
+
+    def __init__(self, app):
+        super().__init__(app)
+        self.app = app
+        self.vault = getattr(app, "vault", None) or VaultStore()
+        # 弹层铺满本窗口时把桌面小组件抬回最上层（同「编辑标签」一套处理）
+        self._desk_widget = getattr(app, "_desk_widget", None)
+        header = _make_frameless_dialog(self, tr("vault_title"))
+        # 宽度要容得下新增/编辑用的卡片弹层（卡片 560 + 两边留白）
+        self.setFixedSize(660 if LANG == "en" else 640, 560)
+        if LOGO_ICO and os.path.exists(LOGO_ICO):
+            self.setWindowIcon(QIcon(LOGO_ICO))
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {C['DIALOG_BG']};
+                border: 1px solid {C['BORDER_LT']}; }}
+            QLabel {{ background: transparent; color: {C['TEXT']}; }}
+            QLabel#muted {{ color: {C['TEXT_MUTED']}; font-size: 11px; }}
+            QLineEdit {{ background: {C['INPUT_BG']}; color: {C['TEXT']};
+                border: 1px solid {C['BORDER']}; border-radius: 8px;
+                padding: 7px 9px; font-size: 12px; }}
+            QPushButton {{ background: {C['SURFACE2']}; color: {C['TEXT_SEC']};
+                border: 1px solid transparent; border-radius: 8px;
+                padding: 7px 14px; font-size: 12px; }}
+            QPushButton:hover {{ background: {C['SURFACE3']}; color: {C['TEXT']}; }}
+            QPushButton:disabled {{ color: {C['TEXT_MUTED']}; }}
+            QPushButton[cssClass="accent"] {{ background: {C['ACCENT']};
+                color: #071116; border: none; font-weight: 700; }}
+            QPushButton[cssClass="accent"]:hover {{ background: {C['ACCENT_HV']}; }}
+            QTableWidget {{ background: {C['SURFACE']}; color: {C['TEXT']};
+                border: 1px solid {C['BORDER']}; border-radius: 10px;
+                gridline-color: transparent; font-size: 12px; }}
+            QTableWidget::item {{ padding: 6px 8px; }}
+            QTableWidget::item:selected {{ background: {C['ACCENT_DIM']};
+                color: {C['TEXT']}; }}
+            QHeaderView::section {{ background: {C['SURFACE2']};
+                color: {C['TEXT_SEC']}; border: none; padding: 6px 8px;
+                font-size: 11px; }}
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(header)
+        body = QWidget()
+        root = QVBoxLayout(body)
+        root.setContentsMargins(20, 16, 20, 16)
+        root.setSpacing(10)
+        outer.addWidget(body, 1)
+
+        desc = QLabel(tr("vault_sub"))
+        desc.setObjectName("muted")
+        desc.setWordWrap(True)
+        root.addWidget(desc)
+
+        top = QHBoxLayout()
+        self._search = QLineEdit()
+        self._search.setPlaceholderText(tr("vault_search_ph"))
+        self._search.textChanged.connect(lambda _t: self._reload())
+        top.addWidget(self._search, 1)
+        add_btn = QPushButton(tr("vault_add"))
+        add_btn.setProperty("cssClass", "accent")
+        add_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        add_btn.clicked.connect(self._add_entry)
+        top.addWidget(add_btn)
+        root.addLayout(top)
+
+        self._table = QTableWidget(0, len(self.COLS))
+        self._table.setHorizontalHeaderLabels(
+            [tr("vault_col_title"), tr("vault_col_user"), tr("vault_col_note")])
+        self._table.verticalHeader().setVisible(False)
+        self._table.setShowGrid(False)
+        self._table.setAlternatingRowColors(False)
+        self._table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setWordWrap(False)
+        self._table.itemSelectionChanged.connect(self._sync_buttons)
+        self._table.itemDoubleClicked.connect(lambda _i: self._edit_entry())
+        hh = self._table.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        root.addWidget(self._table, 1)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        self._copy_user_btn = QPushButton(tr("vault_copy_user"))
+        self._copy_secret_btn = QPushButton(tr("vault_copy_secret"))
+        self._edit_btn = QPushButton(tr("vault_edit"))
+        self._del_btn = QPushButton(tr("vault_delete"))
+        for b in (self._copy_user_btn, self._copy_secret_btn,
+                  self._edit_btn, self._del_btn):
+            b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btns.addWidget(b)
+        btns.addStretch()
+        self._copy_user_btn.clicked.connect(
+            lambda: self._copy_field("username", "vault_copied_user"))
+        self._copy_secret_btn.clicked.connect(
+            lambda: self._copy_field("secret", "vault_copied_secret"))
+        self._edit_btn.clicked.connect(self._edit_entry)
+        self._del_btn.clicked.connect(self._delete_entry)
+        root.addLayout(btns)
+
+        self._status = QLabel("")
+        self._status.setObjectName("muted")
+        root.addWidget(self._status)
+
+        self._rows = []
+        self._reload()
+
+    # ---- data ----
+
+    def _reload(self):
+        rows = self.vault.search(self._search.text())
+        self._rows = rows
+        self._table.setRowCount(len(rows))
+        for i, entry in enumerate(rows):
+            for col, key in enumerate(self.COLS):
+                item = QTableWidgetItem(str(entry.get(key, "") or ""))
+                item.setToolTip(str(entry.get(key, "") or ""))
+                self._table.setItem(i, col, item)
+        if rows:
+            self._table.selectRow(0)
+        self._status.setText(tr("vault_count", n=len(rows)) if rows
+                             else tr("vault_empty"))
+        self._sync_buttons()
+
+    def _current_entry(self):
+        row = self._table.currentRow()
+        if row < 0 or row >= len(self._rows):
+            return None
+        return self._rows[row]
+
+    def _sync_buttons(self):
+        has = self._current_entry() is not None
+        for b in (self._copy_user_btn, self._copy_secret_btn,
+                  self._edit_btn, self._del_btn):
+            b.setEnabled(has)
+
+    # ---- actions ----
+
+    def _add_entry(self):
+        dlg = _VaultEntryDialog(self, None)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if self.vault.add(**dlg.values()) is None:
+            return
+        self._search.clear()
+        self._reload()
+        self._status.setText(tr("vault_saved"))
+
+    def _edit_entry(self):
+        entry = self._current_entry()
+        if entry is None:
+            return
+        dlg = _VaultEntryDialog(self, None, entry)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if self.vault.update(entry["id"], **dlg.values()):
+            self._reload()
+            self._status.setText(tr("vault_saved"))
+
+    def _delete_entry(self):
+        entry = self._current_entry()
+        if entry is None:
+            return
+        if not _confirm_card(self, tr("vault_confirm_delete"),
+                             tr("vault_confirm_delete_sub"),
+                             ok_text=tr("vault_delete")):
+            return
+        if self.vault.delete(entry["id"]):
+            self._reload()
+            self._status.setText(tr("vault_deleted"))
+
+    def _copy_field(self, key, msg_key):
+        entry = self._current_entry()
+        if entry is None:
+            return
+        value = str(entry.get(key, "") or "")
+        if not value:
+            return
+        # 关键：先标记为应用内复制，密码不会被剪贴板监控记进历史
+        try:
+            self.app.store.mark_self_copy()
+        except Exception:
+            pass
+        try:
+            self.app._last_self_copy = time.time()
+        except Exception:
+            pass
+        try:
+            set_clipboard_text(value)
+        except Exception:
+            return
+        self._status.setText(tr(msg_key))
 
 
 # ===========================================================================
