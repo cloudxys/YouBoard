@@ -10,6 +10,17 @@
  */
 "use strict";
 
+/* 多语言：所有给用户看的字都走 chrome.i18n（_locales/en|zh_CN/messages.json）。
+   浏览器界面是中文就显示中文，其它语言回落到英文（default_locale）。 */
+function t(key, subs) {
+  try {
+    var msg = chrome.i18n.getMessage(key, subs);
+    return msg || key;
+  } catch (e) {
+    return key;
+  }
+}
+
 var DEFAULTS = {
   bridgeUrl: "http://127.0.0.1:8765",
   bridgeToken: "",
@@ -163,17 +174,17 @@ function buildMenus() {
     chrome.contextMenus.removeAll(function () {
       chrome.contextMenus.create({
         id: "yb-save-selection",
-        title: "存到 YouBoard（选中内容）",
+        title: t("menuSaveSelection"),
         contexts: ["selection"]
       });
       chrome.contextMenus.create({
         id: "yb-save-page",
-        title: "存到 YouBoard（本页链接）",
+        title: t("menuSavePage"),
         contexts: ["page"]
       });
       chrome.contextMenus.create({
         id: "yb-save-image",
-        title: "存到 YouBoard（这张图片）",
+        title: t("menuSaveImage"),
         contexts: ["image"]
       });
     });

@@ -1,65 +1,65 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<!-- 文字在 options.js 里按浏览器语言填充（data-i18n* 属性），下面的英文只是兜底。 -->
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>YouBoard 剪贴板伴侣 · 设置</title>
+  <title>YouBoard Clipboard Companion · Settings</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
-  <h1>YouBoard 剪贴板伴侣 · 设置</h1>
+  <h1 data-i18n="optTitle">YouBoard Clipboard Companion · Settings</h1>
 
   <section>
-    <h2>连接本机 YouBoard</h2>
-    <p class="note">
-      打开 YouBoard 桌面版 → 设置 → 浏览器扩展 →「复制连接信息」，
-      把那一行粘贴到下面即可。只连本机 127.0.0.1，不经过任何服务器。
+    <h2 data-i18n="optConnHeading">Connect to YouBoard on this machine</h2>
+    <p class="note" data-i18n="optConnNote">
+      Open the YouBoard desktop app → Settings → Browser extension → "Copy connection info".
     </p>
-    <label for="conn">连接信息（一行粘贴）</label>
-    <input id="conn" type="text" placeholder="127.0.0.1:8765|令牌">
+    <label for="conn" data-i18n="optConnLabel">Connection info (paste one line)</label>
+    <input id="conn" type="text" data-i18n-placeholder="optConnPlaceholder"
+           placeholder="127.0.0.1:8765|token">
     <div class="row">
-      <button id="btn-apply" class="primary">解析并保存</button>
-      <button id="btn-test">测试连接</button>
+      <button id="btn-apply" class="primary" data-i18n="optApply">Parse &amp; save</button>
+      <button id="btn-test" data-i18n="optTest">Test connection</button>
       <span id="test-result" class="result"></span>
     </div>
     <details>
-      <summary>手动填写</summary>
-      <label for="url">本机地址</label>
+      <summary data-i18n="optManual">Fill in manually</summary>
+      <label for="url" data-i18n="optUrlLabel">Local address</label>
       <input id="url" type="text" placeholder="http://127.0.0.1:8765">
-      <label for="token">令牌</label>
-      <input id="token" type="text" placeholder="YouBoard 设置里显示的那串令牌">
+      <label for="token" data-i18n="optTokenLabel">Token</label>
+      <input id="token" type="text" data-i18n-placeholder="optTokenPlaceholder"
+             placeholder="The token shown in YouBoard settings">
     </details>
   </section>
 
   <section>
-    <h2>捕获与同步</h2>
+    <h2 data-i18n="optCaptureHeading">Capture &amp; sync</h2>
     <label class="check">
       <input id="capture" type="checkbox">
-      捕获网页里的复制（Ctrl+C / 剪切）
+      <span data-i18n="optCaptureLabel">Capture copies on web pages (Ctrl+C / cut)</span>
     </label>
     <label class="check">
       <input id="sync" type="checkbox">
-      同时写进本机 YouBoard（关掉就只存在浏览器里）
+      <span data-i18n="optSyncLabel">Also write into the desktop YouBoard</span>
     </label>
-    <label for="max">浏览器本地最多保留多少条</label>
+    <label for="max" data-i18n="optMaxLabel">How many items to keep in the browser</label>
     <input id="max" type="number" min="20" max="1000" step="10">
-    <label for="ignore">不捕获的网站（每行一个，可留空）</label>
+    <label for="ignore" data-i18n="optIgnoreLabel">Sites to skip (one per line)</label>
     <textarea id="ignore" rows="3" placeholder="example.com&#10;mail.google.com"></textarea>
   </section>
 
   <section>
-    <h2>浏览器本地数据</h2>
-    <p class="note" id="stat">已存 0 条</p>
+    <h2 data-i18n="optDataHeading">Browser-local data</h2>
+    <p class="note" id="stat"></p>
     <div class="row">
-      <button id="btn-clear">清空浏览器本地数据</button>
+      <button id="btn-clear" data-i18n="optClearLocal">Clear browser-local data</button>
     </div>
   </section>
 
   <section>
-    <h2>隐私</h2>
-    <p class="note">
-      扩展不向任何远程服务器发送数据：捕获的内容只存在浏览器本地，
-      或者发给本机 127.0.0.1 上的 YouBoard。读取剪贴板的权限只有在你点
-      「读剪贴板并保存」时才会申请。
+    <h2 data-i18n="optPrivacyHeading">Privacy</h2>
+    <p class="note" data-i18n="optPrivacyNote">
+      The extension never sends data to a remote server.
     </p>
   </section>
 

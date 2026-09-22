@@ -9,6 +9,36 @@
  */
 "use strict";
 
+/* ---- 多语言（浏览器界面是中文就中文，其它语言回落到英文） ---- */
+function t(key, subs) {
+  try {
+    var msg = chrome.i18n.getMessage(key, subs);
+    return msg || key;
+  } catch (e) {
+    return key;
+  }
+}
+
+function applyI18n(root) {
+  var scope = root || document;
+  scope.querySelectorAll("[data-i18n]").forEach(function (el) {
+    el.textContent = t(el.getAttribute("data-i18n"));
+  });
+  scope.querySelectorAll("[data-i18n-placeholder]").forEach(function (el) {
+    el.setAttribute("placeholder", t(el.getAttribute("data-i18n-placeholder")));
+  });
+  scope.querySelectorAll("[data-i18n-title]").forEach(function (el) {
+    el.setAttribute("title", t(el.getAttribute("data-i18n-title")));
+  });
+  try {
+    document.documentElement.lang = chrome.i18n.getUILanguage() || "en";
+  } catch (e) {
+    /* 忽略 */
+  }
+}
+
+applyI18n();
+
 var state = { tab: "local", q: "", local: [], desktop: [], connected: false };
 
 function $(id) { return document.getElementById(id); }
@@ -38,9 +68,9 @@ async function refreshBridge() {
   var resp = await send({ kind: "testBridge" });
   state.connected = !!(resp && resp.ok);
   if (state.connected) {
-    setStatus("已连接桌面端", "ok");
+    setStatus(t("statusConnected"), "ok");
   } else {
-    setStatus("未连接桌面端", "bad");
+    setStatus(t("statusDisconnected"), "bad");
   }
 }
 
@@ -52,9 +82,11 @@ function itemNode(item, fromDesktop) {
   row1.className = "row1";
   var left = document.createElement("span");
   left.className = "badge";
+  var badgeKey = { text: "badgeText", url: "badgeUrl",
+                   image: "badgeImage", file: "badgeFile" }[item.type];
   left.textContent = fromDesktop
-    ? ({ text: "文本", url: "网址", image: "图片", file: "文件" }[item.type] || item.type)
-    : "网页";
+    ? (badgeKey ? t(badgeKey) : String(item.type || ""))
+    : t("badgeWeb");
   var right = document.createElement("span");
   right.textContent = fromDesktop ? fmtTime(item.ts) : (item.host || fmtTime(item.ts));
   row1.appendChild(left);
@@ -69,14 +101,14 @@ function itemNode(item, fromDesktop) {
     body.appendChild(img);
   } else {
     body.textContent = String(item.content || "").slice(0, 300) ||
-      String(item.title || "") || "(空)";
+      String(item.title || "") || t("emptyItem");
   }
   li.appendChild(body);
 
   var acts = document.createElement("div");
   acts.className = "acts";
   var copyBtn = document.createElement("button");
-  copyBtn.textContent = "复制";
+  copyBtn.textContent = t("btnCopy");
   copyBtn.addEventListener("click", function (ev) {
     ev.stopPropagation();
     doCopy(item, fromDesktop);
@@ -85,7 +117,7 @@ function itemNode(item, fromDesktop) {
 
   if (!fromDesktop) {
     var insBtn = document.createElement("button");
-    insBtn.textContent = "插入输入框";
+    insBtn.textContent = t("btnInsert");
     insBtn.addEventListener("click", function (ev) {
       ev.stopPropagation();
       insertIntoPage(item.content);
@@ -93,16 +125,16 @@ function itemNode(item, fromDesktop) {
     acts.appendChild(insBtn);
 
     var upBtn = document.createElement("button");
-    upBtn.textContent = "存到 YouBoard";
+    upBtn.textContent = t("btnSaveToYouBoard");
     upBtn.addEventListener("click", async function (ev) {
       ev.stopPropagation();
       var r = await send({ kind: "bridgePush", item: item });
-      upBtn.textContent = r && r.ok ? "已存到桌面端" : "桌面端未连接";
+      upBtn.textContent = r && r.ok ? t("savedToDesktop") : t("desktopOffline");
     });
     acts.appendChild(upBtn);
 
     var delBtn = document.createElement("button");
-    delBtn.textContent = "删除";
+    delBtn.textContent = t("btnDelete");
     delBtn.addEventListener("click", async function (ev) {
       ev.stopPropagation();
       await send({ kind: "remove", key: item.key });
@@ -126,7 +158,7 @@ async function insertIntoPage(text) {
   chrome.tabs.sendMessage(tabs[0].id, { kind: "insert", text: text },
     function (resp) {
       if (!resp || !resp.ok) {
-        setStatus("当前没有可输入的框", "bad");
+        setStatus(t("noInputOnPage"), "bad");
       }
     });
 }
@@ -135,7 +167,7 @@ async function doCopy(item, fromDesktop) {
   if (fromDesktop && item.hash && state.connected) {
     var r = await send({ kind: "bridgeCopy", hash: item.hash });
     if (r && r.ok) {
-      setStatus("已复制到系统剪贴板", "ok");
+      setStatus(t("copiedToSystem"), "ok");
       return;
     }
   }
@@ -145,17 +177,17 @@ async function doCopy(item, fromDesktop) {
       await navigator.clipboard.write([
         new ClipboardItem({ [blob.type || "image/png"]: blob })
       ]);
-      setStatus("图片已复制", "ok");
+      setStatus(t("imageCopied"), "ok");
     } catch (e) {
-      setStatus("图片复制失败", "bad");
+      setStatus(t("imageCopyFailed"), "bad");
     }
     return;
   }
   try {
     await navigator.clipboard.writeText(String(item.content || ""));
-    setStatus("已复制", "ok");
+    setStatus(t("copied"), "ok");
   } catch (e) {
-    setStatus("复制失败", "bad");
+    setStatus(t("copyFailed"), "bad");
   }
 }
 
@@ -216,32 +248,33 @@ $("btn-read").addEventListener("click", async function () {
   if (!has) {
     var granted = await chrome.permissions.request({ permissions: ["clipboardRead"] });
     if (!granted) {
-      setStatus("未授权读取剪贴板", "bad");
+      setStatus(t("noClipboardPermission"), "bad");
       return;
     }
   }
   try {
     var text = await navigator.clipboard.readText();
     if (!text) {
-      setStatus("剪贴板是空的", "bad");
+      setStatus(t("clipboardEmpty"), "bad");
       return;
     }
     await send({
       kind: "add",
-      item: { type: "text", content: text, source: "clipboard", title: "剪贴板",
+      item: { type: "text", content: text, source: "clipboard",
+              title: t("clipboardTitle"),
               ts: Date.now() }
     });
-    setStatus("已保存剪贴板内容", "ok");
+    setStatus(t("clipboardSaved"), "ok");
     loadLocal();
   } catch (e) {
-    setStatus("读取失败", "bad");
+    setStatus(t("readFailed"), "bad");
   }
 });
 
 $("btn-clear").addEventListener("click", async function () {
   await send({ kind: "clear" });
   loadLocal();
-  setStatus("已清空网页捕获", "ok");
+  setStatus(t("captureCleared"), "ok");
 });
 
 $("btn-options").addEventListener("click", function () {

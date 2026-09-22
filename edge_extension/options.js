@@ -1,6 +1,32 @@
 /* YouBoard 剪贴板伴侣 —— 选项页 */
 "use strict";
 
+/* ---- 多语言（与 panel.js 同一套做法） ---- */
+function t(key, subs) {
+  try {
+    var msg = chrome.i18n.getMessage(key, subs);
+    return msg || key;
+  } catch (e) {
+    return key;
+  }
+}
+
+function applyI18n() {
+  document.querySelectorAll("[data-i18n]").forEach(function (el) {
+    el.textContent = t(el.getAttribute("data-i18n"));
+  });
+  document.querySelectorAll("[data-i18n-placeholder]").forEach(function (el) {
+    el.setAttribute("placeholder", t(el.getAttribute("data-i18n-placeholder")));
+  });
+  try {
+    document.documentElement.lang = chrome.i18n.getUILanguage() || "en";
+  } catch (e) {
+    /* 忽略 */
+  }
+}
+
+applyI18n();
+
 var DEFAULTS = {
   bridgeUrl: "http://127.0.0.1:8765",
   bridgeToken: "",
@@ -34,7 +60,7 @@ function save() {
     maxItems: parseInt($("max").value, 10) || 200,
     ignoreHosts: $("ignore").value
   }, function () {
-    setResult("已保存", "ok");
+    setResult(t("optSaved"), "ok");
   });
 }
 
@@ -47,7 +73,7 @@ function setResult(text, cls) {
 function refreshStat() {
   chrome.storage.local.get({ yb_items: [] }, function (got) {
     var n = (got.yb_items || []).length;
-    $("stat").textContent = "已存 " + n + " 条";
+    $("stat").textContent = t("optStat", [String(n)]);
   });
 }
 
@@ -71,7 +97,7 @@ function parseConn(line) {
 $("btn-apply").addEventListener("click", function () {
   var parsed = parseConn($("conn").value);
   if (!parsed) {
-    setResult("这行连接信息没看懂", "bad");
+    setResult(t("optParseFailed"), "bad");
     return;
   }
   $("url").value = parsed.url;
@@ -81,21 +107,21 @@ $("btn-apply").addEventListener("click", function () {
 
 $("btn-test").addEventListener("click", async function () {
   save();
-  setResult("测试中…");
+  setResult(t("optTesting"));
   var r = await send({ kind: "testBridge" });
   if (r && r.ok) {
     var info = r.info || {};
-    setResult("连接成功：YouBoard v" + (info.version || "?") +
-      "（本机）", "ok");
+    setResult(t("optConnected", [String(info.version || "?")]), "ok");
   } else {
-    setResult("连不上：" + ((r && r.error) || "请确认桌面版在运行、令牌一致"), "bad");
+    setResult(t("optConnectFailed",
+                [String((r && r.error) || t("optConnectFailedHint"))]), "bad");
   }
 });
 
 $("btn-clear").addEventListener("click", async function () {
   await send({ kind: "clear" });
   refreshStat();
-  setResult("已清空", "ok");
+  setResult(t("optCleared"), "ok");
 });
 
 ["capture", "sync", "max", "ignore"].forEach(function (id) {

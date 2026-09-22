@@ -1560,6 +1560,8 @@ STRINGS = {
         "vault_kind_url": "网址",
         "vault_empty": "还没有内容，点「新增」放一条进来",
         "vault_count": "共 {n} 条",
+        "vault_count_kind": "{kind}：{n} 条 · 全部 {total} 条",
+        "vault_count_search": "筛选出 {n} 条 · 全部 {total} 条",
         "vault_new_title": "添加到密库", "vault_edit_title": "编辑密库内容",
         "vault_new_sub": "内容加密后存在本机，只有你自己能看到；名称可以不填",
         "vault_f_name": "名称（可选）", "vault_ph_name": "留空就按内容显示",
@@ -2023,6 +2025,8 @@ STRINGS = {
         "vault_kind_url": "Links",
         "vault_empty": "Nothing stored yet — click Add",
         "vault_count": "{n} items",
+        "vault_count_kind": "{kind}: {n} · {total} total",
+        "vault_count_search": "{n} matched · {total} total",
         "vault_new_title": "Add to vault", "vault_edit_title": "Edit vault item",
         "vault_new_sub": "Encrypted and stored on this device only; the name is optional",
         "vault_f_name": "Name (optional)", "vault_ph_name": "Leave empty to show the content",
@@ -13961,13 +13965,17 @@ class VaultDialog(QDialog):
             self._table.selectRow(0)
         self._paint_kinds(self.vault.counts())
         total = self.vault.count()
+        searching = bool(self._search.text().strip())
         if total == 0:
             self._status.setText(tr("vault_empty"))
-        elif self._search.text().strip() or self._kind != "all":
-            self._status.setText("%s · %s %d / %d"
-                                 % (tr("vault_count", n=len(rows)),
-                                    tr("vault_kind_" + self._kind),
-                                    len(rows), total))
+        elif self._kind != "all":
+            # 以前的 "网址 1 / 5" 会被读成"有 5 个网址"，其实 5 是全部条数
+            self._status.setText(tr("vault_count_kind",
+                                    kind=tr("vault_kind_" + self._kind),
+                                    n=len(rows), total=total))
+        elif searching:
+            self._status.setText(tr("vault_count_search",
+                                    n=len(rows), total=total))
         else:
             self._status.setText(tr("vault_count", n=total))
         self._sync_buttons()

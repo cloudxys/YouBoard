@@ -1,40 +1,42 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<!-- 界面文字都通过 data-i18n* 在 panel.js 里按浏览器语言填充；
+     下面的英文只是"还没跑 JS 时"的兜底。 -->
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>YouBoard 剪贴板伴侣</title>
+  <title>YouBoard Clipboard Companion</title>
   <link rel="stylesheet" href="panel.css">
 </head>
 <body>
   <header>
     <div class="brand">
       <img src="icons/icon32.png" alt="YouBoard" width="20" height="20">
-      <span>YouBoard 剪贴板伴侣</span>
+      <span data-i18n="extName">YouBoard Clipboard Companion</span>
     </div>
-    <div id="status" class="status" title="桌面端连接状态">未连接</div>
+    <div id="status" class="status" data-i18n-title="statusTitle"
+         title="Desktop connection status"></div>
   </header>
 
   <div class="searchbar">
-    <input id="q" type="search" placeholder="搜索网页里复制过的内容…">
+    <input id="q" type="search" data-i18n-placeholder="searchPlaceholder"
+           placeholder="Search what you copied on web pages…">
   </div>
 
   <nav class="tabs">
-    <button id="tab-local" class="tab active">网页捕获 <span id="n-local">0</span></button>
-    <button id="tab-desktop" class="tab">YouBoard 历史</button>
+    <button id="tab-local" class="tab active"><span data-i18n="tabCapture">Web capture</span>
+      <span id="n-local">0</span></button>
+    <button id="tab-desktop" class="tab"><span data-i18n="tabHistory">YouBoard history</span></button>
   </nav>
 
   <ul id="list" class="list"></ul>
-  <p id="empty" class="empty">还没有内容。在网页里 Ctrl+C 复制一段文字，或点下面的按钮读取剪贴板。</p>
+  <p id="empty" class="empty" data-i18n="emptyHint">Nothing here yet.</p>
 
   <footer>
-    <button id="btn-read" class="btn primary">读剪贴板并保存</button>
-    <button id="btn-clear" class="btn">清空网页捕获</button>
-    <button id="btn-options" class="btn">设置</button>
+    <button id="btn-read" class="btn primary" data-i18n="btnReadClipboard">Read clipboard &amp; save</button>
+    <button id="btn-clear" class="btn" data-i18n="btnClearCapture">Clear web captures</button>
+    <button id="btn-options" class="btn" data-i18n="btnOptions">Settings</button>
   </footer>
-  <p class="hint">
-    单击条目 = 复制到剪贴板；双击 = 直接插入当前网页的输入框。
-    只与本机 127.0.0.1 上的 YouBoard 通信，不联网上传。
-  </p>
+  <p class="hint" data-i18n="panelHint">Click an item = copy; double-click = insert.</p>
   <script src="panel.js"></script>
 </body>
 </html>

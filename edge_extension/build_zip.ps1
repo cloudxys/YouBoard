@@ -30,6 +30,8 @@ foreach ($item in @('manifest.json', 'background.js', 'content.js',
     Copy-Item -LiteralPath (Join-Path $here $item) -Destination $staging
 }
 Copy-Item -LiteralPath (Join-Path $here 'icons') -Destination $staging -Recurse
+# 多语言包（_locales/en + _locales/zh_CN）必须一起打包，否则商店/浏览器取不到译文
+Copy-Item -LiteralPath (Join-Path $here '_locales') -Destination $staging -Recurse
 
 Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $out -Force
 Remove-Item -LiteralPath $staging -Recurse -Force

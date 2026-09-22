@@ -1,0 +1,228 @@
+{
+  "extName": {
+    "message": "YouBoard 剪贴板伴侣",
+    "description": "扩展在浏览器与商店里显示的名称。"
+  },
+  "extDesc": {
+    "message": "把网页里复制的内容存进 YouBoard，并在任意网页输入框里快速粘贴历史记录。需要本机安装 YouBoard 桌面版。",
+    "description": "扩展在浏览器与商店里显示的简介。"
+  },
+  "menuSaveSelection": {
+    "message": "存到 YouBoard（选中内容）"
+  },
+  "menuSavePage": {
+    "message": "存到 YouBoard（本页链接）"
+  },
+  "menuSaveImage": {
+    "message": "存到 YouBoard（这张图片）"
+  },
+
+  "statusTitle": {
+    "message": "桌面端连接状态"
+  },
+  "statusConnected": {
+    "message": "已连接桌面端"
+  },
+  "statusDisconnected": {
+    "message": "未连接桌面端"
+  },
+  "searchPlaceholder": {
+    "message": "搜索网页里复制过的内容…"
+  },
+  "tabCapture": {
+    "message": "网页捕获"
+  },
+  "tabHistory": {
+    "message": "YouBoard 历史"
+  },
+  "emptyHint": {
+    "message": "还没有内容。在网页里 Ctrl+C 复制一段文字，或点下面的按钮读取剪贴板。"
+  },
+  "btnReadClipboard": {
+    "message": "读剪贴板并保存"
+  },
+  "btnClearCapture": {
+    "message": "清空网页捕获"
+  },
+  "btnOptions": {
+    "message": "设置"
+  },
+  "panelHint": {
+    "message": "单击条目 = 复制到剪贴板；双击 = 直接插入当前网页的输入框。只与本机 127.0.0.1 上的 YouBoard 通信，不联网上传。"
+  },
+  "badgeWeb": {
+    "message": "网页"
+  },
+  "badgeText": {
+    "message": "文本"
+  },
+  "badgeUrl": {
+    "message": "网址"
+  },
+  "badgeImage": {
+    "message": "图片"
+  },
+  "badgeFile": {
+    "message": "文件"
+  },
+  "btnCopy": {
+    "message": "复制"
+  },
+  "btnInsert": {
+    "message": "插入输入框"
+  },
+  "btnSaveToYouBoard": {
+    "message": "存到 YouBoard"
+  },
+  "btnDelete": {
+    "message": "删除"
+  },
+  "savedToDesktop": {
+    "message": "已存到桌面端"
+  },
+  "desktopOffline": {
+    "message": "桌面端未连接"
+  },
+  "noInputOnPage": {
+    "message": "当前没有可输入的框"
+  },
+  "copiedToSystem": {
+    "message": "已复制到系统剪贴板"
+  },
+  "imageCopied": {
+    "message": "图片已复制"
+  },
+  "imageCopyFailed": {
+    "message": "图片复制失败"
+  },
+  "copied": {
+    "message": "已复制"
+  },
+  "copyFailed": {
+    "message": "复制失败"
+  },
+  "noClipboardPermission": {
+    "message": "未授权读取剪贴板"
+  },
+  "clipboardEmpty": {
+    "message": "剪贴板是空的"
+  },
+  "clipboardSaved": {
+    "message": "已保存剪贴板内容"
+  },
+  "readFailed": {
+    "message": "读取失败"
+  },
+  "captureCleared": {
+    "message": "已清空网页捕获"
+  },
+  "emptyItem": {
+    "message": "（空）"
+  },
+  "clipboardTitle": {
+    "message": "剪贴板"
+  },
+
+  "optTitle": {
+    "message": "YouBoard 剪贴板伴侣 · 设置"
+  },
+  "optConnHeading": {
+    "message": "连接本机 YouBoard"
+  },
+  "optConnNote": {
+    "message": "打开 YouBoard 桌面版 → 设置 → 浏览器扩展 →「复制连接信息」，把那一行粘贴到下面即可。只连本机 127.0.0.1，不经过任何服务器。"
+  },
+  "optConnLabel": {
+    "message": "连接信息（一行粘贴）"
+  },
+  "optConnPlaceholder": {
+    "message": "127.0.0.1:8765|令牌"
+  },
+  "optApply": {
+    "message": "解析并保存"
+  },
+  "optTest": {
+    "message": "测试连接"
+  },
+  "optManual": {
+    "message": "手动填写"
+  },
+  "optUrlLabel": {
+    "message": "本机地址"
+  },
+  "optTokenLabel": {
+    "message": "令牌"
+  },
+  "optTokenPlaceholder": {
+    "message": "YouBoard 设置里显示的那串令牌"
+  },
+  "optCaptureHeading": {
+    "message": "捕获与同步"
+  },
+  "optCaptureLabel": {
+    "message": "捕获网页里的复制（Ctrl+C / 剪切）"
+  },
+  "optSyncLabel": {
+    "message": "同时写进本机 YouBoard（关掉就只存在浏览器里）"
+  },
+  "optMaxLabel": {
+    "message": "浏览器本地最多保留多少条"
+  },
+  "optIgnoreLabel": {
+    "message": "不捕获的网站（每行一个，可留空）"
+  },
+  "optDataHeading": {
+    "message": "浏览器本地数据"
+  },
+  "optStat": {
+    "message": "已存 $COUNT$ 条",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
+  },
+  "optClearLocal": {
+    "message": "清空浏览器本地数据"
+  },
+  "optPrivacyHeading": {
+    "message": "隐私"
+  },
+  "optPrivacyNote": {
+    "message": "扩展不向任何远程服务器发送数据：捕获的内容只存在浏览器本地，或者发给本机 127.0.0.1 上的 YouBoard。读取剪贴板的权限只有在你点「读剪贴板并保存」时才会申请。"
+  },
+  "optSaved": {
+    "message": "已保存"
+  },
+  "optParseFailed": {
+    "message": "这行连接信息没看懂"
+  },
+  "optTesting": {
+    "message": "测试中…"
+  },
+  "optConnected": {
+    "message": "连接成功：YouBoard v$VERSION$（本机）",
+    "placeholders": {
+      "version": {
+        "content": "$1",
+        "example": "3.3.1"
+      }
+    }
+  },
+  "optConnectFailed": {
+    "message": "连不上：$ERROR$",
+    "placeholders": {
+      "error": {
+        "content": "$1",
+        "example": "HTTP 401"
+      }
+    }
+  },
+  "optConnectFailedHint": {
+    "message": "请确认桌面版在运行、令牌一致"
+  },
+  "optCleared": {
+    "message": "已清空"
+  }
+}

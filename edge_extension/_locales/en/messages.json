@@ -1,0 +1,228 @@
+{
+  "extName": {
+    "message": "YouBoard Clipboard Companion",
+    "description": "Extension name shown in the browser and the store listing."
+  },
+  "extDesc": {
+    "message": "Save what you copy on web pages into YouBoard, and paste your clipboard history straight into any input field. Requires the YouBoard desktop app on this machine.",
+    "description": "Extension description shown in the browser and the store listing."
+  },
+  "menuSaveSelection": {
+    "message": "Save to YouBoard (selection)"
+  },
+  "menuSavePage": {
+    "message": "Save to YouBoard (page link)"
+  },
+  "menuSaveImage": {
+    "message": "Save to YouBoard (this image)"
+  },
+
+  "statusTitle": {
+    "message": "Desktop connection status"
+  },
+  "statusConnected": {
+    "message": "Desktop connected"
+  },
+  "statusDisconnected": {
+    "message": "Desktop not connected"
+  },
+  "searchPlaceholder": {
+    "message": "Search what you copied on web pages…"
+  },
+  "tabCapture": {
+    "message": "Web capture"
+  },
+  "tabHistory": {
+    "message": "YouBoard history"
+  },
+  "emptyHint": {
+    "message": "Nothing here yet. Copy some text on a page with Ctrl+C, or use the button below to read the clipboard."
+  },
+  "btnReadClipboard": {
+    "message": "Read clipboard & save"
+  },
+  "btnClearCapture": {
+    "message": "Clear web captures"
+  },
+  "btnOptions": {
+    "message": "Settings"
+  },
+  "panelHint": {
+    "message": "Click an item = copy to clipboard; double-click = insert into the input field on the current page. Talks only to YouBoard on 127.0.0.1 — nothing is uploaded."
+  },
+  "badgeWeb": {
+    "message": "Web"
+  },
+  "badgeText": {
+    "message": "Text"
+  },
+  "badgeUrl": {
+    "message": "Link"
+  },
+  "badgeImage": {
+    "message": "Image"
+  },
+  "badgeFile": {
+    "message": "File"
+  },
+  "btnCopy": {
+    "message": "Copy"
+  },
+  "btnInsert": {
+    "message": "Insert"
+  },
+  "btnSaveToYouBoard": {
+    "message": "Save to YouBoard"
+  },
+  "btnDelete": {
+    "message": "Delete"
+  },
+  "savedToDesktop": {
+    "message": "Saved to desktop"
+  },
+  "desktopOffline": {
+    "message": "Desktop not connected"
+  },
+  "noInputOnPage": {
+    "message": "No input field on this page"
+  },
+  "copiedToSystem": {
+    "message": "Copied to the system clipboard"
+  },
+  "imageCopied": {
+    "message": "Image copied"
+  },
+  "imageCopyFailed": {
+    "message": "Copying the image failed"
+  },
+  "copied": {
+    "message": "Copied"
+  },
+  "copyFailed": {
+    "message": "Copy failed"
+  },
+  "noClipboardPermission": {
+    "message": "Clipboard permission was not granted"
+  },
+  "clipboardEmpty": {
+    "message": "The clipboard is empty"
+  },
+  "clipboardSaved": {
+    "message": "Clipboard content saved"
+  },
+  "readFailed": {
+    "message": "Reading the clipboard failed"
+  },
+  "captureCleared": {
+    "message": "Web captures cleared"
+  },
+  "emptyItem": {
+    "message": "(empty)"
+  },
+  "clipboardTitle": {
+    "message": "Clipboard"
+  },
+
+  "optTitle": {
+    "message": "YouBoard Clipboard Companion · Settings"
+  },
+  "optConnHeading": {
+    "message": "Connect to YouBoard on this machine"
+  },
+  "optConnNote": {
+    "message": "Open the YouBoard desktop app → Settings → Browser extension → \"Copy connection info\", then paste that single line below. It only talks to 127.0.0.1 on this machine — no server involved."
+  },
+  "optConnLabel": {
+    "message": "Connection info (paste one line)"
+  },
+  "optConnPlaceholder": {
+    "message": "127.0.0.1:8765|token"
+  },
+  "optApply": {
+    "message": "Parse & save"
+  },
+  "optTest": {
+    "message": "Test connection"
+  },
+  "optManual": {
+    "message": "Fill in manually"
+  },
+  "optUrlLabel": {
+    "message": "Local address"
+  },
+  "optTokenLabel": {
+    "message": "Token"
+  },
+  "optTokenPlaceholder": {
+    "message": "The token shown in YouBoard settings"
+  },
+  "optCaptureHeading": {
+    "message": "Capture & sync"
+  },
+  "optCaptureLabel": {
+    "message": "Capture copies on web pages (Ctrl+C / cut)"
+  },
+  "optSyncLabel": {
+    "message": "Also write into the desktop YouBoard (off = browser only)"
+  },
+  "optMaxLabel": {
+    "message": "How many items to keep in the browser"
+  },
+  "optIgnoreLabel": {
+    "message": "Sites to skip (one per line, can be empty)"
+  },
+  "optDataHeading": {
+    "message": "Browser-local data"
+  },
+  "optStat": {
+    "message": "$COUNT$ item(s) stored",
+    "placeholders": {
+      "count": {
+        "content": "$1",
+        "example": "3"
+      }
+    }
+  },
+  "optClearLocal": {
+    "message": "Clear browser-local data"
+  },
+  "optPrivacyHeading": {
+    "message": "Privacy"
+  },
+  "optPrivacyNote": {
+    "message": "The extension never sends data to a remote server: captured content stays in your browser, or goes to YouBoard on 127.0.0.1. The clipboard-read permission is requested only when you click \"Read clipboard & save\"."
+  },
+  "optSaved": {
+    "message": "Saved"
+  },
+  "optParseFailed": {
+    "message": "Could not parse that connection line"
+  },
+  "optTesting": {
+    "message": "Testing…"
+  },
+  "optConnected": {
+    "message": "Connected: YouBoard v$VERSION$ (local)",
+    "placeholders": {
+      "version": {
+        "content": "$1",
+        "example": "3.3.1"
+      }
+    }
+  },
+  "optConnectFailed": {
+    "message": "Cannot connect: $ERROR$",
+    "placeholders": {
+      "error": {
+        "content": "$1",
+        "example": "HTTP 401"
+      }
+    }
+  },
+  "optConnectFailedHint": {
+    "message": "make sure the desktop app is running and the token matches"
+  },
+  "optCleared": {
+    "message": "Cleared"
+  }
+}

@@ -12,7 +12,9 @@
 import io
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -867,6 +869,9 @@ def test_gui():
     vwin._set_kind("url")
     app.processEvents()
     check("vaultui: kind chip filters url", vwin._table.rowCount() == 1)
+    check("vaultui: status counts are unambiguous",
+          "全部" in vwin._status.text() and "/" not in vwin._status.text(),
+          vwin._status.text())
     vwin._set_kind("image")
     app.processEvents()
     check("vaultui: empty kind shows nothing", vwin._table.rowCount() == 0)
@@ -1697,6 +1702,96 @@ def test_gui():
             pass
 
 
+def test_extension():
+    """浏览器扩展的多语言与清单一致性（中文区显示中文、其它回落英文）。"""
+    ext = os.path.join(SRC, "edge_extension")
+    manifest_path = os.path.join(ext, "manifest.json")
+    if not os.path.exists(manifest_path):
+        check("extension: manifest present", False, "edge_extension/manifest.json")
+        return
+    with open(manifest_path, encoding="utf-8") as fh:
+        manifest = json.load(fh)
+    check("extension: manifest v3", manifest.get("manifest_version") == 3)
+    check("extension: default_locale declared",
+          manifest.get("default_locale") == "en", str(manifest.get("default_locale")))
+
+    locales = {}
+    for loc in ("en", "zh_CN"):
+        path = os.path.join(ext, "_locales", loc, "messages.json")
+        if not os.path.exists(path):
+            check("extension: locale %s present" % loc, False, path)
+            continue
+        with open(path, encoding="utf-8") as fh:
+            locales[loc] = json.load(fh)
+        check("extension: locale %s parses" % loc, bool(locales[loc]))
+    if len(locales) < 2:
+        return
+
+    default = locales["en"]
+    check("extension: locales share the same keys",
+          set(default) == set(locales["zh_CN"]),
+          "en=%d zh=%d 差集=%s" % (len(default), len(locales["zh_CN"]),
+                                   sorted(set(default) ^ set(locales["zh_CN"]))[:6]))
+    empty = [k for k, v in default.items() if not str(v.get("message", "")).strip()]
+    check("extension: no empty messages", not empty, str(empty[:5]))
+    # 占位符：$NAME$ 必须在 placeholders 里声明过（否则 chrome.i18n 会原样吐出来）
+    bad_ph = []
+    for loc, msgs in locales.items():
+        for key, item in msgs.items():
+            used = set(re.findall(r"\$([A-Za-z0-9_]+)\$",
+                                  str(item.get("message", ""))))
+            declared = {p.upper() for p in (item.get("placeholders") or {})}
+            if used - declared:
+                bad_ph.append("%s/%s:%s" % (loc, key, sorted(used - declared)))
+    check("extension: placeholders declared", not bad_ph, str(bad_ph[:4]))
+
+    # manifest 里的 __MSG_key__
+    msg_keys = re.findall(r"__MSG_([A-Za-z0-9_]+)__",
+                          open(manifest_path, encoding="utf-8").read())
+    check("extension: manifest MSG keys exist",
+          msg_keys and all(k in default for k in msg_keys), str(msg_keys))
+
+    # JS / HTML 里用到的 key 也必须存在
+    used = set()
+    for name in ("background.js", "panel.js", "options.js"):
+        path = os.path.join(ext, name)
+        if os.path.exists(path):
+            src = open(path, encoding="utf-8").read()
+            # \b 必不可少：否则 createElement("div") 里的 "t(" 会被当成翻译调用
+            used |= set(re.findall(
+                r'\b(?:t|getMessage)\(\s*"([A-Za-z0-9_]+)"', src))
+    for name in ("panel.html", "options.html"):
+        path = os.path.join(ext, name)
+        if os.path.exists(path):
+            src = open(path, encoding="utf-8").read()
+            used |= set(re.findall(r'data-i18n(?:-placeholder|-title)?="([A-Za-z0-9_]+)"',
+                                   src))
+    missing = sorted(k for k in used if k not in default)
+    check("extension: all UI strings translated",
+          not missing and len(used) > 30, "缺 %s（共 %d 条）" % (missing[:6], len(used)))
+    check("extension: Chinese locale actually localized",
+          any("剪贴板" in str(v.get("message", ""))
+              for k, v in locales["zh_CN"].items() if "ext" in k or "tab" in k))
+
+    # 打包脚本要把 _locales 带上，否则商店拿不到译文
+    zip_ps1 = open(os.path.join(ext, "build_zip.ps1"), encoding="utf-8").read()
+    check("extension: zip includes _locales", "_locales" in zip_ps1)
+
+    # 语法检查（有 node 就跑；CI 没有 node 也不拦）
+    node = shutil.which("node")
+    if node:
+        for name in ("background.js", "content.js", "panel.js", "options.js"):
+            path = os.path.join(ext, name)
+            if not os.path.exists(path):
+                continue
+            proc = subprocess.run([node, "--check", path],
+                                  capture_output=True, text=True)
+            check("extension: node --check %s" % name, proc.returncode == 0,
+                  (proc.stderr or "")[:120])
+    else:
+        check("extension: node --check skipped (node 不在 PATH)", True)
+
+
 def test_updater():
     """更新包的完整性防线。
 
@@ -1875,6 +1970,8 @@ def main():
         return 1
     print("== updater ==")
     test_updater()
+    print("== extension ==")
+    test_extension()
     print("== core ==")
     test_core()
     print("== phone ==")

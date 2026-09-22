@@ -3,6 +3,78 @@
 > 用法：Partner Center 里每一项都能在这个文件里找到对应内容，复制粘贴即可。
 > 带 `[需替换]` 的地方按自己的信息改。
 
+## 多语言（扩展界面 + 商店列表）
+
+**扩展界面已经是双语的**：文案放在 `_locales/en/`（默认）和 `_locales/zh_CN/`，
+manifest 里 `"default_locale": "en"`。浏览器界面是中文就显示中文，其它语言自动回落英文——
+重新打包上传的 zip 里已经带好中文，不需要再额外设置。
+
+**商店列表**的多语言要在 Partner Center 里加（微软官方文档里叫「Add or remove a language」）：
+
+1. 打开扩展 → 左侧 **Store listing**（商店列表）；
+2. 点页面上方的 **Add or remove a language** → 勾选 **Chinese (Simplified) / 简体中文**；
+3. 切到中文那一栏，把下面「中文文案」里的名称 / 简短描述 / 详细描述 / 搜索关键词粘进去；
+4. 截图可以在中文页用 **Duplicate asset from another language**（从另一种语言复制）拿过去，或单独传；
+5. 保存并提交 —— 商店会按访问者所在区域的语言显示对应文案（中文区显示中文，其它显示英文）。
+
+### 中文文案（简体中文那一栏）
+
+名称：`YouBoard 剪贴板伴侣`
+
+简短描述（≤132 字）：
+
+```
+把网页里复制的内容存进本机 YouBoard，并在任意输入框快速粘贴历史记录。只连本机，不联网上传。
+```
+
+详细描述：
+
+```
+YouBoard 剪贴板伴侣 —— 桌面版 YouBoard 的浏览器搭档。
+
+这个扩展做两件事：
+1) 记住你在网页里复制的内容（文本 / 链接 / 图片），并按网站标好来源；
+2) 需要的时候，把历史记录一键插回当前网页的输入框里。
+
+连上本机桌面版 YouBoard 后，网页里复制的内容会直接进桌面端历史——和你在其它程序里
+复制的东西放在一起，可以搜索、打标签、收藏，也能在桌面端的小组件里看到。
+
+• 完全本地：只与本机 127.0.0.1 上的 YouBoard 通信，不向任何服务器发送数据
+• 不需要账号：连接信息由桌面版生成，一行粘贴即可
+• 可排除站点：不想被记录的网站可以直接加到忽略列表
+```
+
+搜索关键词：`剪贴板, clipboard, 剪贴板历史, YouBoard, 效率工具, 复制粘贴, local clipboard`
+
+### 英文文案（English 那一栏）
+
+名称：`YouBoard Clipboard Companion`
+
+Short description (≤132 chars):
+
+```
+Save what you copy on web pages into your local YouBoard and paste clipboard history anywhere. Localhost only.
+```
+
+Detailed description:
+
+```
+The YouBoard Clipboard Companion is the browser half of the YouBoard desktop clipboard manager.
+
+It does two things:
+1) It remembers what you copy on web pages (text / links / images) and tags each item with its source site.
+2) It pastes your history straight back into the input field you are typing in.
+
+When connected to the desktop app on the same machine, web copies land in your YouBoard history
+next to everything else you copy — searchable, taggable, favouritable, and visible in the desktop widget.
+
+• Fully local: talks only to YouBoard on 127.0.0.1, never to a remote server
+• No account needed: the desktop app generates a one-line connection string
+• Per-site ignore list for anything you would rather not record
+```
+
+Search terms: `clipboard, clipboard history, youboard, productivity, copy paste, local clipboard, web capture`
+
 ## 基本信息
 
 | 字段 | 填写内容 |
