@@ -952,6 +952,32 @@ def test_gui():
     check("vaultui: copy-content marks self-copy",
           store.is_self_copy())
 
+    # 「内容」框要和「名称」框长得一样、文字起点也要对齐（用户报过"内容没对上"）
+    def _text_left_x(widget):
+        img = widget.grab().toImage()
+        bg = img.pixelColor(img.width() // 2, img.height() - 3)
+        for x in range(3, min(60, img.width())):
+            hits = 0
+            for y in range(6, img.height() - 6):
+                c = img.pixelColor(x, y)
+                if (abs(c.red() - bg.red()) + abs(c.green() - bg.green())
+                        + abs(c.blue() - bg.blue())) > 70:
+                    hits += 1
+            if hits >= 2:
+                return x
+        return -1
+
+    align_dlg = yq._VaultEntryDialog(win, None,
+                                     {"name": "MMMM", "content": "sk-abcdef123456"})
+    align_dlg.show()
+    for _ in range(8):
+        app.processEvents()
+    name_x = _text_left_x(align_dlg._name_edit)
+    content_x = _text_left_x(align_dlg._content_edit)
+    check("vaultui: content text aligns with name text",
+          name_x > 0 and name_x == content_x,
+          "name=%s content=%s" % (name_x, content_x))
+
     # 3.3.1 修补：弹层里的回车语义（输入框按回车不能变成"取消"，否则内容像消失了）
     from PyQt6.QtTest import QTest as _QTest
     enter_dlg = yq._VaultEntryDialog(win, None)
@@ -1747,10 +1773,15 @@ def test_updater():
     check("updater: script can roll back",
           ":_yb_rollback" in qt_src
           and 'move /y "%_YB_BAK%" "%_YB_APP%"' in qt_src)
+    check("updater: checks the new build actually started",
+          "tasklist /fi \"imagename eq YouBoard.exe\"" in qt_src
+          and "goto _yb_rollback" in qt_src)
     check("updater: segments must cover the whole file",
           "_coverage_complete" in qt_src and "self._covered" in qt_src)
     check("updater: range response enforced",
           "服务器未按分片返回" in qt_src)
+    check("card inputs share one style (multiline included)",
+          "QPlainTextEdit, QTextEdit {{" in qt_src)
 
     # ---- 端到端：真的跑一遍分片下载（本地 HTTP 服务），断网式残缺必须被拦下 ----
     import http.server

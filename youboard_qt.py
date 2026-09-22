@@ -3646,10 +3646,15 @@ class _CardOverlayDialog(QDialog):
                 color: {C['TEXT']}; }}
             QPushButton#unitPill:checked {{ background-color: {C['ACCENT']};
                 color: #071116; font-weight: 700; }}
-            QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox, QDateTimeEdit {{
+            /* 多行输入框（密库的「内容」）要和单行输入框长得一模一样：
+               以前漏了 QPlainTextEdit/QTextEdit，它落到全局样式上（透明底、无边框、
+               Consolas 字体、内边距也不同），于是"内容"既没有框、文字也和"名称"对不上。*/
+            QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox, QDateTimeEdit,
+            QPlainTextEdit, QTextEdit {{
                 background-color: {C['INPUT_BG']};
                 color: {C['TEXT']}; border: 1px solid {C['BORDER']};
-                border-radius: 7px; padding: 5px 8px; font-size: 12px; }}
+                border-radius: 7px; padding: 5px 8px; font-size: 12px;
+                font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; }}
             QComboBox QAbstractItemView {{ background-color: {C['SURFACE']};
                 color: {C['TEXT']}; selection-background-color: {C['ACCENT_DIM']};
                 border: 1px solid {C['BORDER']}; border-radius: 7px; }}
@@ -13120,13 +13125,18 @@ del "%TEMP%\\_yb_hash.txt" >nul 2>&1
 for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
 ping -n 2 127.0.0.1 >nul 2>&1
 start "" "%_YB_APP%"
+rem 第 4 步：确认新版本真的活着。起来就崩 / 被杀软拦掉的话，直接回滚，
+rem 绝不让用户面对一个打不开的软件（PyInstaller 解压慢，等 20 秒再判）。
+ping -n 20 127.0.0.1 >nul 2>&1
+tasklist /fi "imagename eq YouBoard.exe" 2>nul | findstr /i "YouBoard.exe" >nul
+if errorlevel 1 goto _yb_rollback
 del "%~f0"
 exit /b 0
 :_yb_rollback
-rem 校验没过：删掉坏文件，把备份改回来，再用旧版本启动（用户只会看到一次提示）
+rem 校验没过 / 起来就挂：删掉坏文件，把备份改回来，再用旧版本启动（用户只会看到一次提示）
 del /f "%_YB_APP%" >nul 2>&1
 move /y "%_YB_BAK%" "%_YB_APP%" >nul 2>&1
->"%_YB_FLAG%" echo SHA256 校验未通过，已自动回滚到更新前的版本
+>"%_YB_FLAG%" echo 新版本没通过校验或启动失败，已自动回滚到更新前的版本
 start "" "%_YB_APP%"
 del "%~f0"
 exit /b 0
@@ -13537,6 +13547,10 @@ class _VaultEntryDialog(_CardOverlayDialog):
         self._content_edit = _VaultTextEdit()
         self._content_edit.setPlaceholderText(tr("vault_ph_content"))
         self._content_edit.setMinimumHeight(130)
+        # 和单行输入框的文字起点对齐：去掉 QPlainTextEdit 自带的 frame / 文档边距
+        # （边框和外边距都交给样式表，否则内容会比名称右移几个像素）
+        self._content_edit.setFrameShape(QFrame.Shape.NoFrame)
+        self._content_edit.document().setDocumentMargin(2)
         self._content_edit.setPlainText(str(entry.get("content", "") or ""))
         form.addWidget(self._content_lbl, 1, 0)
         form.addWidget(self._content_edit, 1, 1)
