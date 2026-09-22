@@ -3420,22 +3420,56 @@ class _UpdateDialog(QDialog):
         return self._downloaded_sha256
 
     def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor(3, 6, 10, 170))
+        """窗口只包住卡片，不再画"压暗整屏"那一层（否则卡片周围多一圈半透明黑边）。"""
 
     def showEvent(self, event):
         super().showEvent(event)
         QTimer.singleShot(0, self._sync_to_host)
 
     def _sync_to_host(self):
+        """窗口只包住更新卡片本身（与其它卡片弹层一致）。
+
+        以前这里是 setGeometry(host.frameGeometry())：窗口和主窗口一样大，
+        最大化时等于整屏，于是截图工具"抓窗口"抓到的是全屏。现在窗口 = 卡片
+        尺寸；超出屏幕高度时收卡片内部并让更新说明区滚动。
+        """
         host = self._host
-        if host is None:
-            return
+        host_rect = None
         try:
-            if host.isVisible():
-                self.setGeometry(host.frameGeometry())
-                self._card.setMaximumHeight(max(420, self.height() - 48))
-                self._notes.setMaximumHeight(max(120, self.height() - 390))
+            if host is not None and host.isVisible():
+                host_rect = host.frameGeometry()
+        except Exception:
+            host_rect = None
+        try:
+            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+            avail = scr.availableGeometry()
+        except Exception:
+            avail = None
+        try:
+            hint = self._card.sizeHint()
+            w, h = hint.width(), hint.height()
+        except Exception:
+            w, h = 600, 560
+        w = max(648, w + 48)
+        h = max(300, h + 48)
+        if avail is not None:
+            w = min(w, max(360, avail.width() - 40))
+            h = min(h, max(320, avail.height() - 40))
+        if host_rect is not None and host_rect.width() >= 200:
+            x = host_rect.x() + (host_rect.width() - w) // 2
+            y = host_rect.y() + (host_rect.height() - h) // 2
+        elif avail is not None:
+            x = avail.x() + (avail.width() - w) // 2
+            y = avail.y() + (avail.height() - h) // 2
+        else:
+            x = y = 0
+        if avail is not None:
+            x = max(avail.x(), min(x, avail.x() + avail.width() - w))
+            y = max(avail.y(), min(y, avail.y() + avail.height() - h))
+        try:
+            self.setGeometry(int(x), int(y), int(w), int(h))
+            self._card.setMaximumHeight(max(240, int(h) - 48))
+            self._notes.setMaximumHeight(max(120, int(h) - 300))
         except Exception:
             pass
 

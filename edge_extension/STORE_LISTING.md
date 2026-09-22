@@ -83,7 +83,7 @@ Search terms: `clipboard, clipboard history, youboard, productivity, copy paste,
 | 英文名（备用） | `YouBoard Clipboard Companion` |
 | 类别（Category） | `Productivity`（效率） |
 | 默认语言 | 简体中文（可再加 English） |
-| 版本 | `1.0.0` |
+| 版本 | `1.0.1` |
 | 支持站点 | `https://github.com/cloudxys/YouBoard` |
 | 隐私政策 URL | `https://github.com/cloudxys/YouBoard/blob/main/edge_extension/privacy.md` （已验证可公开访问） |
 | 支持邮箱 / 反馈 | `[需替换：你的邮箱或 issues 链接]` |

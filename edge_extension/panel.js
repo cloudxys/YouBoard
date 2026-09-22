@@ -52,7 +52,16 @@ function send(msg) {
 }
 
 function fmtTime(ts) {
-  var d = new Date(Number(ts) || Date.now());
+  // 桌面端历史给的是 ISO 字符串（"2026-09-22T15:20:41"），浏览器本地记录给的是毫秒数；
+  // 以前一律 Number(ts)，ISO 字符串会变成 NaN → 全部显示成"现在"，看着像时间全错。
+  var d = null;
+  if (typeof ts === "number" && isFinite(ts)) {
+    d = new Date(ts);
+  } else if (typeof ts === "string" && ts) {
+    var asNum = Number(ts);
+    d = new Date(isFinite(asNum) && asNum > 1000000000 ? asNum : ts);
+  }
+  if (!d || isNaN(d.getTime())) d = new Date();
   function p(n) { return (n < 10 ? "0" : "") + n; }
   return p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " +
     p(d.getHours()) + ":" + p(d.getMinutes());

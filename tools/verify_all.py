@@ -1153,6 +1153,31 @@ def test_gui():
     card_probe.reject()
     card_probe.close()
 
+    # 所有"卡片弹层"窗口都必须只包住卡片：否则截图工具抓窗口 = 抓全屏
+    _tmp_exe = os.path.join(tmp, "fake_update.exe")
+    window_probes = [
+        ("update dialog", yq._UpdateDialog(
+            win, win, yq.APP_VERSION, "9.9.9", "v9.9.9", [],
+            ["http://127.0.0.1/x/YouBoard.exe"], _tmp_exe)),
+        ("update status", yq._UpdateStatusDialog(win, win, yq.APP_VERSION)),
+        ("retention", yq._RetentionDialog(win, win, {"mode": "forever"})),
+        ("bridge", yq._BridgeDialog(win, win)),
+    ]
+    for _name, _dlg in window_probes:
+        _dlg.show()
+        for _ in range(8):
+            app.processEvents()
+        check("window is card-sized: " + _name,
+              _dlg.width() < win.width() and _dlg.height() < win.height()
+              and _dlg.width() <= 900,
+              "%dx%d（主窗口 %dx%d）" % (_dlg.width(), _dlg.height(),
+                                         win.width(), win.height()))
+        try:
+            _dlg.reject()
+        except Exception:
+            pass
+        _dlg.close()
+
     # ---- 本机桥：开关立即生效；启动失败要说出原因（扩展"连不上"的根因） ----
     st0 = win.bridge_status()
     check("bridge: starts stopped", not st0.get("running"), str(st0))
@@ -1839,6 +1864,29 @@ def test_extension():
                                   capture_output=True, text=True)
             check("extension: node --check %s" % name, proc.returncode == 0,
                   (proc.stderr or "")[:120])
+        # 扩展行为测试：用假的 chrome API 在 Node 里真跑一遍后台/面板逻辑
+        harness = os.path.join(SRC, "tools", "verify_extension.js")
+        if os.path.exists(harness):
+            proc = subprocess.run([node, harness], capture_output=True,
+                                  text=True, encoding="utf-8",
+                                  errors="replace")
+            lines = (proc.stdout or "").splitlines()
+            parsed = 0
+            for line in lines:
+                if line.startswith("PASS "):
+                    check(line[5:].strip(), True)
+                    parsed += 1
+                elif line.startswith("FAIL "):
+                    check(line[5:].split("  ")[0].strip(), False,
+                          line[5:].split("  ", 1)[-1] if "  " in line[5:] else "")
+                    parsed += 1
+            check("extension: behaviour harness ran", parsed >= 25,
+                  "解析到 %d 条（退出码 %s）" % (parsed, proc.returncode))
+            if proc.returncode != 0:
+                check("extension: behaviour harness clean", False,
+                      (proc.stderr or "")[:200])
+        else:
+            check("extension: behaviour harness present", False, harness)
     else:
         check("extension: node --check skipped (node 不在 PATH)", True)
 

@@ -62,7 +62,7 @@ manifest 里声明了 `"default_locale": "en"`。浏览器界面语言是中文�
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File build_zip.ps1
    ```
-   产物：`YouBoard_Companion_v1.0.0.zip`
+   产物：`YouBoard_Companion_v1.0.1.zip`
 3. Partner Center → Edge 程序 → 「新建扩展」→ 上传 zip
 4. 按 [STORE_LISTING.md](STORE_LISTING.md) 里的文案逐项粘贴：
    - 单一用途说明、每个权限的理由、远程代码=否、数据使用声明
@@ -105,5 +105,5 @@ edge_extension/
 
 ## 版本
 
-- 扩展：1.0.0
+- 扩展：1.0.1（1.0.1：中英双语 + 修复桌面端历史时间显示错误 + 简介长度符合商店 132 字符限制）
 - 需要桌面版 YouBoard **3.3.0 或更高**（本机桥从 3.3.0 开始提供）
