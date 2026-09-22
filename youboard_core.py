@@ -63,8 +63,12 @@ CONTENT_DIR = os.path.join(_BASE_DIR, "content")
 # 密库（3.3.1）：用户主动放进去的私密数据（密码 / 密钥 / 备注）单独落盘，
 # 只由用户手动维护，不进剪贴板历史、不进手机传输、不进云同步
 VAULT_FILE = os.path.join(_BASE_DIR, "youboard_vault.json")
-# 密库单个字段的长度上限（标题 / 账号 / 密码 / 链接 / 备注）
+# 密库带进来的图片文件（历史里的图片是磁盘文件，密库复制一份自己保管）
+VAULT_FILES_DIR = os.path.join(_BASE_DIR, "vault_files")
+# 密库单个字段的长度上限（名称 / 正文）
 MAX_VAULT_FIELD_LEN = 4096
+# 密库条目类型：和剪贴板历史一致的四类
+VAULT_TYPES = ("text", "image", "file", "url")
 # 单个物化文件大小上限：超过则跳过，避免一次性占用过大内存
 MAX_FGD_FILE_SIZE = 500 * 1024 * 1024
 # 超过该长度的文本改为「正文外置 + 历史只留头部」：历史文件保持小巧，复制不再卡顿
@@ -1147,11 +1151,21 @@ def entry_is_fav(entry):
     return bool(isinstance(entry, dict) and entry.get("fav"))
 
 
-class VaultStore:
-    """密库存储：用户主动放进去的私密数据（密码 / 密钥 / 备注）。
+def vault_image_path(entry):
+    """密库条目里带的图片文件的完整路径（没有则返回空串）。"""
+    name = str((entry or {}).get("image") or "")
+    if not name:
+        return ""
+    return os.path.join(VAULT_FILES_DIR, os.path.basename(name))
 
-    设计上和剪贴板历史完全分开：
-    - 单独一个文件（youboard_vault.json），同样用 Fernet 加密 + 原子写入；
+
+class VaultStore:
+    """密库存储：用户主动放进去的私密内容。
+
+    条目结构和剪贴板历史同构（文本 / 图片 / 文件 / 网址 + 可选名称）：
+    - 「名称」可以不填：不填时界面直接按内容显示；
+    - 文本、网址存正文；图片把文件复制进 vault_files/；文件存路径清单；
+    - 单独一个文件（youboard_vault.json），Fernet 加密 + 原子写入；
     - 只由用户在密库窗口里手动增删改，剪贴板监控不会往里写；
     - 手机传输、云同步、快照回滚都只认剪贴板历史，密库天然不参与。
     """
@@ -1166,31 +1180,64 @@ class VaultStore:
 
     @staticmethod
     def _norm(item):
-        """归一化一条密库记录；标题和密码都为空时视为无效（返回 None）。"""
+        """归一化一条密库记录；没有任何内容时视为无效（返回 None）。
+
+        兼容第一版密库（title / username / secret / url / note 那套表单）：
+        老数据统一迁移成"文本"条目，名称取原「名称」，正文取密码 + 备注 + 链接，
+        内容不会因为换结构而丢掉。
+        """
         if not isinstance(item, dict):
             return None
 
-        def field(key):
+        def field(key, limit=MAX_VAULT_FIELD_LEN):
             val = item.get(key, "")
             if val is None:
                 val = ""
-            return str(val)[:MAX_VAULT_FIELD_LEN]
+            return str(val).strip()[:limit]
 
-        title = field("title").strip()
-        secret = field("secret")
-        if not title and not secret:
-            return None
         now = datetime.now().isoformat(timespec="seconds")
-        return {
-            "id": str(item.get("id") or uuid.uuid4().hex),
-            "title": title,
-            "username": field("username").strip(),
-            "secret": secret,
-            "url": field("url").strip(),
-            "note": field("note").strip(),
-            "created": str(item.get("created") or now),
-            "updated": str(item.get("updated") or now),
-        }
+        kind = str(item.get("type") or "")
+        if kind not in VAULT_TYPES:
+            # 老版密库：拆成"名称 + 正文"
+            parts = []
+            if field("secret"):
+                parts.append(str(item.get("secret")).strip())
+            if field("note"):
+                parts.append(str(item.get("note")).strip())
+            if field("url") and not field("secret"):
+                parts.append(str(item.get("url")).strip())
+            content = "\n".join(p for p in parts if p)
+            name = field("title") or field("username")
+            kind = "url" if (content and len(content.splitlines()) == 1
+                             and URL_PATTERN.fullmatch(content)) else "text"
+            if not content and not name:
+                return None
+            return {"id": str(item.get("id") or uuid.uuid4().hex),
+                    "type": kind, "name": name, "content": content,
+                    "paths": [], "image": "", "size": 0,
+                    "created": str(item.get("created") or now),
+                    "updated": str(item.get("updated") or now)}
+
+        content = field("content")
+        name = field("name", 200)
+        paths = [str(p) for p in (item.get("paths") or [])
+                 if str(p or "").strip()][:50]
+        image = os.path.basename(str(item.get("image") or ""))
+        if kind in ("text", "url") and not content:
+            return None
+        if kind == "image" and not image:
+            return None
+        if kind == "file" and not paths:
+            return None
+        try:
+            size = int(item.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        return {"id": str(item.get("id") or uuid.uuid4().hex),
+                "type": kind, "name": name, "content": content,
+                "paths": paths, "image": image, "size": size,
+                "created": str(item.get("created") or now),
+                "updated": str(item.get("updated") or now)}
 
     def _load(self):
         if not os.path.exists(self.path):
@@ -1249,29 +1296,56 @@ class VaultStore:
                     return dict(e)
         return None
 
-    def search(self, keyword):
-        """按标题 / 账号 / 链接 / 备注筛选（密码本身不参与匹配，避免误暴露）。"""
+    def search(self, keyword, kind=None):
+        """按类型 + 关键词筛选（关键词匹配名称 / 正文 / 文件路径）。"""
         kw = (keyword or "").strip().lower()
-        items = self.entries()
-        if not kw:
-            return items
         out = []
-        for e in items:
-            hay = " ".join((e.get("title", ""), e.get("username", ""),
-                            e.get("url", ""), e.get("note", ""))).lower()
+        for e in self.entries():
+            if kind and kind != "all" and e.get("type") != kind:
+                continue
+            if not kw:
+                out.append(e)
+                continue
+            hay = " ".join((str(e.get("name", "")), str(e.get("content", "")),
+                            os.path.basename(vault_image_path(e)),
+                            " ".join(os.path.basename(p)
+                                     for p in (e.get("paths") or [])))).lower()
             if kw in hay:
                 out.append(e)
         return out
 
+    def counts(self):
+        """各分类条数（给密库窗口的分类胶囊显示数量用）。"""
+        out = {"all": 0, "text": 0, "image": 0, "file": 0, "url": 0}
+        for e in self.entries():
+            out["all"] += 1
+            kind = e.get("type")
+            if kind in out:
+                out[kind] += 1
+        return out
+
+    def store_image_file(self, src_path):
+        """把一张图片复制进密库自己的目录，返回文件名（失败返回空串）。"""
+        try:
+            if not src_path or not os.path.exists(src_path):
+                return ""
+            os.makedirs(VAULT_FILES_DIR, exist_ok=True)
+            name = uuid.uuid4().hex + os.path.splitext(src_path)[1].lower()
+            shutil.copyfile(src_path, os.path.join(VAULT_FILES_DIR, name))
+            return name
+        except (IOError, OSError, shutil.Error):
+            return ""
+
     # ---- mutate ----
 
-    def add(self, title="", username="", secret="", url="", note=""):
-        """新增一条；返回新记录（标题和密码都为空则不写入，返回 None）。"""
+    def add(self, kind="text", content="", paths=None, image="",
+            name="", size=0):
+        """新增一条；返回新记录（没有任何内容则不写入，返回 None）。"""
         now = datetime.now().isoformat(timespec="seconds")
         entry = self._norm({
-            "id": uuid.uuid4().hex, "title": title, "username": username,
-            "secret": secret, "url": url, "note": note,
-            "created": now, "updated": now,
+            "id": uuid.uuid4().hex, "type": kind, "content": content,
+            "paths": list(paths or []), "image": image, "name": name,
+            "size": size, "created": now, "updated": now,
         })
         if entry is None:
             return None
@@ -1280,40 +1354,78 @@ class VaultStore:
         self._save()
         return dict(entry)
 
-    def update(self, uid, title=None, username=None, secret=None,
-               url=None, note=None):
-        """整条更新；只传需要改的字段（传 None 表示保持原值）。"""
-        changed = None
+    def add_text(self, content, name=""):
+        """便捷入口：按内容自动判定是「文本」还是「网址」。"""
+        body = str(content or "")
+        if not body.strip():
+            return None
+        kind = "url" if (len(body.splitlines()) == 1
+                         and URL_PATTERN.fullmatch(body.strip())) else "text"
+        return self.add(kind=kind, content=body, name=name)
+
+    def rename(self, uid, name):
+        """只改「名称」（留空 = 回到按内容显示）。"""
+        changed = False
         with self._lock:
             for entry in self._entries:
                 if entry.get("id") != uid:
                     continue
-                cur = dict(entry)
-                for key, val in (("title", title), ("username", username),
-                                 ("secret", secret), ("url", url),
-                                 ("note", note)):
-                    if val is not None:
-                        cur[key] = val
-                cur["updated"] = datetime.now().isoformat(timespec="seconds")
-                norm = self._norm(cur)
-                if norm is None:
-                    return False
-                entry.clear()
-                entry.update(norm)
-                changed = uid
+                entry["name"] = str(name or "").strip()[:200]
+                entry["updated"] = datetime.now().isoformat(timespec="seconds")
+                changed = True
                 break
-        if changed is None:
-            return False
-        self._save()
-        return True
+        if changed:
+            self._save()
+        return changed
+
+    def update(self, uid, content=None, name=None):
+        """改名称 / 改正文（图片、文件条目只改名称，内容靠重新加入）。"""
+        changed = False
+        with self._lock:
+            for entry in self._entries:
+                if entry.get("id") != uid:
+                    continue
+                if name is not None:
+                    entry["name"] = str(name or "").strip()[:200]
+                if content is not None and entry.get("type") in ("text", "url"):
+                    body = str(content)
+                    if not body.strip():
+                        return False
+                    entry["content"] = body[:MAX_VAULT_FIELD_LEN]
+                    entry["type"] = ("url" if (len(body.splitlines()) == 1
+                                               and URL_PATTERN.fullmatch(
+                                                   body.strip()))
+                                     else "text")
+                entry["updated"] = datetime.now().isoformat(timespec="seconds")
+                changed = True
+                break
+        if changed:
+            self._save()
+        return changed
 
     def delete(self, uid):
+        """删除一条；如果是带图片的条目，把密库里的图片文件一起清掉。"""
+        image = ""
+        removed = False
         with self._lock:
-            before = len(self._entries)
-            self._entries = [e for e in self._entries if e.get("id") != uid]
-            removed = len(self._entries) != before
-        if removed:
-            self._save()
+            keep = []
+            for entry in self._entries:
+                if entry.get("id") == uid:
+                    image = entry.get("image") or ""
+                    removed = True
+                    continue
+                keep.append(entry)
+            self._entries = keep
+        if not removed:
+            return False
+        self._save()
+        if image:
+            try:
+                path = os.path.join(VAULT_FILES_DIR, os.path.basename(image))
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
         return removed
 
 

@@ -7,6 +7,7 @@ PyQt6 重构版：透明毛玻璃背景、QPropertyAnimation 动效、原生系�
 
 import ctypes
 import gc
+import hashlib
 import locale
 import math
 import os
@@ -62,6 +63,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QAbstractItemView, QSizePolicy,
     QGraphicsOpacityEffect, QSpacerItem, QGroupBox,
     QCheckBox, QTextEdit, QListView, QListWidget, QListWidgetItem,
+    QPlainTextEdit,
     QStyle, QProgressDialog, QProgressBar, QStyledItemDelegate,
     QStyleOptionViewItem, QStyleOptionHeader, QGridLayout, QSpinBox,
     QDateTimeEdit, QSizeGrip, QDoubleSpinBox,
@@ -95,7 +97,7 @@ except Exception:
 from youboard_core import (
     ClipboardStore, ClipboardMonitor, HISTORY_FILE, TIME_FORMAT,
     IMAGES_DIR, FILE_CACHE_DIR,
-    VaultStore,
+    VaultStore, vault_image_path,
     set_clipboard_text, set_clipboard_image, set_clipboard_files,
     load_config, save_config, get_autostart, set_autostart,
     get_icon_path, get_app_icon,
@@ -1541,29 +1543,38 @@ STRINGS = {
         "tags_placeholder": "输入标签后回车", "tags_none": "无标签",
         "tags_known": "历史标签", "tags_hint_existing": "已有",
         "hk_fav": "收藏 / 取消收藏",
-        # 密库（3.3.1）：用户主动放进去的私密数据
+        # 密库（3.3.1）：用户主动放进去的私密内容，名称可选、四类归档
         "vault_btn": "密库",
-        "vault_title": "密库", "vault_sub": "只存在本机、加密保存；你主动添加的内容不会进剪贴板历史，也不会同步到手机 / 云端",
+        "vault_title": "密库",
+        "vault_sub": "只存在本机、加密保存；你主动添加的内容不会进剪贴板历史，也不会同步到手机 / 云端",
         "vault_add": "新增", "vault_edit": "编辑", "vault_delete": "删除",
-        "vault_copy_user": "复制账号", "vault_copy_secret": "复制密码",
-        "vault_search_ph": "搜索名称 / 账号 / 备注",
-        "vault_col_title": "名称", "vault_col_user": "账号", "vault_col_note": "备注",
-        "vault_empty": "还没有记录，点「新增」放一条进来",
+        "vault_copy": "复制", "vault_open": "打开", "vault_rename": "重命名",
+        "vault_search_ph": "搜索名称 / 内容",
+        "vault_col_name": "名称 / 内容", "vault_col_type": "类型",
+        "vault_col_time": "时间",
+        "vault_kind_all": "全部", "vault_kind_text": "文本",
+        "vault_kind_image": "图片", "vault_kind_file": "文件",
+        "vault_kind_url": "网址",
+        "vault_empty": "还没有内容，点「新增」放一条进来",
         "vault_count": "共 {n} 条",
-        "vault_new_title": "新增密库记录", "vault_edit_title": "编辑密库记录",
-        "vault_new_sub": "内容加密后存在本机，只有你自己能看到",
-        "vault_f_title": "名称", "vault_f_user": "账号 / 用户名",
-        "vault_f_secret": "密码 / 密钥", "vault_f_url": "链接（可选）",
-        "vault_f_note": "备注（可选）",
-        "vault_ph_title": "例如：邮箱密码", "vault_ph_user": "例如：name@example.com",
-        "vault_ph_secret": "粘贴或输入", "vault_ph_url": "https://…",
-        "vault_ph_note": "其它要一起记住的信息",
-        "vault_show": "显示", "vault_hide": "隐藏",
+        "vault_new_title": "添加到密库", "vault_edit_title": "编辑密库内容",
+        "vault_new_sub": "内容加密后存在本机，只有你自己能看到；名称可以不填",
+        "vault_f_name": "名称（可选）", "vault_ph_name": "留空就按内容显示",
+        "vault_f_content": "内容", "vault_ph_content": "粘贴或输入要存的内容",
+        "vault_pick_image": "选图片…", "vault_pick_file": "选文件…",
+        "vault_pick_clear": "清除",
+        "vault_summary_image": "图片 · {name}",
+        "vault_summary_file": "文件 · {n} 个",
+        "vault_need_content": "名称和内容至少填一个",
         "vault_saved": "已保存到密库", "vault_deleted": "已从密库删除",
-        "vault_copied_user": "账号已复制（不会进剪贴板历史）",
-        "vault_copied_secret": "密码已复制（不会进剪贴板历史）",
-        "vault_need_secret": "名称和密码至少填一个",
-        "vault_confirm_delete": "删除这条密库记录？",
+        "vault_renamed": "名称已更新",
+        "vault_copied": "已复制到剪贴板（不会进剪贴板历史）",
+        "vault_copied_image": "图片已复制到剪贴板",
+        "vault_copied_files": "文件已复制到剪贴板",
+        "vault_no_file": "文件已不在了",
+        "vault_rename_title": "重命名",
+        "vault_rename_sub": "留空就按内容显示",
+        "vault_confirm_delete": "删除这条密库内容？",
         "vault_confirm_delete_sub": "删除后无法恢复（密库不参与历史快照回滚）",
         # AI 就地处理（3.2.7+）
         "ai_menu": "AI 处理",
@@ -1893,6 +1904,9 @@ STRINGS = {
         "upd_error_title": "更新失败",
         "upd_download_failed": "下载失败：{err}",
         "upd_replace_failed": "替换失败：{err}",
+        "upd_verify_failed": "更新包校验未通过，已保留当前版本：{err}",
+        "upd_rollback_title": "更新未完成，已自动回到更新前的版本",
+        "upd_rollback_detail": "新版本装好后校验没通过，为了不让你打不开软件，已经自动还原成更新前的版本（数据都在）。原因：{err}",
         "upd_preparing_status": "正在准备更新 {pct}%",
         "upd_replacing_status": "正在替换文件 {pct}%",
         "upd_finishing_status": "即将完成 {pct}%",
@@ -1990,29 +2004,38 @@ STRINGS = {
         "tags_placeholder": "Type a tag, press Enter", "tags_none": "No tags",
         "tags_known": "Known tags", "tags_hint_existing": "existing",
         "hk_fav": "Favorite / unfavorite",
-        # Vault (3.3.1) — secrets you add by hand
+        # Vault (3.3.1) — private items you add by hand; name is optional
         "vault_btn": "Vault",
-        "vault_title": "Vault", "vault_sub": "Encrypted on this device only — entries you add by hand never enter clipboard history and are never synced to phone or cloud",
+        "vault_title": "Vault",
+        "vault_sub": "Encrypted on this device only — what you add by hand never enters clipboard history and is never synced to phone or cloud",
         "vault_add": "Add", "vault_edit": "Edit", "vault_delete": "Delete",
-        "vault_copy_user": "Copy username", "vault_copy_secret": "Copy password",
-        "vault_search_ph": "Search name / username / note",
-        "vault_col_title": "Name", "vault_col_user": "Username", "vault_col_note": "Note",
-        "vault_empty": "No entries yet — click Add to store one",
-        "vault_count": "{n} entries",
-        "vault_new_title": "New vault entry", "vault_edit_title": "Edit vault entry",
-        "vault_new_sub": "Encrypted and stored on this device only",
-        "vault_f_title": "Name", "vault_f_user": "Username",
-        "vault_f_secret": "Password / key", "vault_f_url": "URL (optional)",
-        "vault_f_note": "Note (optional)",
-        "vault_ph_title": "e.g. Mail password", "vault_ph_user": "e.g. name@example.com",
-        "vault_ph_secret": "Paste or type", "vault_ph_url": "https://…",
-        "vault_ph_note": "Anything else worth remembering",
-        "vault_show": "Show", "vault_hide": "Hide",
+        "vault_copy": "Copy", "vault_open": "Open", "vault_rename": "Rename",
+        "vault_search_ph": "Search name / content",
+        "vault_col_name": "Name / content", "vault_col_type": "Type",
+        "vault_col_time": "Time",
+        "vault_kind_all": "All", "vault_kind_text": "Text",
+        "vault_kind_image": "Images", "vault_kind_file": "Files",
+        "vault_kind_url": "Links",
+        "vault_empty": "Nothing stored yet — click Add",
+        "vault_count": "{n} items",
+        "vault_new_title": "Add to vault", "vault_edit_title": "Edit vault item",
+        "vault_new_sub": "Encrypted and stored on this device only; the name is optional",
+        "vault_f_name": "Name (optional)", "vault_ph_name": "Leave empty to show the content",
+        "vault_f_content": "Content", "vault_ph_content": "Paste or type what to keep",
+        "vault_pick_image": "Pick image…", "vault_pick_file": "Pick file…",
+        "vault_pick_clear": "Clear",
+        "vault_summary_image": "Image · {name}",
+        "vault_summary_file": "File · {n} item(s)",
+        "vault_need_content": "Fill in a name or some content",
         "vault_saved": "Saved to vault", "vault_deleted": "Removed from vault",
-        "vault_copied_user": "Username copied (not added to history)",
-        "vault_copied_secret": "Password copied (not added to history)",
-        "vault_need_secret": "Fill in a name or a password",
-        "vault_confirm_delete": "Delete this vault entry?",
+        "vault_renamed": "Name updated",
+        "vault_copied": "Copied (not added to clipboard history)",
+        "vault_copied_image": "Image copied to clipboard",
+        "vault_copied_files": "Files copied to clipboard",
+        "vault_no_file": "File is gone",
+        "vault_rename_title": "Rename",
+        "vault_rename_sub": "Leave empty to show the content instead",
+        "vault_confirm_delete": "Delete this vault item?",
         "vault_confirm_delete_sub": "This cannot be undone (the vault is not part of history snapshots)",
         # AI actions (3.2.7+)
         "ai_menu": "AI actions",
@@ -2347,6 +2370,9 @@ STRINGS = {
         "upd_error_title": "Update failed",
         "upd_download_failed": "Download failed: {err}",
         "upd_replace_failed": "Replace failed: {err}",
+        "upd_verify_failed": "Update package failed verification — keeping the current version: {err}",
+        "upd_rollback_title": "Update did not complete — rolled back automatically",
+        "upd_rollback_detail": "The new build failed its integrity check after install, so YouBoard restored the previous version for you (your data is safe). Reason: {err}",
         "upd_preparing_status": "Preparing update {pct}%",
         "upd_replacing_status": "Replacing files {pct}%",
         "upd_finishing_status": "Finishing {pct}%",
@@ -2684,12 +2710,92 @@ class _CacheCleanupWorker(QThread):
 # ===========================================================================
 # Update Downloader (multi-threaded segmented download, maximizes bandwidth)
 # ===========================================================================
+# 更新包最小可信体积：真实构建都在 30MB 上下，低于这个数一律当成没下完
+UPDATE_MIN_BYTES = 4 * 1024 * 1024
+# PyInstaller 归档结尾的 cookie 魔数（onefile 包的最后一段固定带它）
+_PEI_MAGIC = b"MEI\x0c\x0b\x0a\x0b\x0e"
+
+
+def _coverage_complete(spans, total):
+    """分片区间是否无缝覆盖 [0, total)——判断"整份文件都下到了"。"""
+    pos = 0
+    for start, end in spans:
+        if start > pos:
+            return False
+        if end + 1 > pos:
+            pos = end + 1
+    return pos >= total
+
+
+def sha256_file(path):
+    """算文件的 SHA256（更新包校验用）。"""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_update_file(path, expected_size=0, expected_sha256=""):
+    """校验下载到的更新包是不是"完整、可启动"的可执行镜像，返回 (ok, reason)。
+
+    这一步是 v3.3.1 补上的关键防线：以前的下载器会先把文件按总大小填成零字节，
+    只要有一段分片失败也会当成功，于是可能装上一个 87% 全是零的"假 EXE"
+    （用户的真实事故）。现在装包前必须过：体积、MZ 头、PE 头、PyInstaller
+    归档标记、以及与发布资源一致的 SHA256。
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError as ex:
+        return False, "无法读取更新包: %s" % ex
+    if size < UPDATE_MIN_BYTES:
+        return False, "更新包过小（%d 字节）" % size
+    if expected_size and size != int(expected_size):
+        return False, "更新包大小不符（实际 %d / 官方 %s）" % (size, expected_size)
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4096)
+            if size > 8192:
+                f.seek(-8192, os.SEEK_END)
+                tail = f.read(8192)
+            else:
+                tail = head
+    except OSError as ex:
+        return False, "读取更新包失败: %s" % ex
+    if head[:2] != b"MZ":
+        return False, "缺少 MZ 可执行文件头（下载不完整）"
+    pe_off = int.from_bytes(head[0x3C:0x40], "little")
+    if pe_off <= 0 or pe_off > size - 4:
+        return False, "PE 头偏移无效（文件损坏）"
+    if pe_off + 4 <= len(head):
+        pe_sig = head[pe_off:pe_off + 4]
+    else:
+        try:
+            with open(path, "rb") as f:
+                f.seek(pe_off)
+                pe_sig = f.read(4)
+        except OSError as ex:
+            return False, "读取 PE 头失败: %s" % ex
+    if pe_sig != b"PE\x00\x00":
+        return False, "PE 头签名不正确（文件损坏）"
+    if _PEI_MAGIC not in tail:
+        return False, "缺少 PyInstaller 归档标记（下载不完整）"
+    if expected_sha256:
+        try:
+            got = sha256_file(path)
+        except OSError as ex:
+            return False, "计算校验值失败: %s" % ex
+        if got.lower() != str(expected_sha256).lower():
+            return False, "SHA256 与发布包不一致"
+    return True, ""
+
+
 class _DownloadWorker(QThread):
     """Download using parallel Range segments (like IDM) to saturate bandwidth.
     Falls back to mirror racing if server doesn't support Range requests."""
     progress = pyqtSignal(int, int)   # received_bytes, total_bytes
     status = pyqtSignal(str)          # status line
-    finished_ok = pyqtSignal(str)     # downloaded temp file path
+    finished_ok = pyqtSignal(str, str)   # downloaded temp file path, sha256
     failed = pyqtSignal(str)          # error message
 
     SEGMENTS = 8          # parallel segments per source (like download managers)
@@ -2699,15 +2805,20 @@ class _DownloadWorker(QThread):
     SPEED_CHECK_TIME = 5  # seconds to wait before judging speed
     MIN_SPEED = 200 * 1024  # 200KB/s minimum acceptable speed
 
-    def __init__(self, urls, dest_path, parent=None):
+    def __init__(self, urls, dest_path, parent=None, expected_size=0,
+                 expected_sha256=""):
         super().__init__(parent)
         self._urls = urls
         self._dest = dest_path
+        # 发布页给出的体积 / 摘要（拿不到时只做结构性校验）
+        self._expected_size = int(expected_size or 0)
+        self._expected_sha256 = str(expected_sha256 or "")
         self._abort = False
         self._slow_abort = False  # set when current source is too slow
         self._lock = threading.Lock()
         self._received = 0  # total bytes received across all segments
         self._total = 0
+        self._covered = []  # 已经完整写好的分片区间，用来确认"整份都下到了"
 
     def abort(self):
         self._abort = True
@@ -2731,22 +2842,48 @@ class _DownloadWorker(QThread):
                 self.status.emit(f"多线程下载中: {host} ({self.SEGMENTS}线程)")
                 ok, err = self._segmented_download(url, total)
                 if ok:
-                    self.finished_ok.emit(self._dest)
-                    return
+                    ok2, info = self._verify_package(total)
+                    if ok2:
+                        self.finished_ok.emit(self._dest, info)
+                        return
+                    err = info
                 last_err = err
             else:
                 # Fallback: simple single-stream download from this URL
                 self.status.emit(f"正在下载: {host}")
                 ok, err = self._simple_download(url)
                 if ok:
-                    self.finished_ok.emit(self._dest)
-                    return
+                    ok2, info = self._verify_package(total)
+                    if ok2:
+                        self.finished_ok.emit(self._dest, info)
+                        return
+                    err = info
                 last_err = err
             if self._abort:
                 return
 
         if not self._abort:
             self.failed.emit(last_err)
+
+    def _verify_package(self, size_hint=0):
+        """下载完必须校验通过才允许安装；不通过就丢掉文件换下一个源重下。
+
+        返回 (ok, sha256 或失败原因)。
+        """
+        self.status.emit("正在校验更新包…")
+        ok, reason = verify_update_file(
+            self._dest, self._expected_size or size_hint,
+            self._expected_sha256)
+        if not ok:
+            try:
+                os.remove(self._dest)
+            except OSError:
+                pass
+            return False, "更新包校验失败：%s" % reason
+        try:
+            return True, sha256_file(self._dest)
+        except OSError as ex:
+            return False, "计算校验值失败：%s" % ex
 
     def _probe(self, url):
         """HEAD request to get Content-Length and Accept-Ranges. Returns (total, range_ok)."""
@@ -2788,6 +2925,7 @@ class _DownloadWorker(QThread):
         with self._lock:
             self._received = 0
             self._total = total
+            self._covered = []
         self._slow_abort = False
         self.progress.emit(0, total)
 
@@ -2840,14 +2978,16 @@ class _DownloadWorker(QThread):
                 if self._abort or self._slow_abort:
                     return False, "已取消" if self._abort else "速度过慢，切换源"
 
-        if errors and len(errors) == len(segments):
+        with self._lock:
+            covered = sorted(self._covered)
+        # 关键：只要有一段没下完整，整包就是坏的（以前这里会当成功，
+        # 结果装上去的是"部分零字节"的假 EXE）。必须整段无缝覆盖才算通过。
+        if errors or not _coverage_complete(covered, total):
             try:
                 os.remove(self._dest)
             except OSError:
                 pass
-            return False, errors[0]
-        if errors:
-            pass
+            return False, (errors[0] if errors else "分片下载不完整")
         return True, ""
 
     def _download_segment(self, url, start, end):
@@ -2859,6 +2999,11 @@ class _DownloadWorker(QThread):
                 "Range": f"bytes={start}-{end}",
             })
             with urllib.request.urlopen(req, timeout=self.TIMEOUT) as resp:
+                # 服务器若忽略 Range 会回 200 + 整份内容，那样写进偏移位就是垃圾
+                if getattr(resp, "status", 206) != 206:
+                    return False, "服务器未按分片返回（%s）" % resp.status
+                needed = end - start + 1
+                written = 0
                 offset = start
                 with open(self._dest, "r+b") as f:
                     f.seek(offset)
@@ -2869,11 +3014,16 @@ class _DownloadWorker(QThread):
                         if not buf:
                             break
                         f.write(buf)
+                        written += len(buf)
                         with self._lock:
                             self._received += len(buf)
                             recv = self._received
                             tot = self._total
                         self.progress.emit(recv, tot)
+                if written != needed:
+                    return False, "分片长度不足（%d/%d）" % (written, needed)
+                with self._lock:
+                    self._covered.append((start, end))
                 return True, ""
         except Exception as e:
             return False, str(e)
@@ -3016,7 +3166,8 @@ class _UpdateDialog(QDialog):
     """Modal update card: release notes + in-app download progress."""
 
     def __init__(self, owner, app, current_version, new_version,
-                 release_name, sections, urls, tmp_exe):
+                 release_name, sections, urls, tmp_exe,
+                 expected_size=0, expected_sha256=""):
         super().__init__(owner)
         self._app = app
         self._host = app if app is not None and app.isVisible() else owner
@@ -3024,8 +3175,11 @@ class _UpdateDialog(QDialog):
         self._release_name = str(release_name or "")
         self._urls = list(urls)
         self._tmp_exe = tmp_exe
+        self._expected_size = int(expected_size or 0)
+        self._expected_sha256 = str(expected_sha256 or "")
         self._worker = None
         self._downloaded_path = ""
+        self._downloaded_sha256 = ""
         self._state = "ready"
         self._cancelling = False
 
@@ -3177,7 +3331,9 @@ class _UpdateDialog(QDialog):
         self._primary_btn.hide()
         self._secondary_btn.setText(tr("upd_cancel"))
         self._secondary_btn.setEnabled(True)
-        self._worker = _DownloadWorker(self._urls, self._tmp_exe, self)
+        self._worker = _DownloadWorker(self._urls, self._tmp_exe, self,
+                                       expected_size=self._expected_size,
+                                       expected_sha256=self._expected_sha256)
         self._worker.progress.connect(self._on_progress)
         self._worker.status.connect(self._on_status)
         self._worker.finished_ok.connect(self._on_download_ok)
@@ -3200,10 +3356,11 @@ class _UpdateDialog(QDialog):
         if self._state == "downloading" and self._bar.value() == 0:
             self._detail.setText(text)
 
-    def _on_download_ok(self, path):
+    def _on_download_ok(self, path, sha256=""):
         if self._state != "downloading":
             return
         self._downloaded_path = path
+        self._downloaded_sha256 = str(sha256 or "")
         self._state = "done"
         self._title.setText(tr("upd_prepare"))
         self._detail.setText(tr("upd_prepare"))
@@ -3246,6 +3403,10 @@ class _UpdateDialog(QDialog):
     @property
     def downloaded_path(self):
         return self._downloaded_path
+
+    @property
+    def downloaded_sha256(self):
+        return self._downloaded_sha256
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -8658,38 +8819,42 @@ class YouBoardApp(QMainWindow):
         self._after_mutate(tr("st_tags_saved", n=n))
 
     def _add_selected_to_vault(self):
-        """把选中的文本 / 网址记录存进密库（密码字段预填内容，用户可再改）。
+        """把选中的记录（文本 / 图片 / 文件 / 网址）存进密库。
 
-        入口：列表右键 →「加入密库…」。密库条目和剪贴板历史是两份独立数据，
-        这里只是"把这条内容复制一份过去"，不会改动原记录。
+        入口：列表右键 →「加入密库…」。名称是可选的：默认取这条记录的标签，
+        用户清空后就按内容显示。图片会把文件复制进密库目录，文件记路径；
+        密库和剪贴板历史是两份独立数据，源记录不受影响。
         """
         entry = self._get_selected_entry()
         if not entry:
             self._set_status(tr("st_nothing_to_copy"), "warn")
             return
         etype = entry.get("type", "text")
-        if etype not in ("text", "url"):
-            return
-        content = (entry_full_text(entry) if etype == "text"
-                   else str(entry.get("content", "") or ""))
-        if not content.strip():
-            return
         tags = entry_tags(entry)
-        title = tags[0] if tags else ""
-        if not title:
-            first = content.strip().splitlines()[0].strip()
-            title = first[:24] + ("…" if len(first) > 24 else "")
-        prefill = {
-            "title": title,
-            "username": "",
-            "secret": "" if etype == "url" else content,
-            "url": content if etype == "url" else "",
-            "note": "",
-        }
+        prefill = {"name": tags[0] if tags else ""}
+        if etype == "image":
+            src = self._image_full_path(entry)
+            if not (src and os.path.exists(src)):
+                self._set_status(tr("vault_no_file"), "warn")
+                return
+            prefill.update({"type": "image", "image_src": src})
+        elif etype == "file":
+            paths = [p for p in entry.get("file_paths", []) if p]
+            if not paths:
+                self._set_status(tr("vault_no_file"), "warn")
+                return
+            prefill.update({"type": "file", "paths": paths})
+        else:
+            content = (entry_full_text(entry) if etype == "text"
+                       else str(entry.get("content", "") or ""))
+            if not content.strip():
+                return
+            prefill.update({"type": "url" if etype == "url" else "text",
+                            "content": content})
         dlg = _VaultEntryDialog(self, self, prefill)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        if self.vault.add(**dlg.values()) is None:
+        if _vault_add_from_values(self.vault, dlg.values()) is None:
             return
         self._set_status(tr("vault_saved"), "ok")
 
@@ -8961,9 +9126,8 @@ class YouBoardApp(QMainWindow):
         menu.addAction(tr("m_fav_off") if self._all_selected_fav()
                        else tr("m_fav_on"), self._toggle_fav_selected)
         menu.addAction(tr("m_edit_tags"), self._edit_tags_selected)
-        # 密库：文本 / 网址可以"手动存进密库"（图片和文件不是密钥类内容，不给这项）
-        if etype in ("text", "url"):
-            menu.addAction(tr("m_vault_add"), self._add_selected_to_vault)
+        # 密库：四类记录都能手动存进去（图片复制文件、文件记路径）
+        menu.addAction(tr("m_vault_add"), self._add_selected_to_vault)
         # AI 处理子菜单（只对文本 / 网址记录出现）
         self._ai_menu_for(menu, entry)
         menu.addAction(tr("m_delete_n", n=n) if n > 1 else tr("m_delete"), self._delete_selected)
@@ -9093,6 +9257,39 @@ class YouBoardApp(QMainWindow):
         """密库窗口：用户主动存放的私密数据（独立加密文件，不进历史）。"""
         dlg = VaultDialog(self)
         dlg.exec()
+
+    def _check_update_leftover(self):
+        """更新后的收尾：能正常启动说明新版没问题 → 删掉 .bak；
+        上次替换校验失败自动回滚过 → 如实告诉用户一次。"""
+        try:
+            exe = (os.path.abspath(sys.executable)
+                   if getattr(sys, "frozen", False)
+                   else os.path.abspath(sys.argv[0]))
+            flag = exe + ".update_failed"
+            bak = exe + ".bak"
+            if os.path.exists(flag):
+                reason = ""
+                try:
+                    with open(flag, "r", encoding="utf-8",
+                              errors="replace") as f:
+                        reason = f.read().strip()
+                except OSError:
+                    pass
+                try:
+                    os.remove(flag)
+                except OSError:
+                    pass
+                _info_card(self, tr("upd_rollback_title"),
+                           tr("upd_rollback_detail", err=reason or "—"),
+                           kind="warning")
+                return
+            if os.path.exists(bak):
+                try:
+                    os.remove(bak)
+                except OSError:
+                    pass
+        except Exception:
+            pass
 
     def apply_settings(self, lang, autostart, theme="dark", bg_changed=False,
                        force_restart=False):
@@ -9711,6 +9908,8 @@ class YouBoardApp(QMainWindow):
         QTimer.singleShot(1500, self._refresh_taskbar_icon)
         # 启动稳定后才开启"窗口大小自动保存"，避免启动阶段的默认尺寸覆盖已存尺寸
         QTimer.singleShot(3000, self._enable_state_autosave)
+        # 更新后的收尾（删备份 / 提示上次自动回滚）
+        QTimer.singleShot(1200, self._check_update_leftover)
         # Add native resize borders to frameless window (WS_THICKFRAME)
         try:
             import ctypes
@@ -12731,6 +12930,8 @@ class SettingsDialog(QDialog):
         name = ""
         body = ""
         dl_url = None
+        asset_size = 0
+        asset_sha256 = ""
         got_info = False
 
         # 1) 首选 GitHub API：能同时拿到版本号与更新说明正文
@@ -12746,6 +12947,14 @@ class SettingsDialog(QDialog):
             for a in data.get("assets", []):
                 if a.get("name") == "YouBoard.exe":
                     dl_url = a.get("browser_download_url")
+                    # 发布资源自带的体积与摘要：下载后拿它核对，防止装到半截文件
+                    try:
+                        asset_size = int(a.get("size") or 0)
+                    except (TypeError, ValueError):
+                        asset_size = 0
+                    digest = str(a.get("digest") or "")
+                    if digest.startswith("sha256:"):
+                        asset_sha256 = digest.split(":", 1)[1].strip()
                     break
             got_info = bool(tag)
         except Exception:
@@ -12804,9 +13013,12 @@ class SettingsDialog(QDialog):
             webbrowser.open(html_url)
             return
         # Download new EXE with the custom update card.
-        self._do_update(dl_url, tag, name, body)
+        self._do_update(dl_url, tag, name, body,
+                        expected_size=asset_size,
+                        expected_sha256=asset_sha256)
 
-    def _do_update(self, dl_url, new_version, release_name, release_body):
+    def _do_update(self, dl_url, new_version, release_name, release_body,
+                   expected_size=0, expected_sha256=""):
         """Download new EXE in-app with live progress, then replace + restart."""
         try:
             # Determine current EXE path
@@ -12830,19 +13042,35 @@ class SettingsDialog(QDialog):
             sections = _release_notes_sections(release_body)
             dlg = _UpdateDialog(
                 self, self.app, APP_VERSION, new_version, release_name,
-                sections, urls, tmp_exe)
+                sections, urls, tmp_exe,
+                expected_size=expected_size,
+                expected_sha256=expected_sha256)
             if dlg.exec() == QDialog.DialogCode.Accepted:
-                self._finish_update(dlg.downloaded_path, new_version)
+                self._finish_update(dlg.downloaded_path, new_version,
+                                    dlg.downloaded_sha256)
         except Exception as e:
             _info_card(self, tr("upd_error_title"),
                        tr("upd_replace_failed", err=e), kind="warning")
 
-    def _finish_update(self, tmp_exe, new_version):
-        """Write replace-and-restart batch script, launch it, and quit."""
+    def _finish_update(self, tmp_exe, new_version, sha256=""):
+        """写"替换 + 重启"脚本：先备份旧主程序，装完校验 SHA256，失败自动回滚。"""
         try:
             current_exe = self._dl_current
             exe_dir = os.path.dirname(current_exe)
+            # 进替换流程前再体检一次下载好的包：残次品直接拦下，根本不碰主程序
+            ok, reason = verify_update_file(tmp_exe)
+            if not ok:
+                _info_card(self, tr("upd_error_title"),
+                           tr("upd_verify_failed", err=reason), kind="warning")
+                return
+            if not sha256:
+                try:
+                    sha256 = sha256_file(tmp_exe)
+                except OSError:
+                    sha256 = ""
             bat_path = os.path.join(exe_dir, "_update.bat")
+            # 换包三步：① 旧主程序改名备份（原子操作，绝不先删）② 新文件搬进来
+            # ③ 校验新文件的 SHA256，不对就回滚。任一步失败都不会留下打不开的程序。
             bat_content = f"""@echo off
 chcp 65001 >nul 2>&1
 rem 延时一律用 ping：timeout.exe 在没有控制台句柄 / 句柄异常的环境里会弹
@@ -12859,20 +13087,48 @@ set "_PYI_PARENT_PROCESS_LEVEL="
 set "_PYI_SPLASH_IPC="
 set "_MEIPASS="
 set "_MEIPASS2="
+set "_YB_NEW={tmp_exe}"
+set "_YB_APP={current_exe}"
+set "_YB_BAK={current_exe}.bak"
+set "_YB_FLAG={current_exe}.update_failed"
+set "_YB_HASH={sha256}"
 set /a _yb_try=0
-:del_loop
-del /f "{current_exe}" >nul 2>&1
-if not exist "{current_exe}" goto _yb_install
+rem 第 1 步：把旧主程序改名成 .bak（旧程序还在运行时改不了，退出了就能改）
+:wait_loop
+move /y "%_YB_APP%" "%_YB_BAK%" >nul 2>&1
+if exist "%_YB_BAK%" goto _yb_install
 set /a _yb_try+=1
-if %_yb_try% GEQ 60 goto _yb_install
+if %_yb_try% GEQ 60 goto _yb_giveup
 ping -n 2 127.0.0.1 >nul 2>&1
-goto del_loop
+goto wait_loop
 :_yb_install
-move /y "{tmp_exe}" "{current_exe}" >nul 2>&1
+rem 第 2 步：新文件搬进主程序位置
+move /y "%_YB_NEW%" "%_YB_APP%" >nul 2>&1
+if not exist "%_YB_APP%" goto _yb_rollback
+rem 第 3 步：逐字节校验装好的文件（大小 + SHA256），和下载时算出来的比对
+if "%_YB_HASH%"=="" goto _yb_ok
+certutil -hashfile "%_YB_APP%" SHA256 >"%TEMP%\\_yb_hash.txt" 2>nul
+findstr /i /c:"%_YB_HASH%" "%TEMP%\\_yb_hash.txt" >nul
+if errorlevel 1 goto _yb_rollback
+del "%TEMP%\\_yb_hash.txt" >nul 2>&1
+:_yb_ok
 for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
 ping -n 2 127.0.0.1 >nul 2>&1
-start "" "{current_exe}"
+start "" "%_YB_APP%"
 del "%~f0"
+exit /b 0
+:_yb_rollback
+rem 校验没过：删掉坏文件，把备份改回来，再用旧版本启动（用户只会看到一次提示）
+del /f "%_YB_APP%" >nul 2>&1
+move /y "%_YB_BAK%" "%_YB_APP%" >nul 2>&1
+>"%_YB_FLAG%" echo SHA256 校验未通过，已自动回滚到更新前的版本
+start "" "%_YB_APP%"
+del "%~f0"
+exit /b 0
+:_yb_giveup
+rem 旧程序一直占着文件（极少见）：什么都不动，直接退出，用户下次再试
+del "%~f0"
+exit /b 0
 """
             with open(bat_path, "w", encoding="utf-8") as f:
                 f.write(bat_content)
@@ -13188,68 +13444,82 @@ class CloudSyncDialog(QDialog):
 # Vault（密库，3.3.1）：用户主动存放的私密数据
 # ===========================================================================
 class _VaultEntryDialog(_CardOverlayDialog):
-    """新增 / 编辑一条密库记录（卡片弹层，与「编辑标签」同一套样式）。"""
+    """添加到密库 / 编辑密库内容：名称可选，留空就按内容显示。
 
-    # 卡片铺在密库窗口（640 宽）里，比默认 620 收窄一点，避免被窗口裁掉
+    文本和网址用输入框；图片 / 文件用「选图片…」「选文件…」，选定后用一行摘要显示。
+    """
+
+    # 卡片铺在密库窗口里，比默认 620 收窄一点，避免被窗口裁掉
     CARD_WIDTH = 560
 
-    def __init__(self, owner, app, entry=None):
-        editing = entry is not None
-        entry = entry or {}
+    def __init__(self, owner, app, entry=None, kind=None):
+        entry = dict(entry or {})
+        editing = bool(entry)
         super().__init__(owner, app, "", tr("vault_edit_title") if editing
-                         else tr("vault_new_title"),
-                         tr("vault_new_sub"))
+                         else tr("vault_new_title"), tr("vault_new_sub"))
         try:
             self._icon_lbl.setPixmap(_lock_icon(34, C['TEXT']).pixmap(34, 34))
         except Exception:
             pass
+        self._kind = kind or entry.get("type") or "text"
+        self._image_name = str(entry.get("image") or "")
+        # 从历史"加入密库"时带进来的是磁盘上的源文件，保存时才复制进密库目录
+        self._image_src = str(entry.get("image_src") or "")
+        self._paths = [str(p) for p in (entry.get("paths") or []) if p]
         lay = self._lay
+
+        def _label(text, top=False):
+            lbl = QLabel(text)
+            lbl.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px;")
+            lbl.setAlignment(Qt.AlignmentFlag.AlignRight
+                             | (Qt.AlignmentFlag.AlignTop if top
+                                else Qt.AlignmentFlag.AlignVCenter))
+            return lbl
+
         form = QGridLayout()
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(8)
 
-        self._title_edit = QLineEdit(str(entry.get("title", "") or ""))
-        self._title_edit.setPlaceholderText(tr("vault_ph_title"))
-        self._user_edit = QLineEdit(str(entry.get("username", "") or ""))
-        self._user_edit.setPlaceholderText(tr("vault_ph_user"))
-        self._secret_edit = QLineEdit(str(entry.get("secret", "") or ""))
-        self._secret_edit.setPlaceholderText(tr("vault_ph_secret"))
-        self._secret_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self._url_edit = QLineEdit(str(entry.get("url", "") or ""))
-        self._url_edit.setPlaceholderText(tr("vault_ph_url"))
-        self._note_edit = QLineEdit(str(entry.get("note", "") or ""))
-        self._note_edit.setPlaceholderText(tr("vault_ph_note"))
+        self._name_edit = QLineEdit(str(entry.get("name", "") or ""))
+        self._name_edit.setPlaceholderText(tr("vault_ph_name"))
+        form.addWidget(_label(tr("vault_f_name")), 0, 0)
+        form.addWidget(self._name_edit, 0, 1)
 
-        self._show_btn = QPushButton(tr("vault_show"))
-        self._show_btn.setCheckable(True)
-        self._show_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        self._show_btn.toggled.connect(self._toggle_secret)
+        self._content_lbl = _label(tr("vault_f_content"), top=True)
+        self._content_edit = QPlainTextEdit()
+        self._content_edit.setPlaceholderText(tr("vault_ph_content"))
+        self._content_edit.setMinimumHeight(130)
+        self._content_edit.setPlainText(str(entry.get("content", "") or ""))
+        form.addWidget(self._content_lbl, 1, 0)
+        form.addWidget(self._content_edit, 1, 1)
 
-        secret_row = QHBoxLayout()
-        secret_row.setContentsMargins(0, 0, 0, 0)
-        secret_row.setSpacing(6)
-        secret_row.addWidget(self._secret_edit, 1)
-        secret_row.addWidget(self._show_btn)
-        secret_box = QWidget()
-        secret_box.setLayout(secret_row)
-
-        rows = ((tr("vault_f_title"), self._title_edit),
-                (tr("vault_f_user"), self._user_edit),
-                (tr("vault_f_secret"), secret_box),
-                (tr("vault_f_url"), self._url_edit),
-                (tr("vault_f_note"), self._note_edit))
-        for i, (label_text, widget) in enumerate(rows):
-            label = QLabel(label_text)
-            label.setStyleSheet(f"color: {C['TEXT_SEC']}; font-size: 12px;")
-            label.setAlignment(Qt.AlignmentFlag.AlignRight
-                               | Qt.AlignmentFlag.AlignVCenter)
-            form.addWidget(label, i, 0)
-            form.addWidget(widget, i, 1)
+        self._summary = QLabel("")
+        self._summary.setWordWrap(True)
+        self._summary.setMinimumHeight(64)
+        self._summary.setAlignment(Qt.AlignmentFlag.AlignTop
+                                   | Qt.AlignmentFlag.AlignLeft)
+        self._summary.setStyleSheet(
+            f"QLabel {{ color: {C['TEXT_SEC']}; font-size: 12px;"
+            f" background-color: {C['SURFACE2']};"
+            f" border: 1px solid {C['BORDER']}; border-radius: 8px;"
+            f" padding: 10px; }}")
+        form.addWidget(self._summary, 1, 1)
         form.setColumnStretch(1, 1)
         lay.addLayout(form)
 
+        pick = QHBoxLayout()
+        pick.addStretch()
+        self._pick_img_btn = QPushButton(tr("vault_pick_image"))
+        self._pick_file_btn = QPushButton(tr("vault_pick_file"))
+        for b in (self._pick_img_btn, self._pick_file_btn):
+            b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            b.setAutoDefault(False)
+            pick.addWidget(b)
+        self._pick_img_btn.clicked.connect(self._pick_image)
+        self._pick_file_btn.clicked.connect(self._pick_file)
+        lay.addLayout(pick)
+
         self._hint = QLabel("")
-        self._hint.setObjectName("retSub")
         self._hint.setStyleSheet(f"color: {C['DANGER']}; font-size: 12px;")
         lay.addWidget(self._hint)
 
@@ -13264,44 +13534,156 @@ class _VaultEntryDialog(_CardOverlayDialog):
         save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         save.clicked.connect(self.accept)
         buttons.addWidget(save)
-        # 回车 = 保存（在任意输入框里按回车都直接存下，别让用户以为"没反应"）
+        # 名称框里按回车 = 保存
         cancel.setAutoDefault(False)
         cancel.setDefault(False)
         save.setAutoDefault(True)
         save.setDefault(True)
         lay.addLayout(buttons)
-        QTimer.singleShot(0, self._title_edit.setFocus)
 
-    def _toggle_secret(self, shown):
-        self._secret_edit.setEchoMode(
-            QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password)
-        self._show_btn.setText(tr("vault_hide") if shown else tr("vault_show"))
+        self._sync_kind_ui()
+        QTimer.singleShot(0, self._name_edit.setFocus)
+
+    # ---- 类型切换 ----
+
+    def _summary_text(self):
+        if self._kind == "image":
+            path = self._image_src or vault_image_path({"image": self._image_name})
+            name = os.path.basename(path) if path else ""
+            return tr("vault_summary_image", name=name or "—")
+        names = [os.path.basename(p) for p in self._paths][:4]
+        text = tr("vault_summary_file", n=len(self._paths))
+        if names:
+            text += "\n" + "、".join(names)
+        return text
+
+    def _sync_kind_ui(self):
+        binary = self._kind in ("image", "file")
+        self._content_lbl.setVisible(not binary)
+        self._content_edit.setVisible(not binary)
+        self._summary.setVisible(binary)
+        if binary:
+            self._summary.setText(self._summary_text())
+        self._pick_img_btn.setVisible(not binary or self._kind == "image"
+                                      or self._kind == "file")
+        self._pick_file_btn.setVisible(True)
+
+    def _pick_image(self):
+        path, _sel = QFileDialog.getOpenFileName(
+            self, tr("vault_pick_image"), "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)")
+        if not path:
+            return
+        self._kind = "image"
+        self._image_src = path
+        self._paths = []
+        self._hint.setText("")
+        self._sync_kind_ui()
+
+    def _pick_file(self):
+        paths, _sel = QFileDialog.getOpenFileNames(
+            self, tr("vault_pick_file"), "")
+        if not paths:
+            return
+        self._kind = "file"
+        self._paths = list(paths)
+        self._image_src = ""
+        self._hint.setText("")
+        self._sync_kind_ui()
+
+    # ---- 取值 / 校验 ----
+
+    def values(self):
+        return {"kind": self._kind,
+                "name": self._name_edit.text().strip(),
+                "content": self._content_edit.toPlainText(),
+                "paths": list(self._paths),
+                "image": self._image_name,
+                "image_src": self._image_src}
 
     def accept(self):
-        """名称和密码至少填一个，否则不放行（避免存出一条空记录）。"""
-        if not self._title_edit.text().strip() \
-                and not self._secret_edit.text().strip():
-            self._hint.setText(tr("vault_need_secret"))
+        vals = self.values()
+        has_content = bool(vals["content"].strip() or vals["paths"]
+                           or vals["image_src"] or vals["image"])
+        if not vals["name"] and not has_content:
+            self._hint.setText(tr("vault_need_content"))
+            return
+        if self._kind in ("text", "url") and not vals["content"].strip():
+            self._hint.setText(tr("vault_need_content"))
             return
         super().accept()
 
-    def values(self):
-        return {"title": self._title_edit.text().strip(),
-                "username": self._user_edit.text().strip(),
-                "secret": self._secret_edit.text(),
-                "url": self._url_edit.text().strip(),
-                "note": self._note_edit.text().strip()}
+
+class _VaultNameDialog(_CardOverlayDialog):
+    """只改名称（留空 = 回到按内容显示）。"""
+
+    CARD_WIDTH = 460
+
+    def __init__(self, owner, app, current=""):
+        super().__init__(owner, app, "", tr("vault_rename_title"),
+                         tr("vault_rename_sub"))
+        try:
+            self._icon_lbl.setPixmap(_lock_icon(34, C['TEXT']).pixmap(34, 34))
+        except Exception:
+            pass
+        self._edit = QLineEdit(str(current or ""))
+        self._edit.setPlaceholderText(tr("vault_ph_name"))
+        self._lay.addWidget(self._edit)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton(tr("btn_save"))
+        save.setObjectName("retSave")
+        save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        save.clicked.connect(self.accept)
+        buttons.addWidget(save)
+        cancel.setAutoDefault(False)
+        save.setAutoDefault(True)
+        save.setDefault(True)
+        self._lay.addLayout(buttons)
+        QTimer.singleShot(0, self._edit.setFocus)
+
+    def name(self):
+        return self._edit.text().strip()
+
+
+def _vault_add_from_values(vault, vals):
+    """把弹层返回的值写进密库（图片先复制进密库自己的目录）。返回新条目或 None。"""
+    kind = str(vals.get("kind") or "text")
+    name = str(vals.get("name") or "")
+    if kind == "image":
+        src = str(vals.get("image_src") or "")
+        image = vault.store_image_file(src) if src else str(vals.get("image") or "")
+        if not image:
+            return None
+        return vault.add(kind="image", image=image, name=name)
+    if kind == "file":
+        paths = [p for p in (vals.get("paths") or []) if p]
+        if not paths:
+            return None
+        return vault.add(kind="file", paths=paths, name=name)
+    content = str(vals.get("content") or "")
+    if not content.strip():
+        return None
+    if kind == "url":
+        return vault.add(kind="url", content=content, name=name)
+    return vault.add_text(content, name=name)
 
 
 class VaultDialog(QDialog):
-    """密库独立窗口：用户主动存放的私密数据（密码 / 密钥 / 备注）。
+    """密库独立窗口：用户主动存放的私密内容（文本 / 图片 / 文件 / 网址）。
 
-    - 独立文件 youboard_vault.json，Fernet 加密 + 原子写入；
-    - 复制时走 mark_self_copy()，密码不会被剪贴板监控记进历史；
+    - 名称可选：不填就直接按内容显示（长内容自动截断显示）；
+    - 分类胶囊和主界面一样（全部 / 文本 / 图片 / 文件 / 网址）；
+    - 独立文件 youboard_vault.json（Fernet 加密 + 原子写入），图片复制进 vault_files/；
+    - 复制走 mark_self_copy()，内容不会被剪贴板监控记进历史；
     - 不参与手机传输 / 云同步 / 历史快照。
     """
 
-    COLS = ("title", "username", "note")
+    KINDS = ("all", "text", "image", "file", "url")
 
     def __init__(self, app):
         super().__init__(app)
@@ -13310,8 +13692,7 @@ class VaultDialog(QDialog):
         # 弹层铺满本窗口时把桌面小组件抬回最上层（同「编辑标签」一套处理）
         self._desk_widget = getattr(app, "_desk_widget", None)
         header = _make_frameless_dialog(self, tr("vault_title"))
-        # 宽度要容得下新增/编辑用的卡片弹层（卡片 560 + 两边留白）
-        self.setFixedSize(660 if LANG == "en" else 640, 560)
+        self.setFixedSize(700 if LANG == "en" else 680, 580)
         if LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
         self.setStyleSheet(f"""
@@ -13332,9 +13713,10 @@ class VaultDialog(QDialog):
             QPushButton[cssClass="accent"]:hover {{ background: {C['ACCENT_HV']}; }}
             QTableWidget {{ background: {C['SURFACE']}; color: {C['TEXT']};
                 border: 1px solid {C['BORDER']}; border-radius: 10px;
-                gridline-color: transparent; font-size: 12px; }}
-            QTableWidget::item {{ padding: 6px 8px; }}
-            QTableWidget::item:selected {{ background: {C['ACCENT_DIM']};
+                gridline-color: transparent; font-size: 12px;
+                outline: 0px; }}
+            QTableWidget::item {{ padding: 6px 8px; border: none; }}
+            QTableWidget::item:selected {{ background: {C['SURFACE3']};
                 color: {C['TEXT']}; }}
             QHeaderView::section {{ background: {C['SURFACE2']};
                 color: {C['TEXT_SEC']}; border: none; padding: 6px 8px;
@@ -13356,6 +13738,20 @@ class VaultDialog(QDialog):
         desc.setWordWrap(True)
         root.addWidget(desc)
 
+        # 分类胶囊：和主界面顶部一样的一排（带各自数量）
+        self._kind_btns = {}
+        kinds_row = QHBoxLayout()
+        kinds_row.setSpacing(6)
+        for key in self.KINDS:
+            chip = QPushButton(tr("vault_kind_" + key))
+            chip.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            chip.setCheckable(True)
+            chip.clicked.connect(lambda _c=False, k=key: self._set_kind(k))
+            kinds_row.addWidget(chip)
+            self._kind_btns[key] = chip
+        kinds_row.addStretch(1)
+        root.addLayout(kinds_row)
+
         top = QHBoxLayout()
         self._search = QLineEdit()
         self._search.setPlaceholderText(tr("vault_search_ph"))
@@ -13368,42 +13764,43 @@ class VaultDialog(QDialog):
         top.addWidget(add_btn)
         root.addLayout(top)
 
-        self._table = QTableWidget(0, len(self.COLS))
+        self._table = QTableWidget(0, 3)
         self._table.setHorizontalHeaderLabels(
-            [tr("vault_col_title"), tr("vault_col_user"), tr("vault_col_note")])
+            [tr("vault_col_name"), tr("vault_col_type"), tr("vault_col_time")])
         self._table.verticalHeader().setVisible(False)
         self._table.setShowGrid(False)
         self._table.setAlternatingRowColors(False)
         self._table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-        self._table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setWordWrap(False)
+        # 点一下不要冒出焦点框（那圈虚线框就是用户说的"透明框"）
+        self._table.setItemDelegate(_NoFocusDelegate(self._table))
         self._table.itemSelectionChanged.connect(self._sync_buttons)
-        self._table.itemDoubleClicked.connect(lambda _i: self._edit_entry())
+        self._table.itemDoubleClicked.connect(lambda _i: self._activate_entry())
         hh = self._table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         root.addWidget(self._table, 1)
 
         btns = QHBoxLayout()
         btns.setSpacing(8)
-        self._copy_user_btn = QPushButton(tr("vault_copy_user"))
-        self._copy_secret_btn = QPushButton(tr("vault_copy_secret"))
+        self._copy_btn = QPushButton(tr("vault_copy"))
+        self._open_btn = QPushButton(tr("vault_open"))
         self._edit_btn = QPushButton(tr("vault_edit"))
+        self._rename_btn = QPushButton(tr("vault_rename"))
         self._del_btn = QPushButton(tr("vault_delete"))
-        for b in (self._copy_user_btn, self._copy_secret_btn,
-                  self._edit_btn, self._del_btn):
+        for b in (self._copy_btn, self._open_btn, self._edit_btn,
+                  self._rename_btn, self._del_btn):
             b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btns.addWidget(b)
         btns.addStretch()
-        self._copy_user_btn.clicked.connect(
-            lambda: self._copy_field("username", "vault_copied_user"))
-        self._copy_secret_btn.clicked.connect(
-            lambda: self._copy_field("secret", "vault_copied_secret"))
+        self._copy_btn.clicked.connect(self._copy_entry)
+        self._open_btn.clicked.connect(self._open_entry)
         self._edit_btn.clicked.connect(self._edit_entry)
+        self._rename_btn.clicked.connect(self._rename_entry)
         self._del_btn.clicked.connect(self._delete_entry)
         root.addLayout(btns)
 
@@ -13411,24 +13808,78 @@ class VaultDialog(QDialog):
         self._status.setObjectName("muted")
         root.addWidget(self._status)
 
+        self._kind = "all"
         self._rows = []
         self._reload()
 
-    # ---- data ----
+    # ---- 列表 ----
+
+    @staticmethod
+    def _fallback_title(entry):
+        """没填名称时，列表直接按内容显示。"""
+        kind = entry.get("type")
+        if kind in ("text", "url"):
+            text = " ".join(str(entry.get("content", "")).split())
+            return text[:90] + ("…" if len(text) > 90 else "")
+        if kind == "image":
+            name = os.path.basename(vault_image_path(entry))
+            return tr("vault_summary_image", name=name or "—")
+        paths = entry.get("paths") or []
+        first = os.path.basename(paths[0]) if paths else "—"
+        if len(paths) > 1:
+            first += "（+%d）" % (len(paths) - 1)
+        return first
+
+    def _set_kind(self, kind):
+        self._kind = kind if kind in self.KINDS else "all"
+        self._reload()
+
+    def _paint_kinds(self, counts):
+        for key, chip in self._kind_btns.items():
+            n = counts.get(key, 0)
+            chip.setText("%s %d" % (tr("vault_kind_" + key), n))
+            chip.setChecked(key == self._kind)
+            if key == self._kind:
+                chip.setStyleSheet(
+                    f"QPushButton {{ background: {C['ACCENT_DIM']};"
+                    f" color: {C['ACCENT']}; border: 1px solid {C['ACCENT']};"
+                    f" border-radius: 11px; padding: 3px 12px;"
+                    f" font-size: 11px; font-weight: 600; }}")
+            else:
+                chip.setStyleSheet(
+                    f"QPushButton {{ background: {C['SURFACE2']};"
+                    f" color: {C['TEXT_SEC']}; border: 1px solid {C['BORDER']};"
+                    f" border-radius: 11px; padding: 3px 12px;"
+                    f" font-size: 11px; }}"
+                    f"QPushButton:hover {{ background: {C['SURFACE3']};"
+                    f" color: {C['TEXT']}; }}")
 
     def _reload(self):
-        rows = self.vault.search(self._search.text())
+        rows = self.vault.search(self._search.text(), self._kind)
         self._rows = rows
         self._table.setRowCount(len(rows))
         for i, entry in enumerate(rows):
-            for col, key in enumerate(self.COLS):
-                item = QTableWidgetItem(str(entry.get(key, "") or ""))
-                item.setToolTip(str(entry.get(key, "") or ""))
+            title = entry.get("name") or self._fallback_title(entry)
+            kind_label = tr("vault_kind_" + str(entry.get("type") or "text"))
+            stamp = str(entry.get("updated") or "").replace("T", " ")[:19]
+            for col, text in enumerate((title, kind_label, stamp)):
+                item = QTableWidgetItem(str(text))
+                if col == 1:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._table.setItem(i, col, item)
         if rows:
             self._table.selectRow(0)
-        self._status.setText(tr("vault_count", n=len(rows)) if rows
-                             else tr("vault_empty"))
+        self._paint_kinds(self.vault.counts())
+        total = self.vault.count()
+        if total == 0:
+            self._status.setText(tr("vault_empty"))
+        elif self._search.text().strip() or self._kind != "all":
+            self._status.setText("%s · %s %d / %d"
+                                 % (tr("vault_count", n=len(rows)),
+                                    tr("vault_kind_" + self._kind),
+                                    len(rows), total))
+        else:
+            self._status.setText(tr("vault_count", n=total))
         self._sync_buttons()
 
     def _current_entry(self):
@@ -13438,18 +13889,22 @@ class VaultDialog(QDialog):
         return self._rows[row]
 
     def _sync_buttons(self):
-        has = self._current_entry() is not None
-        for b in (self._copy_user_btn, self._copy_secret_btn,
-                  self._edit_btn, self._del_btn):
-            b.setEnabled(has)
+        entry = self._current_entry()
+        kind = (entry or {}).get("type")
+        has = entry is not None
+        self._copy_btn.setEnabled(has)
+        self._rename_btn.setEnabled(has)
+        self._del_btn.setEnabled(has)
+        self._open_btn.setEnabled(has and kind in ("image", "file", "url"))
+        self._edit_btn.setEnabled(has and kind in ("text", "url"))
 
-    # ---- actions ----
+    # ---- 操作 ----
 
     def _add_entry(self):
         dlg = _VaultEntryDialog(self, None)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        if self.vault.add(**dlg.values()) is None:
+        if _vault_add_from_values(self.vault, dlg.values()) is None:
             return
         self._search.clear()
         self._reload()
@@ -13457,14 +13912,27 @@ class VaultDialog(QDialog):
 
     def _edit_entry(self):
         entry = self._current_entry()
-        if entry is None:
+        if entry is None or entry.get("type") not in ("text", "url"):
             return
         dlg = _VaultEntryDialog(self, None, entry)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        if self.vault.update(entry["id"], **dlg.values()):
+        vals = dlg.values()
+        if self.vault.update(entry["id"], content=vals["content"],
+                             name=vals["name"]):
             self._reload()
             self._status.setText(tr("vault_saved"))
+
+    def _rename_entry(self):
+        entry = self._current_entry()
+        if entry is None:
+            return
+        dlg = _VaultNameDialog(self, None, entry.get("name") or "")
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        if self.vault.rename(entry["id"], dlg.name()):
+            self._reload()
+            self._status.setText(tr("vault_renamed"))
 
     def _delete_entry(self):
         entry = self._current_entry()
@@ -13478,28 +13946,82 @@ class VaultDialog(QDialog):
             self._reload()
             self._status.setText(tr("vault_deleted"))
 
-    def _copy_field(self, key, msg_key):
+    def _activate_entry(self):
         entry = self._current_entry()
         if entry is None:
             return
-        value = str(entry.get(key, "") or "")
-        if not value:
-            return
-        # 关键：先标记为应用内复制，密码不会被剪贴板监控记进历史
-        try:
-            self.app.store.mark_self_copy()
-        except Exception:
-            pass
+        if entry.get("type") in ("text", "url"):
+            self._edit_entry()
+        else:
+            self._open_entry()
+
+    def _mark_self_copy(self):
+        """密库复制同样要把内容挡在剪贴板历史之外。"""
         try:
             self.app._last_self_copy = time.time()
         except Exception:
             pass
         try:
-            set_clipboard_text(value)
+            self.app.store.mark_self_copy()
         except Exception:
-            return
-        self._status.setText(tr(msg_key))
+            pass
 
+    def _copy_entry(self):
+        entry = self._current_entry()
+        if entry is None:
+            return
+        kind = entry.get("type")
+        self._mark_self_copy()
+        try:
+            if kind in ("text", "url"):
+                set_clipboard_text(str(entry.get("content", "") or ""))
+                msg = tr("vault_copied")
+            elif kind == "image":
+                path = vault_image_path(entry)
+                if not (path and os.path.exists(path)):
+                    self._status.setText(tr("vault_no_file"))
+                    return
+                from PIL import Image as PILImage
+                img = PILImage.open(path)
+                img.load()
+                set_clipboard_image(img)
+                msg = tr("vault_copied_image")
+            else:
+                paths = [p for p in (entry.get("paths") or [])
+                         if os.path.exists(p)]
+                if not paths:
+                    self._status.setText(tr("vault_no_file"))
+                    return
+                set_clipboard_files(paths)
+                msg = tr("vault_copied_files")
+        except Exception:
+            self._status.setText(tr("vault_no_file"))
+            return
+        self._status.setText(msg)
+
+    def _open_entry(self):
+        entry = self._current_entry()
+        if entry is None:
+            return
+        kind = entry.get("type")
+        try:
+            if kind == "url":
+                self.app._open_url(str(entry.get("content", "") or ""))
+            elif kind == "image":
+                path = vault_image_path(entry)
+                if path and os.path.exists(path):
+                    _open_path(path)
+                else:
+                    self._status.setText(tr("vault_no_file"))
+            elif kind == "file":
+                paths = [p for p in (entry.get("paths") or [])
+                         if os.path.exists(p)]
+                if paths:
+                    _open_path(paths[0])
+                else:
+                    self._status.setText(tr("vault_no_file"))
+        except Exception:
+            self._status.setText(tr("vault_no_file"))
 
 # ===========================================================================
 # CLI functions

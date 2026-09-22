@@ -17,6 +17,13 @@ __pycache__/
 .youboard_snapshots.json
 youboard_config.json
 images/
+# 密库（3.3.1）：用户主动存放的私密内容，绝对不能进公开仓库
+youboard_vault.json
+youboard_vault.json.bak
+vault_files/
+# 本地加密密钥 / 运行日志
+youboard.key
+youboard_error.log
 
 # ---- 可执行文件（通过 GitHub Releases 分发，不进仓库）----
 *.exe

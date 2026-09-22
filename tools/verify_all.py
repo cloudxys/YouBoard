@@ -169,36 +169,90 @@ def test_core():
     check("tags: legacy entry has none",
           all(yc.entry_tags(e) == [] for e in store2.get_by_type("text")))
 
-    # ---- 密库（v3.3.1）：独立加密落盘、与剪贴板历史互不影响 ----
+    # ---- 密库（v3.3.1）：可选名称 + 四类内容，独立加密落盘 ----
     vpath = os.path.join(tmp, "vault.json")
     vault = yc.VaultStore(path=vpath)
     check("vault: starts empty", vault.count() == 0)
-    v1 = vault.add("邮箱密码", "me@example.com", "S3cret!",
-                   "https://mail.example.com", "备用")
-    check("vault: add", v1 is not None and vault.count() == 1)
-    check("vault: rejects empty", vault.add("", "", "") is None
-          and vault.count() == 1)
-    vault.add("银行", "6222", "123456")
-    check("vault: two entries", vault.count() == 2)
-    check("vault: search title/username",
-          len(vault.search("邮箱")) == 1 and len(vault.search("6222")) == 1)
-    check("vault: secret not searchable", vault.search("S3cret!") == [])
-    check("vault: update", vault.update(v1["id"], secret="NewPass!")
-          and vault.get(v1["id"])["secret"] == "NewPass!"
-          and vault.get(v1["id"])["username"] == "me@example.com")
-    check("vault: delete", vault.delete(v1["id"]) and vault.count() == 1
+    v1 = vault.add_text("sk-abcdef123456", name="邮箱密钥")
+    check("vault: add text with optional name",
+          v1 is not None and vault.count() == 1 and v1["type"] == "text"
+          and v1["name"] == "邮箱密钥")
+    v2 = vault.add_text("https://example.com/a")
+    check("vault: url auto-detected", v2 is not None and v2["type"] == "url")
+    check("vault: empty rejected", vault.add_text("   ") is None
+          and vault.count() == 2)
+    check("vault: counts by kind",
+          vault.counts() == {"all": 2, "text": 1, "image": 0, "file": 0,
+                             "url": 1}, str(vault.counts()))
+    check("vault: search by name", len(vault.search("邮箱")) == 1)
+    check("vault: search by content", len(vault.search("abcdef")) == 1)
+    check("vault: filter by kind",
+          len(vault.search("", "text")) == 1 and len(vault.search("", "url")) == 1)
+    check("vault: rename", vault.rename(v1["id"], "新名字")
+          and vault.get(v1["id"])["name"] == "新名字")
+    check("vault: rename to empty (show content)",
+          vault.rename(v1["id"], "") and vault.get(v1["id"])["name"] == "")
+    check("vault: update content", vault.update(v1["id"], content="第二个正文")
+          and vault.get(v1["id"])["content"] == "第二个正文")
+    check("vault: update name", vault.update(v1["id"], name="甲乙")
+          and vault.get(v1["id"])["name"] == "甲乙")
+    check("vault: blank content rejected",
+          vault.update(v1["id"], content="   ") is False
+          and vault.get(v1["id"])["content"] == "第二个正文")
+    check("vault: delete", vault.delete(v2["id"]) and vault.count() == 1
           and vault.delete("missing") is False)
+
+    # 图片：复制进密库自己的目录；文件：记路径
+    img_src = os.path.join(tmp, "vault_src.png")
+    try:
+        from PIL import Image as _VPIL
+        _VPIL.new("RGB", (32, 24), (10, 120, 90)).save(img_src)
+    except Exception:
+        img_src = ""
+    vimg = None
+    if img_src:
+        iname = vault.store_image_file(img_src)
+        check("vault: image copied into vault dir",
+              bool(iname) and os.path.exists(yc.vault_image_path({"image": iname})))
+        vimg = vault.add(kind="image", image=iname, name="")
+        check("vault: image entry counted", vimg is not None
+              and vault.counts()["image"] == 1)
+        img_full = yc.vault_image_path(vimg)
+        check("vault: delete removes copied image",
+              vault.delete(vimg["id"]) and not os.path.exists(img_full))
+    vfile = vault.add(kind="file", paths=[os.path.join(tmp, "some.pdf")])
+    check("vault: file entry", vfile is not None
+          and vault.counts()["file"] == 1
+          and vault.search("some.pdf") != [])
+
     vault.flush()
     with open(vpath, "rb") as fh:
         vraw = fh.read()
     check("vault: encrypted at rest",
-          vraw.startswith(b"gAAAA") and b"123456" not in vraw)
+          vraw.startswith(b"gAAAA")
+          and "第二个正文".encode("utf-8") not in vraw)
     check("vault: separate from clipboard history",
           os.path.abspath(vpath) != os.path.abspath(store.path)
           and yc.entry_tags(store.get_by_type("text")[0]) == [])
     vreload = yc.VaultStore(path=vpath)
-    check("vault: persisted",
-          vreload.count() == 1 and vreload.entries()[0]["title"] == "银行")
+    check("vault: persisted", vreload.count() == vault.count()
+          and any(e["name"] == "甲乙" for e in vreload.entries()))
+
+    # 老版密库（名称 / 账号 / 密码 / 链接 / 备注）要能无损迁移过来
+    v1_path = os.path.join(tmp, "vault_v1.json")
+    legacy = {"version": 1, "entries": [
+        {"id": "legacy1", "title": "老名字", "username": "me@x.com",
+         "secret": "旧密码", "url": "", "note": "老备注",
+         "created": "2026-09-01T10:00:00", "updated": "2026-09-01T10:00:00"}]}
+    with open(v1_path, "wb") as fh:
+        fh.write(yc._encrypt_data(json.dumps(legacy).encode("utf-8")))
+    migrated = yc.VaultStore(path=v1_path)
+    check("vault: v1 data migrated",
+          migrated.count() == 1
+          and migrated.entries()[0]["name"] == "老名字"
+          and "旧密码" in migrated.entries()[0]["content"]
+          and "老备注" in migrated.entries()[0]["content"]
+          and migrated.entries()[0]["type"] == "text")
 
     # ---- 导入合并语义（v3.2.9）：合并而不是覆盖 + 完全重复只留一条 + 时间倒序 ----
     ms = yc.ClipboardStore(path=os.path.join(tmp, "merge_semantics.json"))
@@ -794,53 +848,75 @@ def test_gui():
     for _ in range(6):
         app.processEvents()
     check("vaultui: empty list", vwin._table.rowCount() == 0)
-    vwin.vault.add("Wi-Fi", "home", "wifi-pass")
+    check("vaultui: has five kind chips",
+          sorted(vwin._kind_btns.keys()) ==
+          ["all", "file", "image", "text", "url"])
+    win.vault.add_text("wifi-pass-8899", name="Wi-Fi")
+    win.vault.add_text("https://example.com/vault")
     vwin._reload()
-    check("vaultui: lists entry",
-          vwin._table.rowCount() == 1
-          and vwin._table.item(0, 0).text() == "Wi-Fi")
+    titles = [vwin._table.item(i, 0).text()
+              for i in range(vwin._table.rowCount())]
+    check("vaultui: lists all kinds", vwin._table.rowCount() == 2, str(titles))
+    check("vaultui: custom name shown", "Wi-Fi" in titles)
+    check("vaultui: no name falls back to content",
+          any(t.startswith("https://example.com/vault") for t in titles),
+          str(titles))
+    vwin._set_kind("text")
+    app.processEvents()
+    check("vaultui: kind chip filters text", vwin._table.rowCount() == 1)
+    vwin._set_kind("url")
+    app.processEvents()
+    check("vaultui: kind chip filters url", vwin._table.rowCount() == 1)
+    vwin._set_kind("image")
+    app.processEvents()
+    check("vaultui: empty kind shows nothing", vwin._table.rowCount() == 0)
+    vwin._set_kind("all")
+    app.processEvents()
     vwin._table.selectRow(0)
     app.processEvents()
-    check("vaultui: action buttons enabled", vwin._copy_secret_btn.isEnabled())
+    check("vaultui: action buttons enabled", vwin._copy_btn.isEnabled())
     store._self_copy_time = 0.0
-    vwin._copy_field("secret", "vault_copied_secret")
+    vwin._copy_entry()
     check("vaultui: copy marks self-copy (stays out of history)",
           store.is_self_copy())
+    check("vaultui: no focus frame delegate",
+          isinstance(vwin._table.itemDelegate(), yq._NoFocusDelegate))
     vwin._search.setText("找不到的关键词")
     app.processEvents()
     check("vaultui: search filters", vwin._table.rowCount() == 0)
     vwin._search.clear()
     app.processEvents()
-    check("vaultui: search clears", vwin._table.rowCount() == 1)
+    check("vaultui: search clears", vwin._table.rowCount() == 2)
     vwin.close()
+
+    # 弹层：名称可选；空内容不许保存；名称框回车 = 保存
     ved = yq._VaultEntryDialog(win, None)
     ved.accept()
     check("vaultui: empty entry rejected",
           ved.result() != 1 and bool(ved._hint.text()))
-    ved._title_edit.setText("Steam")
-    ved._secret_edit.setText("pw")
-    ved._hide_checked = ved._show_btn.isChecked()
-    ved._show_btn.setChecked(True)
-    check("vaultui: show/hide toggles echo",
-          ved._secret_edit.echoMode() == yq.QLineEdit.EchoMode.Normal)
-    ved._show_btn.setChecked(False)
+    ved._content_edit.setPlainText("Steam 密码 Steam!2345")
     ved.accept()
-    check("vaultui: filled entry accepted",
-          ved.result() == 1 and ved.values()["title"] == "Steam")
+    check("vaultui: content without name accepted",
+          ved.result() == 1 and not ved.values()["name"]
+          and "Steam" in ved.values()["content"])
+    ved2 = yq._VaultEntryDialog(win, None)
+    ved2._content_edit.setPlainText("abcdef")
+    ved2._name_edit.setText("甲乙")
+    check("vaultui: optional name captured", ved2.values()["name"] == "甲乙")
 
     # 3.3.1 修补：弹层里的回车语义（输入框按回车不能变成"取消"，否则内容像消失了）
     from PyQt6.QtTest import QTest as _QTest
     enter_dlg = yq._VaultEntryDialog(win, None)
     enter_dlg.show()
     app.processEvents()
-    enter_dlg._title_edit.setText("回车保存")
-    enter_dlg._title_edit.setFocus()
+    enter_dlg._content_edit.setPlainText("回车保存")
+    enter_dlg._name_edit.setFocus()
     app.processEvents()
-    _QTest.keyClick(enter_dlg._title_edit, yq.Qt.Key.Key_Return)
+    _QTest.keyClick(enter_dlg._name_edit, yq.Qt.Key.Key_Return)
     app.processEvents()
     check("vaultui: Enter in field saves",
           enter_dlg.result() == 1
-          and enter_dlg.values()["title"] == "回车保存",
+          and enter_dlg.values()["content"] == "回车保存",
           "result=%s visible=%s" % (enter_dlg.result(), enter_dlg.isVisible()))
     tag_enter = yq._TagsDialog(win, win, [], [], mode="edit", count=1)
     tag_enter.show()
@@ -895,16 +971,31 @@ def test_gui():
     yq._RoundMenu = _MenuSpy
     try:
         win._on_right_click("text", yq.QPoint(12, 12))
+        text_menu = list(captured)
+        captured.clear()
+        win._tabs.setCurrentIndex(yq.TAB_TYPES.index("image"))
+        app.processEvents()
+        win._refresh_tab("image")
+        image_tbl = win._tables["image"]
+        check("vault: image rows exist for right-click",
+              image_tbl.rowCount() >= 1)
+        image_tbl.selectRow(0)
+        app.processEvents()
+        win._on_right_click("image", yq.QPoint(12, 12))
+        image_menu = list(captured)
     finally:
         yq._RoundMenu = _real_menu_cls
     check("vault: right-click offers add-to-vault",
-          yq.tr("m_vault_add") in captured,
-          str([c for c in captured if c != "---"][:6]))
+          yq.tr("m_vault_add") in text_menu
+          and yq.tr("m_vault_add") in image_menu,
+          "text=%s image=%s" % (yq.tr("m_vault_add") in text_menu,
+                                yq.tr("m_vault_add") in image_menu))
 
     seen_prefill = {}
 
     class _StubVaultEntry:
         def __init__(self, owner, app, entry=None):
+            seen_prefill.clear()
             seen_prefill.update(entry or {})
             self._vals = dict(entry or {})
 
@@ -912,20 +1003,60 @@ def test_gui():
             return 1
 
         def values(self):
-            return dict(self._vals)
+            vals = dict(self._vals)
+            vals.setdefault("kind", vals.get("type", "text"))
+            vals.setdefault("paths", list(vals.get("paths") or []))
+            vals.setdefault("content", vals.get("content", ""))
+            vals.setdefault("image_src", vals.get("image_src", ""))
+            vals.setdefault("image", vals.get("image", ""))
+            vals.setdefault("name", vals.get("name", ""))
+            return vals
 
     _real_entry_cls = yq._VaultEntryDialog
     _vault_before = win.vault.count()
     yq._VaultEntryDialog = _StubVaultEntry
     try:
-        win._add_selected_to_vault()
+        win._tabs.setCurrentIndex(yq.TAB_TYPES.index("text"))
+        app.processEvents()
+        win._refresh_tab("text")
+        win._tables["text"].selectRow(0)
+        app.processEvents()
+        win._add_selected_to_vault()          # 文本
+        text_prefill = dict(seen_prefill)
+        win._tabs.setCurrentIndex(yq.TAB_TYPES.index("image"))
+        app.processEvents()
+        win._refresh_tab("image")
+        win._tables["image"].selectRow(0)
+        app.processEvents()
+        win._add_selected_to_vault()          # 图片
+        image_prefill = dict(seen_prefill)
+        win._tabs.setCurrentIndex(yq.TAB_TYPES.index("file"))
+        app.processEvents()
+        win._refresh_tab("file")
+        if win._tables["file"].rowCount() > 0:
+            win._tables["file"].selectRow(0)
+            app.processEvents()
+            win._add_selected_to_vault()      # 文件
+            file_prefill = dict(seen_prefill)
+        else:
+            file_prefill = {}
     finally:
         yq._VaultEntryDialog = _real_entry_cls
-    check("vault: add-from-history prefills the content",
-          bool(seen_prefill.get("secret") or seen_prefill.get("url")),
-          str(sorted(seen_prefill.keys())))
-    check("vault: add-from-history stores entry",
-          win.vault.count() == _vault_before + 1)
+    check("vault: add-from-history prefills text",
+          bool(text_prefill.get("content")), str(sorted(text_prefill.keys())))
+    check("vault: add-from-history prefills image source",
+          image_prefill.get("type") == "image"
+          and bool(image_prefill.get("image_src")),
+          str(sorted(image_prefill.keys())))
+    check("vault: add-from-history prefills file paths",
+          (not file_prefill) or (file_prefill.get("type") == "file"
+                                 and bool(file_prefill.get("paths"))),
+          str(sorted(file_prefill.keys())))
+    kinds_now = win.vault.counts()
+    check("vault: history add stores entries",
+          win.vault.count() > _vault_before)
+    check("vault: image from history lands in vault",
+          kinds_now.get("image", 0) >= 1, str(kinds_now))
     check("vault: history untouched by vault add",
           len(store.get_by_type("text")) >= 1)
 
@@ -1492,12 +1623,179 @@ def test_gui():
             pass
 
 
+def test_updater():
+    """更新包的完整性防线。
+
+    背景（用户真实事故）：旧下载器先把文件按总大小填成零字节，只要有一段分片
+    失败也当成功；替换脚本又是"先删旧主程序再改名顶上"，于是一次失败的更新
+    就把主程序变成了 87% 零字节、打不开的文件，且无法回滚。
+    """
+    tmp = tempfile.mkdtemp(prefix="yb_upd_")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if os.path.abspath(SRC) not in [os.path.abspath(p) for p in sys.path]:
+        sys.path.insert(0, SRC)
+    import youboard_qt as yq
+
+    MAGIC = b"MEI\x0c\x0b\x0a\x0b\x0e"
+
+    def build_ok(path, size=5 * 1024 * 1024):
+        data = bytearray(size)
+        data[0:2] = b"MZ"
+        data[0x3C:0x40] = (0x80).to_bytes(4, "little")
+        data[0x80:0x84] = b"PE\x00\x00"
+        data[-88:-80] = MAGIC
+        with open(path, "wb") as fh:
+            fh.write(bytes(data))
+
+    good = os.path.join(tmp, "good.exe")
+    build_ok(good)
+    ok, why = yq.verify_update_file(good)
+    check("updater: well-formed package accepted", ok, why)
+
+    zero = os.path.join(tmp, "zero.exe")
+    with open(zero, "wb") as fh:
+        fh.write(bytes(10 * 1024 * 1024))
+    check("updater: all-zero package rejected",
+          not yq.verify_update_file(zero)[0])
+
+    part = os.path.join(tmp, "part.exe")
+    with open(good, "rb") as src_fh:
+        head_bytes = src_fh.read(2 * 1024 * 1024)
+    with open(part, "wb") as fh:
+        fh.write(head_bytes)
+    check("updater: truncated package rejected",
+          not yq.verify_update_file(part)[0])
+
+    check("updater: size mismatch rejected",
+          not yq.verify_update_file(good, expected_size=123)[0])
+    digest = yq.sha256_file(good)
+    check("updater: sha256 mismatch rejected",
+          not yq.verify_update_file(good, expected_sha256="0" * 64)[0])
+    check("updater: sha256 match accepted",
+          yq.verify_update_file(good, expected_sha256=digest)[0])
+
+    noarc = os.path.join(tmp, "noarc.exe")
+    with open(good, "rb") as fh:
+        blob = bytearray(fh.read())
+    blob[-88:-80] = b"XXXXXXXX"
+    with open(noarc, "wb") as fh:
+        fh.write(bytes(blob))
+    check("updater: missing archive marker rejected",
+          not yq.verify_update_file(noarc)[0])
+
+    check("updater: coverage complete",
+          yq._coverage_complete([(0, 99), (100, 199)], 200))
+    check("updater: coverage gap detected",
+          not yq._coverage_complete([(0, 99), (150, 199)], 200))
+    check("updater: coverage tail missing",
+          not yq._coverage_complete([(0, 99)], 200))
+
+    qt_src = open(os.path.join(SRC, "youboard_qt.py"), encoding="utf-8").read()
+    check("updater: old delete-first loop is gone", ":del_loop" not in qt_src)
+    check("updater: script backs up before replacing",
+          'move /y "%_YB_APP%" "%_YB_BAK%"' in qt_src)
+    check("updater: script verifies installed file",
+          "certutil -hashfile" in qt_src and "_YB_HASH" in qt_src)
+    check("updater: script can roll back",
+          ":_yb_rollback" in qt_src
+          and 'move /y "%_YB_BAK%" "%_YB_APP%"' in qt_src)
+    check("updater: segments must cover the whole file",
+          "_coverage_complete" in qt_src and "self._covered" in qt_src)
+    check("updater: range response enforced",
+          "服务器未按分片返回" in qt_src)
+
+    # ---- 端到端：真的跑一遍分片下载（本地 HTTP 服务），断网式残缺必须被拦下 ----
+    import http.server
+    import socketserver
+    import threading as _threading
+
+    payload = open(good, "rb").read()
+
+    class _RangeHandler(http.server.BaseHTTPRequestHandler):
+        truncate = False          # True = 每个分片只回一半（模拟下载残缺）
+
+        def log_message(self, *a):
+            pass
+
+        def _headers(self, code, length, extra=None):
+            self.send_response(code)
+            self.send_header("Content-Length", str(length))
+            self.send_header("Accept-Ranges", "bytes")
+            for k, v in (extra or []):
+                self.send_header(k, v)
+            self.end_headers()
+
+        def do_HEAD(self):
+            self._headers(200, len(payload))
+
+        def do_GET(self):
+            rng = self.headers.get("Range")
+            if not rng:
+                self._headers(200, len(payload))
+                self.wfile.write(payload)
+                return
+            start_s, end_s = rng.split("=", 1)[1].split("-")
+            start, end = int(start_s), int(end_s)
+            chunk = payload[start:end + 1]
+            if self.truncate:
+                chunk = chunk[:max(1, len(chunk) // 2)]
+            self._headers(206, len(chunk),
+                          [("Content-Range",
+                            "bytes %d-%d/%d" % (start, end, len(payload)))])
+            self.wfile.write(chunk)
+
+    def _serve(cls):
+        srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), cls)
+        srv.daemon_threads = True
+        _threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv
+
+    srv = _serve(_RangeHandler)
+    try:
+        url = "http://127.0.0.1:%d/YouBoard.exe" % srv.server_address[1]
+        dest = os.path.join(tmp, "dl_ok.exe")
+        got = []
+        worker = yq._DownloadWorker([url], dest)
+        worker.finished_ok.connect(lambda p, h: got.append(("ok", p, h)))
+        worker.failed.connect(lambda e: got.append(("fail", e, "")))
+        worker.run()                       # 同步跑一遍（不依赖事件循环）
+        check("updater: real segmented download accepted",
+              bool(got) and got[0][0] == "ok"
+              and got[0][2] == yq.sha256_file(good),
+              str(got[:1]))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    class _TruncatingHandler(_RangeHandler):
+        truncate = True
+
+    srv = _serve(_TruncatingHandler)
+    try:
+        url = "http://127.0.0.1:%d/YouBoard.exe" % srv.server_address[1]
+        dest2 = os.path.join(tmp, "dl_bad.exe")
+        got2 = []
+        worker2 = yq._DownloadWorker([url], dest2)
+        worker2.finished_ok.connect(lambda p, h: got2.append(("ok", p, h)))
+        worker2.failed.connect(lambda e: got2.append(("fail", e, "")))
+        worker2.run()
+        check("updater: partial download rejected",
+              bool(got2) and got2[0][0] == "fail"
+              and not os.path.exists(dest2),
+              str(got2[:1]))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def main():
     print("== syntax ==")
     test_syntax()
     if FAIL:            # 语法都没过，后面的用例不用跑了
         print("RESULT=FAILED:" + ",".join(FAIL))
         return 1
+    print("== updater ==")
+    test_updater()
     print("== core ==")
     test_core()
     print("== phone ==")
