@@ -1165,13 +1165,23 @@ def test_gui():
     ]
     for _name, _dlg in window_probes:
         _dlg.show()
-        for _ in range(8):
+        for _ in range(12):
             app.processEvents()
+            time.sleep(0.02)      # 让"布局稳定后再贴合一次"的定时器有机会跑
         check("window is card-sized: " + _name,
               _dlg.width() < win.width() and _dlg.height() < win.height()
               and _dlg.width() <= 900,
               "%dx%d（主窗口 %dx%d）" % (_dlg.width(), _dlg.height(),
                                          win.width(), win.height()))
+        # 窗口必须正好贴合卡片（不留透明边距），否则"按窗口矩形截图"会把周围的界面带进来
+        _card = getattr(_dlg, "card", None) or getattr(_dlg, "_card", None)
+        check("window hugs the card: " + _name,
+              _card is not None
+              and abs(_dlg.width() - _card.width()) <= 4
+              and abs(_dlg.height() - _card.height()) <= 4,
+              "窗口 %dx%d / 卡片 %s" % (
+                  _dlg.width(), _dlg.height(),
+                  ("%dx%d" % (_card.width(), _card.height())) if _card else "无"))
         try:
             _dlg.reject()
         except Exception:

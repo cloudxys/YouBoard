@@ -3207,14 +3207,16 @@ class _UpdateDialog(QDialog):
         self.resize(900, 700)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 24, 24, 24)
-        outer.addStretch(1)
+        # 窗口正好等于卡片大小（不留外边距）：截图工具按窗口矩形截出来的就是卡片本身，
+        # 不会把卡片后面/周围的界面一起带进来（用户反馈"截图太大了"）。
+        outer.setContentsMargins(0, 0, 0, 0)
         card = QFrame()
         card.setObjectName("updateCard")
         card.setFixedWidth(600)
         self._card = card
-        outer.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
-        outer.addStretch(1)
+        # 不加对齐标志：卡片直接铺满窗口（窗口尺寸就是照它算的），
+        # 这样"窗口矩形"和"卡片"永远严丝合缝，截图不带周围界面
+        outer.addWidget(card)
 
         lay = QVBoxLayout(card)
         lay.setContentsMargins(30, 26, 30, 22)
@@ -3425,6 +3427,8 @@ class _UpdateDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         QTimer.singleShot(0, self._sync_to_host)
+        # 内容布局稳定后再贴合一次（有些卡片会先隐藏/显示几行，sizeHint 会晚一拍）
+        QTimer.singleShot(80, self._sync_to_host)
 
     def _sync_to_host(self):
         """窗口只包住更新卡片本身（与其它卡片弹层一致）。
@@ -3450,8 +3454,9 @@ class _UpdateDialog(QDialog):
             w, h = hint.width(), hint.height()
         except Exception:
             w, h = 600, 560
-        w = max(648, w + 48)
-        h = max(300, h + 48)
+        # 窗口尺寸 = 卡片尺寸（同其它卡片弹层）：截图工具按窗口矩形截出来就是卡片本身
+        w = max(600, w)
+        h = max(280, h)
         if avail is not None:
             w = min(w, max(360, avail.width() - 40))
             h = min(h, max(320, avail.height() - 40))
@@ -3468,8 +3473,8 @@ class _UpdateDialog(QDialog):
             y = max(avail.y(), min(y, avail.y() + avail.height() - h))
         try:
             self.setGeometry(int(x), int(y), int(w), int(h))
-            self._card.setMaximumHeight(max(240, int(h) - 48))
-            self._notes.setMaximumHeight(max(120, int(h) - 300))
+            self._card.setMaximumHeight(max(240, int(h)))
+            self._notes.setMaximumHeight(max(120, int(h) - 260))
         except Exception:
             pass
 
@@ -3607,7 +3612,7 @@ class _CardOverlayDialog(QDialog):
     以后要调风格只改这一处。
     """
 
-    CARD_WIDTH = 620
+    CARD_WIDTH = 520
 
     def __init__(self, owner, app, icon_glyph, title_text, subtitle_text=""):
         super().__init__(owner)
@@ -3620,28 +3625,28 @@ class _CardOverlayDialog(QDialog):
         # 同 _UpdateDialog：窗口级模态，别把桌面小组件一起禁掉
         self.setModal(True)
         self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.resize(900, 700)
+        self.resize(700, 560)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(24, 24, 24, 24)
-        outer.addStretch(1)
+        # 窗口正好等于卡片大小（同更新卡片）：截图工具按窗口矩形截出来就是卡片本身
+        outer.setContentsMargins(0, 0, 0, 0)
         card = QFrame()
         card.setObjectName("retCard")
         card.setFixedWidth(self.CARD_WIDTH)
-        outer.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
-        outer.addStretch(1)
+        # 同更新卡片：卡片铺满窗口，窗口矩形=卡片
+        outer.addWidget(card)
         self.card = card
 
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(30, 24, 30, 22)
-        lay.setSpacing(11)
+        lay.setContentsMargins(22, 16, 22, 14)
+        lay.setSpacing(8)
         self._lay = lay
 
         icon_row = QHBoxLayout()
         icon_row.addStretch()
         icon = QLabel(icon_glyph)
         icon.setObjectName("retIcon")
-        icon.setFixedSize(72, 72)
+        icon.setFixedSize(56, 56)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         icon_row.addWidget(icon)
         icon_row.addStretch()
@@ -3667,8 +3672,8 @@ class _CardOverlayDialog(QDialog):
                 font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; }}
             QLabel#retIcon {{ background-color: {C['SURFACE2']};
                 border: 1px solid {C['BORDER']};
-                border-radius: 36px; color: {C['TEXT']}; font-size: 31px; }}
-            QLabel#retTitle {{ color: {C['TEXT']}; font-size: 20px; font-weight: 700; }}
+                border-radius: 28px; color: {C['TEXT']}; font-size: 24px; }}
+            QLabel#retTitle {{ color: {C['TEXT']}; font-size: 17px; font-weight: 700; }}
             QLabel#retSub, QLabel#retNote {{ color: {C['TEXT_SEC']}; font-size: 12px; }}
             QPushButton {{ background-color: {C['SURFACE2']}; color: {C['TEXT_SEC']};
                 border: 1px solid transparent; border-radius: 8px;
@@ -3711,6 +3716,8 @@ class _CardOverlayDialog(QDialog):
     def showEvent(self, event):
         super().showEvent(event)
         QTimer.singleShot(0, self._sync_to_host)
+        # 内容布局稳定后再贴合一次（有些卡片会先隐藏/显示几行，sizeHint 会晚一拍）
+        QTimer.singleShot(80, self._sync_to_host)
 
     def _sync_to_host(self):
         """把卡片弹层定位到宿主中央——窗口只包住卡片本身，不铺满宿主。
@@ -3732,12 +3739,19 @@ class _CardOverlayDialog(QDialog):
         except Exception:
             avail = None
         try:
+            lay = self.card.layout()
+            if lay is not None:
+                # 先让布局按当前内容（含"隐藏某几行"的状态）算一次，避免用到滞后一拍的缓存值
+                lay.invalidate()
+                lay.activate()
             hint = self.card.sizeHint()
             w, h = hint.width(), hint.height()
         except Exception:
-            w, h = self.CARD_WIDTH, 420
-        w = max(self.CARD_WIDTH, w) + 48          # 卡片四周留一圈透明边（当阴影用）
-        h = max(200, h) + 48
+            w, h = self.CARD_WIDTH, 360
+        # 窗口尺寸 = 卡片尺寸（一点不富余）：截图工具按窗口矩形截出来就是卡片本身，
+        # 不会再把卡片周围的界面一起带进来
+        w = max(self.CARD_WIDTH, w)
+        h = max(160, h)
         if avail is not None:
             w = min(w, max(320, avail.width() - 40))
             h = min(h, max(240, avail.height() - 40))
@@ -3757,9 +3771,8 @@ class _CardOverlayDialog(QDialog):
             self.setGeometry(int(x), int(y), int(w), int(h))
         except Exception:
             pass
-        # 窗口小了以后，窗口底不能再画那层"全屏压暗"，否则会在卡片四周留一圈黑边
         try:
-            self.card.setMaximumHeight(int(h) - 48)
+            self.card.setMaximumHeight(int(h))
         except Exception:
             pass
         try:
