@@ -9754,24 +9754,36 @@ class YouBoardApp(QMainWindow):
         if not IS_WIN:
             return
         try:
-            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            # 必须声明原型：不声明时 ctypes 会把句柄当 32 位 int（伪句柄 -1 被截断），
+            # 参数也会按 int 转换从而抛 OverflowError——之前就是这样被静默吞掉的。
+            k32 = ctypes.windll.kernel32
+            k32.GetCurrentProcess.restype = ctypes.c_void_p
+            k32.SetProcessWorkingSetSize.argtypes = [ctypes.c_void_p,
+                                                     ctypes.c_size_t,
+                                                     ctypes.c_size_t]
+            k32.SetProcessWorkingSetSize.restype = ctypes.c_int
+            handle = k32.GetCurrentProcess()
             # (-1, -1) = 让系统按需把工作集尽量收回去
-            ctypes.windll.kernel32.SetProcessWorkingSetSize(
-                handle, ctypes.c_size_t(-1).value, ctypes.c_size_t(-1).value)
+            k32.SetProcessWorkingSetSize(handle, ctypes.c_size_t(-1),
+                                         ctypes.c_size_t(-1))
             try:
-                ctypes.windll.psapi.EmptyWorkingSet(handle)
+                psapi = ctypes.windll.psapi
+                psapi.EmptyWorkingSet.argtypes = [ctypes.c_void_p]
+                psapi.EmptyWorkingSet.restype = ctypes.c_int
+                psapi.EmptyWorkingSet(handle)
             except Exception:
                 pass
         except Exception:
             pass
 
     def _memory_tick(self):
-        """每分钟检查：后台静默（窗口隐藏/最小化）或空闲超过 2 分钟就回收一次。"""
+        """定期回收工作集（30 秒一次，运行中也回收）。
+
+        实测：启动后专用工作集约 130MB，回收一次就掉到 6~8MB，而且不会很快涨回去。
+        回收只是把页移到系统 standby 列表，用到时软缺页回来，代价极小。
+        """
         try:
-            hidden = (not self.isVisible()) or self.isMinimized()
-            idle = (time.time() - getattr(self, "_last_input", 0)) > 120
-            if hidden or idle:
-                self._trim_memory()
+            self._trim_memory()
         except Exception:
             pass
 
@@ -10267,14 +10279,17 @@ class YouBoardApp(QMainWindow):
         QTimer.singleShot(1200, self._check_update_leftover)
         # 内存占用：启动稳定后回收一次；之后每分钟检查——后台静默 / 长时间空闲时
         # 再把工作集还给系统（任务管理器里显示的就是这个数）
-        QTimer.singleShot(8000, self._trim_memory)
+        # 启动阶段先按 6 / 12 / 20 秒各回收一次（加载完那 100 多 MB 很快就降下来），
+        # 之后交给 30 秒的常规定时器
+        for _delay in (6000, 12000, 20000):
+            QTimer.singleShot(_delay, self._trim_memory)
         self._last_input = time.time()
         _app_inst2 = QApplication.instance()
         if _app_inst2 is not None:
             _app_inst2.installEventFilter(self)
         self._mem_timer = QTimer(self)
         self._mem_timer.timeout.connect(self._memory_tick)
-        self._mem_timer.start(60000)
+        self._mem_timer.start(30000)
         # Add native resize borders to frameless window (WS_THICKFRAME)
         try:
             import ctypes

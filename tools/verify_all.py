@@ -1464,15 +1464,15 @@ def test_gui():
     win._trim_memory = lambda: _trim_calls.append(1)
     try:
         win._last_input = time.time()
-        win._memory_tick()                     # 窗口可见 + 刚有操作 → 不该回收
-        check("memory: no trim while in use", not _trim_calls)
+        win._memory_tick()                     # 运行中也回收（用户要求运行中也要低占用）
+        check("memory: trim while running", len(_trim_calls) == 1)
         win.hide()
-        win._memory_tick()                     # 收进托盘 → 立刻回收
-        check("memory: trim when hidden", len(_trim_calls) == 1)
+        win._memory_tick()                     # 后台静默同样回收
+        check("memory: trim when hidden", len(_trim_calls) == 2)
         win.show()
-        win._last_input = time.time() - 300    # 空闲 5 分钟 → 也回收
+        win._last_input = time.time() - 300
         win._memory_tick()
-        check("memory: trim when idle", len(_trim_calls) == 2)
+        check("memory: trim when idle", len(_trim_calls) == 3)
     finally:
         win._trim_memory = _real_trim
     _mk = yq.IS_WIN and hasattr(yq.ctypes.windll, "psapi")
