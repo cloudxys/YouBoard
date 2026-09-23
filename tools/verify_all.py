@@ -1438,6 +1438,25 @@ def test_gui():
     _grow.reject()
     _grow.close()
 
+    # 内容一变就要"立刻"贴合：不能等 300ms 兜底定时器，否则会先闪一下被挤扁的样子
+    _instant = yq._RetentionDialog(win, win, {"mode": "forever"})
+    _instant.show()
+    for _ in range(10):
+        app.processEvents()
+        time.sleep(0.02)
+    _instant._pick("expire")
+    for _ in range(4):            # 只跑几拍，不给兜底定时器任何机会
+        app.processEvents()
+    check("card refits immediately on content change",
+          abs(_instant.width() - _instant.card.width()) <= 4
+          and abs(_instant.height() - _instant.card.height()) <= 4
+          and _instant.height() > 275,
+          "window %dx%d / 卡片 %dx%d" % (
+              _instant.width(), _instant.height(),
+              _instant.card.width(), _instant.card.height()))
+    _instant.reject()
+    _instant.close()
+
     # ---- 本机桥：开关立即生效；启动失败要说出原因（扩展"连不上"的根因） ----
     st0 = win.bridge_status()
     check("bridge: starts stopped", not st0.get("running"), str(st0))

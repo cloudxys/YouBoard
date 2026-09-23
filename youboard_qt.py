@@ -3528,6 +3528,10 @@ class _UpdateDialog(QDialog):
     def eventFilter(self, obj, event):
         if obj is self._card:
             et = event.type()
+            if et == QEvent.Type.LayoutRequest:
+                # 内容一变就立刻跟随（别等兜底定时器，否则会先闪一下被挤扁的样子）
+                QTimer.singleShot(0, self._fit_window)
+                return False
             if (et == QEvent.Type.MouseButtonPress
                     and event.button() == Qt.MouseButton.LeftButton):
                 self._drag_off = (event.globalPosition().toPoint()
@@ -3891,6 +3895,11 @@ class _CardOverlayDialog(QDialog):
     def eventFilter(self, obj, event):
         if obj is self.card:
             et = event.type()
+            if et == QEvent.Type.LayoutRequest:
+                # 卡片内容一变（比如点「自定义」多出一行）就立刻把窗口跟上，
+                # 不能等那个 300ms 的兜底定时器——否则会先闪一下被挤扁的样子
+                QTimer.singleShot(0, self._fit_window)
+                return False
             if (et == QEvent.Type.MouseButtonPress
                     and event.button() == Qt.MouseButton.LeftButton):
                 self._drag_off = (event.globalPosition().toPoint()
