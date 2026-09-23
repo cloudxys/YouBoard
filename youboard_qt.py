@@ -7268,7 +7268,13 @@ class YouBoardApp(QMainWindow):
             w.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        if event.type() in (QEvent.Type.MouseMove, QEvent.Type.HoverMove,
+        et = event.type()
+        # 记录"最后一次用户操作"：空闲久了再回收工作集，不影响正在用的手感
+        if et in (QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress,
+                  QEvent.Type.Wheel, QEvent.Type.MouseMove,
+                  QEvent.Type.TouchBegin):
+            self._last_input = time.time()
+        if et in (QEvent.Type.MouseMove, QEvent.Type.HoverMove,
                             QEvent.Type.Enter, QEvent.Type.Leave):
             self._apply_edge_cursor(self.mapFromGlobal(QCursor.pos()))
         return super().eventFilter(obj, event)
@@ -9735,6 +9741,40 @@ class YouBoardApp(QMainWindow):
         except Exception:
             return False
 
+    def _trim_memory(self):
+        """把可回收的页还给系统（任务管理器里的"内存"就是这个数）。
+
+        页面只是移到系统的 standby 列表，需要时会立刻映射回来——所以后台静默 /
+        长时间空闲时回收，既不卡操作，又能把常驻占用压到几 MB。
+        """
+        try:
+            gc.collect()
+        except Exception:
+            pass
+        if not IS_WIN:
+            return
+        try:
+            handle = ctypes.windll.kernel32.GetCurrentProcess()
+            # (-1, -1) = 让系统按需把工作集尽量收回去
+            ctypes.windll.kernel32.SetProcessWorkingSetSize(
+                handle, ctypes.c_size_t(-1).value, ctypes.c_size_t(-1).value)
+            try:
+                ctypes.windll.psapi.EmptyWorkingSet(handle)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _memory_tick(self):
+        """每分钟检查：后台静默（窗口隐藏/最小化）或空闲超过 2 分钟就回收一次。"""
+        try:
+            hidden = (not self.isVisible()) or self.isMinimized()
+            idle = (time.time() - getattr(self, "_last_input", 0)) > 120
+            if hidden or idle:
+                self._trim_memory()
+        except Exception:
+            pass
+
     def _hide_to_tray(self):
         """收进托盘：保存几何 / 落盘，隐藏窗口；桌面小组件照常留着。"""
         self._save_window_geometry()
@@ -9743,6 +9783,9 @@ class YouBoardApp(QMainWindow):
         except Exception:
             pass
         self.hide()
+        # 收进托盘后（后台静默状态）把工作集还给系统：任务管理器里的占用能降到几 MB，
+        # 页面只是移到 standby 列表，重新打开窗口时会立即映射回来，不会变慢。
+        QTimer.singleShot(2500, self._trim_memory)
         tray = getattr(self, "_tray", None)
         if tray is not None:
             try:
@@ -10222,6 +10265,16 @@ class YouBoardApp(QMainWindow):
         QTimer.singleShot(3000, self._enable_state_autosave)
         # 更新后的收尾（删备份 / 提示上次自动回滚）
         QTimer.singleShot(1200, self._check_update_leftover)
+        # 内存占用：启动稳定后回收一次；之后每分钟检查——后台静默 / 长时间空闲时
+        # 再把工作集还给系统（任务管理器里显示的就是这个数）
+        QTimer.singleShot(8000, self._trim_memory)
+        self._last_input = time.time()
+        _app_inst2 = QApplication.instance()
+        if _app_inst2 is not None:
+            _app_inst2.installEventFilter(self)
+        self._mem_timer = QTimer(self)
+        self._mem_timer.timeout.connect(self._memory_tick)
+        self._mem_timer.start(60000)
         # Add native resize borders to frameless window (WS_THICKFRAME)
         try:
             import ctypes

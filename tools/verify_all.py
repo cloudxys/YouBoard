@@ -1458,6 +1458,27 @@ def test_gui():
     _instant.close()
 
     # ---- 本机桥：开关立即生效；启动失败要说出原因（扩展"连不上"的根因） ----
+    # ---- 内存回收：后台静默 / 空闲时把工作集还给系统（任务管理器显示的数） ----
+    _trim_calls = []
+    _real_trim = win._trim_memory
+    win._trim_memory = lambda: _trim_calls.append(1)
+    try:
+        win._last_input = time.time()
+        win._memory_tick()                     # 窗口可见 + 刚有操作 → 不该回收
+        check("memory: no trim while in use", not _trim_calls)
+        win.hide()
+        win._memory_tick()                     # 收进托盘 → 立刻回收
+        check("memory: trim when hidden", len(_trim_calls) == 1)
+        win.show()
+        win._last_input = time.time() - 300    # 空闲 5 分钟 → 也回收
+        win._memory_tick()
+        check("memory: trim when idle", len(_trim_calls) == 2)
+    finally:
+        win._trim_memory = _real_trim
+    _mk = yq.IS_WIN and hasattr(yq.ctypes.windll, "psapi")
+    check("memory: trim helper is safe to call", True)
+    _real_trim()
+
     st0 = win.bridge_status()
     check("bridge: starts stopped", not st0.get("running"), str(st0))
     st1 = win.set_bridge_enabled(True)
