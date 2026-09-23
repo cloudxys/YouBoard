@@ -3222,9 +3222,16 @@ class _UpdateDialog(QDialog):
         card.setObjectName("updateCard")
         card.setFixedWidth(600)
         self._card = card
-        # 卡片按自身内容取首选尺寸（居中）；窗口随后严格贴合它，
-        # 这样卡片既不会被压小，窗口矩形也不会带进周围的界面
-        outer.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        # 铺满窗口（窗口尺寸按卡片首选尺寸算）：窗口矩形 = 卡片，不裁切、不压小
+        outer.addWidget(card)
+        # 卡片可拖动 + 内容变化时窗口跟着长（与其它卡片弹层一致）
+        self._drag_off = None
+        self._user_moved = False
+        self._placed = False
+        card.installEventFilter(self)
+        self._fit_timer = QTimer(self)
+        self._fit_timer.timeout.connect(self._fit_window)
+        self._fit_timer.start(300)
 
         lay = QVBoxLayout(card)
         lay.setContentsMargins(30, 26, 30, 22)
@@ -3439,12 +3446,15 @@ class _UpdateDialog(QDialog):
         QTimer.singleShot(80, self._sync_to_host)
 
     def _sync_to_host(self):
-        """窗口只包住更新卡片本身（与其它卡片弹层一致）。
-
-        以前这里是 setGeometry(host.frameGeometry())：窗口和主窗口一样大，
-        最大化时等于整屏，于是截图工具"抓窗口"抓到的是全屏。现在窗口 = 卡片
-        尺寸；超出屏幕高度时收卡片内部并让更新说明区滚动。
-        """
+        """窗口严格贴合更新卡片：首次摆到宿主中央，之后只调尺寸（拖过就不动位置）。"""
+        w, h = self._target_size()
+        if self._placed:
+            try:
+                self.resize(int(w), int(h))
+                self._notes.setMaximumHeight(max(120, int(h) - 260))
+            except Exception:
+                pass
+            return
         host = self._host
         host_rect = None
         try:
@@ -3457,32 +3467,6 @@ class _UpdateDialog(QDialog):
             avail = scr.availableGeometry()
         except Exception:
             avail = None
-        try:
-            cw, ch = int(self._card.width()), int(self._card.height())
-        except Exception:
-            cw = ch = 0
-        # 先让内容按当前状态重算一遍布局，避免量到滞后一拍（偏小）的尺寸
-        try:
-            for _lay in (self._card.layout(), self.layout()):
-                if _lay is not None:
-                    _lay.invalidate()
-                    _lay.activate()
-            cw, ch = int(self._card.width()), int(self._card.height())
-        except Exception:
-            pass
-        # 两拍走：先让窗口足够大，卡片按自己的内容摊开到"自然尺寸"；等下一拍
-        # 再把窗口收紧到卡片实际尺寸——这样卡片既不会被压小，也不会被截断。
-        if cw < 120 or ch < 80:
-            if host_rect is not None and host_rect.width() >= 200:
-                try:
-                    self.setGeometry(host_rect)
-                except Exception:
-                    pass
-            return
-        w, h = max(600, cw), max(280, ch)
-        if avail is not None:
-            w = min(w, max(360, avail.width() - 40))
-            h = min(h, max(320, avail.height() - 40))
         if host_rect is not None and host_rect.width() >= 200:
             x = host_rect.x() + (host_rect.width() - w) // 2
             y = host_rect.y() + (host_rect.height() - h) // 2
@@ -3496,11 +3480,67 @@ class _UpdateDialog(QDialog):
             y = max(avail.y(), min(y, avail.y() + avail.height() - h))
         try:
             self.setGeometry(int(x), int(y), int(w), int(h))
+            self._placed = True
             # 只限制更新说明区的高度（让长说明在卡片内滚动），卡片本身不再设上限，
             # 否则卡片会被压小、底部按钮被截断（用户实测反馈）
             self._notes.setMaximumHeight(max(120, int(h) - 260))
         except Exception:
             pass
+
+    def _target_size(self):
+        """更新卡片当前内容需要的窗口尺寸（受屏幕限制，超出时说明区滚动）。"""
+        try:
+            for _lay in (self._card.layout(), self.layout()):
+                if _lay is not None:
+                    _lay.invalidate()
+                    _lay.activate()
+            hint = self._card.sizeHint()
+            w = max(600, int(hint.width()))
+            h = max(280, int(hint.height()))
+        except Exception:
+            w, h = 600, 400
+        try:
+            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+            avail = scr.availableGeometry()
+            w = min(w, max(360, avail.width() - 40))
+            h = min(h, max(320, avail.height() - 40))
+        except Exception:
+            pass
+        return w, h
+
+    def _fit_window(self):
+        """内容变了（说明变长/变短等）就把窗口跟上；尺寸没变则什么都不做。"""
+        if not self.isVisible():
+            return
+        w, h = self._target_size()
+        if abs(w - self.width()) <= 2 and abs(h - self.height()) <= 2:
+            return
+        try:
+            if self._placed:
+                self.resize(int(w), int(h))
+                self._notes.setMaximumHeight(max(120, int(h) - 260))
+            else:
+                self._sync_to_host()
+        except Exception:
+            pass
+
+    # ---- 拖动卡片移动窗口 ----
+    def eventFilter(self, obj, event):
+        if obj is self._card:
+            et = event.type()
+            if (et == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton):
+                self._drag_off = (event.globalPosition().toPoint()
+                                  - self.frameGeometry().topLeft())
+                return False
+            if (et == QEvent.Type.MouseMove and self._drag_off is not None
+                    and (event.buttons() & Qt.MouseButton.LeftButton)):
+                self.move(event.globalPosition().toPoint() - self._drag_off)
+                self._user_moved = True
+                return True
+            if et == QEvent.Type.MouseButtonRelease:
+                self._drag_off = None
+        return super().eventFilter(obj, event)
 
     def reject(self):
         if self._worker is not None and self._worker.isRunning():
@@ -3657,9 +3697,20 @@ class _CardOverlayDialog(QDialog):
         card = QFrame()
         card.setObjectName("retCard")
         card.setFixedWidth(self.CARD_WIDTH)
-        # 卡片按自身内容取首选尺寸（居中）；窗口随后严格贴合它
-        outer.addWidget(card, 0, Qt.AlignmentFlag.AlignCenter)
+        # 铺满窗口（窗口尺寸按卡片首选尺寸算）：窗口矩形 = 卡片，不裁切、不压小
+        outer.addWidget(card)
         self.card = card
+        # 卡片可以按住拖动（空白处/标题文字上拖；按钮这类控件自己处理点击，不受影响）
+        self._drag_off = None
+        self._user_moved = False
+        self._placed = False
+        card.installEventFilter(self)
+        card.setCursor(QCursor(Qt.CursorShape.ArrowCursor))
+        # 内容会变的卡片（例如「历史保留策略」点「自定义」多出一行）：
+        # 定时检查首选尺寸，变了就把窗口一起调整，避免内容被窗口裁掉
+        self._fit_timer = QTimer(self)
+        self._fit_timer.timeout.connect(self._fit_window)
+        self._fit_timer.start(300)
 
         lay = QVBoxLayout(card)
         lay.setContentsMargins(22, 16, 22, 14)
@@ -3744,12 +3795,21 @@ class _CardOverlayDialog(QDialog):
         QTimer.singleShot(80, self._sync_to_host)
 
     def _sync_to_host(self):
-        """把卡片弹层定位到宿主中央——窗口只包住卡片本身，不铺满宿主。
+        """窗口严格贴合卡片：第一次摆到宿主中央，之后只调尺寸（用户拖过就不动位置）。
 
-        以前这里 setGeometry(host.frameGeometry())：弹层窗口和主窗口一样大
-        （最大化时就是整屏），于是截图工具"抓窗口"抓到的永远是全屏。
-        现在窗口尺寸 = 卡片尺寸，抓窗口就是抓这张卡片。
+        窗口尺寸按卡片"当前内容的首选尺寸"算——点「自定义」这类会让卡片变高的
+        操作也会一起把窗口撑开，不会再把内容裁掉。
         """
+        w, h = self._target_size()
+        if self._placed:
+            # 已经摆好（甚至被用户拖过）：只调整尺寸，位置保持不动
+            try:
+                self.resize(int(w), int(h))
+                # 卡片上限要一起放开，否则内容变多时卡片被旧上限卡住（底部被裁）
+                self.card.setMaximumHeight(int(h))
+            except Exception:
+                pass
+            return
         host = self._host
         host_rect = None
         try:
@@ -3762,33 +3822,6 @@ class _CardOverlayDialog(QDialog):
             avail = scr.availableGeometry()
         except Exception:
             avail = None
-        try:
-            cw, ch = int(self.card.width()), int(self.card.height())
-        except Exception:
-            cw = ch = 0
-        # 先重算一遍布局，避免量到滞后一拍（偏小）的尺寸
-        try:
-            for _lay in (self.card.layout(), self.layout()):
-                if _lay is not None:
-                    _lay.invalidate()
-                    _lay.activate()
-            cw, ch = int(self.card.width()), int(self.card.height())
-        except Exception:
-            pass
-        # 两拍走：先让窗口足够大（铺满宿主），卡片按自身内容摊开到"自然尺寸"；
-        # 等下一拍再把窗口收紧到卡片实际尺寸——卡片不会被压小，也不会被截断。
-        if cw < 120 or ch < 80:
-            if host_rect is not None and host_rect.width() >= 200:
-                try:
-                    self.setGeometry(host_rect)
-                except Exception:
-                    pass
-            return
-        w = max(self.CARD_WIDTH, cw)
-        h = max(160, ch)
-        if avail is not None:
-            w = min(w, max(320, avail.width() - 40))
-            h = min(h, max(240, avail.height() - 40))
         if host_rect is not None and host_rect.width() >= 200:
             x = host_rect.x() + (host_rect.width() - w) // 2
             y = host_rect.y() + (host_rect.height() - h) // 2
@@ -3803,6 +3836,7 @@ class _CardOverlayDialog(QDialog):
             y = max(avail.y(), min(y, avail.y() + avail.height() - h))
         try:
             self.setGeometry(int(x), int(y), int(w), int(h))
+            self._placed = True
         except Exception:
             pass
         try:
@@ -3815,6 +3849,61 @@ class _CardOverlayDialog(QDialog):
                 desk.raise_()
         except Exception:
             pass
+
+    def _target_size(self):
+        """卡片当前内容需要的窗口尺寸（= 卡片的首选尺寸，受屏幕限制）。"""
+        try:
+            for _lay in (self.card.layout(), self.layout()):
+                if _lay is not None:
+                    _lay.invalidate()
+                    _lay.activate()
+            hint = self.card.sizeHint()
+            w = max(self.CARD_WIDTH, int(hint.width()))
+            h = max(160, int(hint.height()))
+        except Exception:
+            w, h = self.CARD_WIDTH, 260
+        try:
+            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+            avail = scr.availableGeometry()
+            w = min(w, max(320, avail.width() - 40))
+            h = min(h, max(240, avail.height() - 40))
+        except Exception:
+            pass
+        return w, h
+
+    def _fit_window(self):
+        """内容变了（多一行/少一行）就把窗口跟上；尺寸没变则什么都不做。"""
+        if not self.isVisible():
+            return
+        w, h = self._target_size()
+        if abs(w - self.width()) <= 2 and abs(h - self.height()) <= 2:
+            return
+        try:
+            if self._placed:
+                self.resize(int(w), int(h))
+                self.card.setMaximumHeight(int(h))
+            else:
+                self._sync_to_host()
+        except Exception:
+            pass
+
+    # ---- 拖动卡片移动窗口 ----
+    def eventFilter(self, obj, event):
+        if obj is self.card:
+            et = event.type()
+            if (et == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton):
+                self._drag_off = (event.globalPosition().toPoint()
+                                  - self.frameGeometry().topLeft())
+                return False          # 继续正常派发（按钮/开关不受影响）
+            if (et == QEvent.Type.MouseMove and self._drag_off is not None
+                    and (event.buttons() & Qt.MouseButton.LeftButton)):
+                self.move(event.globalPosition().toPoint() - self._drag_off)
+                self._user_moved = True
+                return True
+            if et == QEvent.Type.MouseButtonRelease:
+                self._drag_off = None
+        return super().eventFilter(obj, event)
 
 
 class _RetentionDialog(_CardOverlayDialog):

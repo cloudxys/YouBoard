@@ -1366,6 +1366,78 @@ def test_gui():
             pass
         _dlg.close()
 
+    # 3.3.3：卡片要能按住拖动（所有卡片弹层一致），内容变多时窗口要跟着长
+    from PyQt6.QtGui import QMouseEvent as _QMouseEvent
+    from PyQt6.QtCore import QPointF as _QPointF, QPoint as _QPoint, \
+        QEvent as _QEvent, Qt as _Qt
+
+    def _drag_probe(dlg, card, name):
+        before = dlg.pos()
+        g0 = dlg.mapToGlobal(_QPoint(80, 30))
+        app.sendEvent(card, _QMouseEvent(
+            _QEvent.Type.MouseButtonPress, _QPointF(80, 30), _QPointF(g0),
+            _Qt.MouseButton.LeftButton, _Qt.MouseButton.LeftButton,
+            _Qt.KeyboardModifier.NoModifier))
+        g1 = g0 + _QPoint(64, 48)
+        app.sendEvent(card, _QMouseEvent(
+            _QEvent.Type.MouseMove, _QPointF(144, 78), _QPointF(g1),
+            _Qt.MouseButton.NoButton, _Qt.MouseButton.LeftButton,
+            _Qt.KeyboardModifier.NoModifier))
+        app.sendEvent(card, _QMouseEvent(
+            _QEvent.Type.MouseButtonRelease, _QPointF(144, 78), _QPointF(g1),
+            _Qt.MouseButton.LeftButton, _Qt.MouseButton.NoButton,
+            _Qt.KeyboardModifier.NoModifier))
+        moved = dlg.pos() - before
+        check("card can be dragged: " + name, moved == _QPoint(64, 48), str(moved))
+
+    _drag_targets = [
+        ("retention", yq._RetentionDialog(win, win, {"mode": "forever"})),
+        ("bridge", yq._BridgeDialog(win, win)),
+        ("tags", yq._TagsDialog(win, win, ["a"], ["a"], mode="edit", count=1)),
+        ("update status", yq._UpdateStatusDialog(win, win, yq.APP_VERSION)),
+        ("vault entry", yq._VaultEntryDialog(win, win)),
+    ]
+    for _name, _dlg in _drag_targets:
+        _dlg.show()
+        for _ in range(10):
+            app.processEvents()
+            time.sleep(0.02)
+        _card = getattr(_dlg, "card", None) or getattr(_dlg, "_card", None)
+        check("card exists: " + _name, _card is not None)
+        if _card is not None:
+            _drag_probe(_dlg, _card, _name)
+        try:
+            _dlg.reject()
+        except Exception:
+            pass
+        _dlg.close()
+
+    # 内容变多（「自定义」多出一行）时：窗口跟着长，且仍然贴合卡片
+    _grow = yq._RetentionDialog(win, win, {"mode": "forever"})
+    _grow.show()
+    for _ in range(12):
+        app.processEvents()
+        time.sleep(0.03)
+    _h0 = _grow.height()
+    _grow._pick("custom")
+    for _ in range(20):
+        app.processEvents()
+        time.sleep(0.04)
+    check("card grows with its content",
+          _grow.height() > _h0
+          and abs(_grow.height() - _grow.card.height()) <= 4,
+          "%d → %d（卡片 %d）" % (_h0, _grow.height(), _grow.card.height()))
+    _grow._pick("forever")
+    for _ in range(20):
+        app.processEvents()
+        time.sleep(0.04)
+    check("card shrinks back and still hugs",
+          abs(_grow.height() - _grow.card.height()) <= 4
+          and _grow.height() <= _h0 + 4,
+          "%d / 卡片 %d" % (_grow.height(), _grow.card.height()))
+    _grow.reject()
+    _grow.close()
+
     # ---- 本机桥：开关立即生效；启动失败要说出原因（扩展"连不上"的根因） ----
     st0 = win.bridge_status()
     check("bridge: starts stopped", not st0.get("running"), str(st0))
