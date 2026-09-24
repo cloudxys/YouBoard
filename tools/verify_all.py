@@ -41,6 +41,25 @@ def check(name, cond, extra=""):
         FAIL.append(name)
 
 
+def _data_fingerprint():
+    """真实数据目录里用户文件的指纹（体积 + 修改时间）。
+
+    门禁号称"全在临时目录和项目副本里跑"，这个指纹就是那句承诺的守卫：
+    2026-09-24 真出过一次事——test_core 里 `ClipboardStore(path=...)` 只换了
+    历史文件，快照文件仍指向真实目录，一轮门禁把用户 8.5MB 的快照清成了空表。
+    """
+    out = {}
+    for name in (".youboard.json", ".youboard_snapshots.json",
+                 "youboard_config.json", "youboard_vault.json",
+                 "youboard.key"):
+        try:
+            st = os.stat(os.path.join(SRC, name))
+            out[name] = (st.st_size, int(st.st_mtime))
+        except OSError:
+            out[name] = None
+    return out
+
+
 def test_syntax():
     import py_compile
     for f in ("youboard_core.py", "youboard_phone.py", "youboard_ai.py",
@@ -82,6 +101,14 @@ def test_core():
     yc.IMAGES_DIR = os.path.join(tmp, "images")
     yc.FILE_CACHE_DIR = os.path.join(tmp, "file_cache")
     yc.KEY_FILE = os.path.join(tmp, "youboard.key")
+    # 这几条以前漏了：ClipboardStore(path=...) 只换"历史文件"，
+    # 快照 / 配置 / 密库仍然指向真实数据目录 —— 于是 clear() 之类会把用户真实的
+    # .youboard_snapshots.json 清成空表（2026-09-24 实测把 8.5MB 快照清没了）。
+    yc.HISTORY_FILE = os.path.join(tmp, ".youboard.json")
+    yc.SNAPSHOTS_FILE = os.path.join(tmp, ".youboard_snapshots.json")
+    yc.CONFIG_FILE = os.path.join(tmp, "youboard_config.json")
+    yc.VAULT_FILE = os.path.join(tmp, "youboard_vault.json")
+    yc.VAULT_FILES_DIR = os.path.join(tmp, "vault_files")
     os.makedirs(yc.IMAGES_DIR, exist_ok=True)
     hist = os.path.join(tmp, ".youboard.json")
     store = yc.ClipboardStore(path=hist)
@@ -312,6 +339,12 @@ def test_phone():
     yc.IMAGES_DIR = os.path.join(tmp, "images")
     yc.FILE_CACHE_DIR = os.path.join(tmp, "file_cache")
     yc.KEY_FILE = os.path.join(tmp, "youboard.key")
+    # 快照 / 配置 / 密库也一律指到临时目录，别碰用户真实数据（见 test_core 的说明）
+    yc.HISTORY_FILE = os.path.join(tmp, ".youboard.json")
+    yc.SNAPSHOTS_FILE = os.path.join(tmp, ".youboard_snapshots.json")
+    yc.CONFIG_FILE = os.path.join(tmp, "youboard_config.json")
+    yc.VAULT_FILE = os.path.join(tmp, "youboard_vault.json")
+    yc.VAULT_FILES_DIR = os.path.join(tmp, "vault_files")
     os.makedirs(yc.IMAGES_DIR, exist_ok=True)
     yp.IMAGES_DIR = yc.IMAGES_DIR
     yp.PHONE_INCOMING_DIR = os.path.join(yc.FILE_CACHE_DIR, "phone")
@@ -398,6 +431,12 @@ def test_ai():
     import youboard_core as yc
     import youboard_ai as ai
     yc.CONFIG_FILE = os.path.join(tmp, "youboard_config.json")
+    # 其余数据文件同样指到临时目录：这套用例会写配置，绝不能落到真实目录
+    yc.HISTORY_FILE = os.path.join(tmp, ".youboard.json")
+    yc.SNAPSHOTS_FILE = os.path.join(tmp, ".youboard_snapshots.json")
+    yc.CONTENT_DIR = os.path.join(tmp, "content")
+    yc.VAULT_FILE = os.path.join(tmp, "youboard_vault.json")
+    yc.VAULT_FILES_DIR = os.path.join(tmp, "vault_files")
 
     req = ai.prepare_request("summarize", "会议记录：下周一评审")
     check("ai prompt built", len(req["messages"]) == 2
@@ -569,6 +608,12 @@ def test_bridge():
     yc.IMAGES_DIR = os.path.join(tmp, "images")
     yc.FILE_CACHE_DIR = os.path.join(tmp, "file_cache")
     yc.KEY_FILE = os.path.join(tmp, "youboard.key")
+    # 同上：快照 / 配置 / 密库也指到临时目录
+    yc.HISTORY_FILE = os.path.join(tmp, ".youboard.json")
+    yc.SNAPSHOTS_FILE = os.path.join(tmp, ".youboard_snapshots.json")
+    yc.CONFIG_FILE = os.path.join(tmp, "youboard_config.json")
+    yc.VAULT_FILE = os.path.join(tmp, "youboard_vault.json")
+    yc.VAULT_FILES_DIR = os.path.join(tmp, "vault_files")
     os.makedirs(yc.IMAGES_DIR, exist_ok=True)
     store = yc.ClipboardStore(path=os.path.join(tmp, ".youboard.json"))
     store.clear()
@@ -674,6 +719,15 @@ def test_gui():
     sys.path.insert(0, dst)
     import youboard_qt as yq
     from PyQt6.QtGui import QImage
+    # 副本里的快照文件清成空表：它可能是用户几 MB 的历史快照，无头（offscreen）
+    # 测试带着它跑时，Qt 在对象销毁阶段会偶发 0xC0000005（2026-09-24 实测：
+    # 8.5MB → 连崩 3 次；清空后连跑 3 次干净）。快照本身在 test_core 里另有断言。
+    try:
+        import youboard_core as _yc_snap
+        with open(os.path.join(dst, ".youboard_snapshots.json"), "wb") as _f:
+            _f.write(_yc_snap._encrypt_data(b"[]"))
+    except Exception:
+        pass
 
     app = yq.QApplication(sys.argv)
     store = yq.ClipboardStore()
@@ -2583,6 +2637,7 @@ def main():
     if FAIL:            # 语法都没过，后面的用例不用跑了
         print("RESULT=FAILED:" + ",".join(FAIL))
         return 1
+    _data_before = _data_fingerprint()
     print("== updater ==")
     test_updater()
     test_update_safety()
@@ -2598,6 +2653,14 @@ def main():
     test_bridge()
     print("== gui ==")
     test_gui()
+    # 终检：跑完这一整轮，项目目录里用户自己的数据文件必须一个都没被动过。
+    # 只有 .youboard.json 例外：项目目录里要是正开着程序（自己双击跑的那份），
+    # 它本来就会写这个文件，那不算门禁漏了；快照 / 配置 / 密库 / 密钥被改才是。
+    _after = _data_fingerprint()
+    _changed = [k for k, v in _data_before.items() if _after.get(k) != v]
+    _hard = [k for k in _changed if k != ".youboard.json"]
+    check("isolation: real data files untouched", not _hard,
+          ("改动：" + "、".join(_changed)) if _changed else "")
     print("RESULT=" + ("ALL_PASS" if not FAIL else "FAILED:" + ",".join(FAIL)))
     return 0 if not FAIL else 1
 
