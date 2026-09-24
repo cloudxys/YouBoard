@@ -1671,14 +1671,18 @@ STRINGS = {
         "vault_pw_mismatch": "两次输入的新主密码不一样",
         "vault_pw_set_title": "设置主密码",
         "vault_pw_change_title": "修改主密码",
-        "vault_pw_set_sub": "给密库单独设一把主密码：打开密库要解锁，闲置 5 分钟或关掉窗口自动锁定",
-        "vault_pw_change_sub": "先验证当前主密码；新密码留空 = 取消主密码",
+        "vault_pw_set_sub": "给密库单独设一把主密码：打开密库要解锁，关掉窗口自动锁定；下面可以选闲置多久自动锁",
+        "vault_pw_change_sub": "改密码要验证当前主密码；新密码留空 = 不改密码，只保存锁定时间",
         "vault_f_pw_now": "当前主密码", "vault_f_pw_new": "新主密码",
         "vault_f_pw_again": "再输一次",
         "vault_pw_set_ok": "已启用主密码：下次打开密库需要解锁",
         "vault_pw_change_ok": "主密码已修改",
         "vault_pw_removed": "已取消主密码，密库改回本机密钥加密",
         "vault_pw_show": "显示密码", "vault_pw_hide": "隐藏密码",
+        "vault_f_autolock": "闲置自动锁定",
+        "vault_lock_min": "{n} 分钟", "vault_lock_never": "不自动锁定",
+        "vault_pw_saved": "设置已保存",
+        "vault_pw_need_current": "先填当前主密码",
         "vault_pw_off": "关闭密码",
         "vault_pw_off_confirm": "关闭主密码？",
         "vault_pw_off_sub": "关闭后打开密库不再需要密码（直接就能看）；随时可以再设回来。",
@@ -2169,14 +2173,18 @@ STRINGS = {
         "vault_pw_mismatch": "The two passwords don't match",
         "vault_pw_set_title": "Set master password",
         "vault_pw_change_title": "Change master password",
-        "vault_pw_set_sub": "Give the vault its own master password: opening it asks for the password, and it locks after 5 idle minutes or when you close the window",
-        "vault_pw_change_sub": "Verify the current password first; leave the new one empty to remove it",
+        "vault_pw_set_sub": "Give the vault its own master password: opening it asks for the password and closing it locks the vault; pick an idle auto-lock time below",
+        "vault_pw_change_sub": "Changing the password needs the current one; leave the new one empty to keep it and just save the auto-lock time",
         "vault_f_pw_now": "Current password", "vault_f_pw_new": "New password",
         "vault_f_pw_again": "Repeat it",
         "vault_pw_set_ok": "Master password enabled — the vault will ask for it next time",
         "vault_pw_change_ok": "Master password changed",
         "vault_pw_removed": "Master password removed — the vault is back on the local key",
         "vault_pw_show": "Show password", "vault_pw_hide": "Hide password",
+        "vault_f_autolock": "Auto-lock when idle",
+        "vault_lock_min": "{n} min", "vault_lock_never": "Never",
+        "vault_pw_saved": "Settings saved",
+        "vault_pw_need_current": "Enter the current master password first",
         "vault_pw_off": "Turn password off",
         "vault_pw_off_confirm": "Turn the master password off?",
         "vault_pw_off_sub": "The vault will open without asking for a password; you can turn it back on any time.",
@@ -3320,7 +3328,9 @@ class _UpdateDialog(QDialog):
                  expected_size=0, expected_sha256=""):
         super().__init__(owner)
         self._app = app
-        self._host = app if app is not None and app.isVisible() else owner
+        # 和卡片弹层一套逻辑：跟"真正打开它的那个窗口"对齐（密库窗口里弹的确认卡
+        # 就该落在密库窗口正中间，而不是主窗口正中间）
+        self._host = _overlay_host(owner, app)
         self._new_version = str(new_version)
         self._release_name = str(release_name or "")
         self._urls = list(urls)
@@ -3580,35 +3590,22 @@ class _UpdateDialog(QDialog):
         """窗口严格贴合更新卡片：首次摆到宿主中央，之后只调尺寸（拖过就不动位置）。"""
         w, h = self._target_size()
         if self._placed:
+            changed = (abs(int(w) - self.width()) > 2
+                       or abs(int(h) - self.height()) > 2)
             try:
                 self.resize(int(w), int(h))
                 self._notes.setMaximumHeight(max(120, int(h) - 260))
             except Exception:
                 pass
+            # 尺寸变了（说明区摊开等）要重新回到宿主正中间，用户拖过的位置保留
+            if changed and not self._user_moved:
+                try:
+                    x, y = self._host_center(w, h)
+                    self.move(int(x), int(y))
+                except Exception:
+                    pass
             return
-        host = self._host
-        host_rect = None
-        try:
-            if host is not None and host.isVisible():
-                host_rect = host.frameGeometry()
-        except Exception:
-            host_rect = None
-        try:
-            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-            avail = scr.availableGeometry()
-        except Exception:
-            avail = None
-        if host_rect is not None and host_rect.width() >= 200:
-            x = host_rect.x() + (host_rect.width() - w) // 2
-            y = host_rect.y() + (host_rect.height() - h) // 2
-        elif avail is not None:
-            x = avail.x() + (avail.width() - w) // 2
-            y = avail.y() + (avail.height() - h) // 2
-        else:
-            x = y = 0
-        if avail is not None:
-            x = max(avail.x(), min(x, avail.x() + avail.width() - w))
-            y = max(avail.y(), min(y, avail.y() + avail.height() - h))
+        x, y = self._host_center(w, h)
         try:
             self.setGeometry(int(x), int(y), int(w), int(h))
             self._placed = True
@@ -3618,6 +3615,10 @@ class _UpdateDialog(QDialog):
         except Exception:
             pass
 
+    def _host_center(self, w, h):
+        """(w, h) 的窗口该摆在宿主哪儿（宿主不可见就当前屏幕居中）。"""
+        return _centered_pos(self._host, w, h)
+
     def _target_size(self):
         """更新卡片当前内容需要的窗口尺寸（受屏幕限制，超出时说明区滚动）。"""
         try:
@@ -3626,8 +3627,16 @@ class _UpdateDialog(QDialog):
                     _lay.invalidate()
                     _lay.activate()
             hint = self._card.sizeHint()
-            w = max(600, int(hint.width()))
-            h = max(280, int(hint.height()))
+            # 卡片自己可能设了最小高度（更新结果/确认卡片 = 330~360）：窗口不能比它矮，
+            # 否则 Qt 会把窗口顶到那个最小值，而居中还是按旧尺寸算 —— 卡片看着就偏下
+            need_w = max(int(hint.width()),
+                         int(self._card.minimumSizeHint().width()),
+                         int(self._card.minimumWidth() or 0))
+            need_h = max(int(hint.height()),
+                         int(self._card.minimumSizeHint().height()),
+                         int(self._card.minimumHeight() or 0))
+            w = max(600, need_w)
+            h = max(280, need_h)
         except Exception:
             w, h = 600, 400
         try:
@@ -3646,14 +3655,7 @@ class _UpdateDialog(QDialog):
         w, h = self._target_size()
         if abs(w - self.width()) <= 2 and abs(h - self.height()) <= 2:
             return
-        try:
-            if self._placed:
-                self.resize(int(w), int(h))
-                self._notes.setMaximumHeight(max(120, int(h) - 260))
-            else:
-                self._sync_to_host()
-        except Exception:
-            pass
+        self._sync_to_host()
 
     # ---- 拖动卡片移动窗口 ----
     def eventFilter(self, obj, event):
@@ -3748,11 +3750,25 @@ def _card_host(parent):
     return None
 
 
+def _card_owner(parent):
+    """卡片该挂在哪个窗口正中间：优先传进来的那个窗口（比如密库窗口）。"""
+    w = parent
+    try:
+        while w is not None:
+            if w.isWindow() and w.isVisible() and w.width() >= 300:
+                return w
+            w = w.parentWidget()
+    except Exception:
+        return None
+    return None
+
+
 def _info_card(parent, title, detail, kind="latest", ok_text=None):
     """主题一致的提示卡片，替代系统原生 QMessageBox.information / warning。"""
     host = _card_host(parent)
+    owner = _card_owner(parent) or host or parent
     try:
-        dlg = _UpdateStatusDialog(host or parent, host, APP_VERSION,
+        dlg = _UpdateStatusDialog(owner, host, APP_VERSION,
                                   title=title, detail=detail, kind=kind,
                                   ok_text=ok_text)
         dlg.exec()
@@ -3767,8 +3783,9 @@ def _confirm_card(parent, title, detail, ok_text=None, cancel_text=None,
                   kind="warning"):
     """主题一致的确认卡片，替代 QMessageBox.question；确定返回 True。"""
     host = _card_host(parent)
+    owner = _card_owner(parent) or host or parent
     try:
-        dlg = _UpdateStatusDialog(host or parent, host, APP_VERSION,
+        dlg = _UpdateStatusDialog(owner, host, APP_VERSION,
                                   title=title, detail=detail, kind=kind,
                                   meta="",
                                   ok_text=ok_text or tr("btn_ok"))
@@ -3818,6 +3835,33 @@ def _overlay_host(owner, app):
         except Exception:
             continue
     return owner if owner is not None else app
+
+
+def _centered_pos(host, w, h):
+    """把 w×h 的窗口摆到宿主正中间（宿主不可见就当前屏幕居中），并夹回屏幕内。"""
+    host_rect = None
+    try:
+        if host is not None and host.isVisible():
+            host_rect = host.frameGeometry()
+    except Exception:
+        host_rect = None
+    try:
+        scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        avail = scr.availableGeometry()
+    except Exception:
+        avail = None
+    if host_rect is not None and host_rect.width() >= 200:
+        x = host_rect.x() + (host_rect.width() - w) // 2
+        y = host_rect.y() + (host_rect.height() - h) // 2
+    elif avail is not None:
+        x = avail.x() + (avail.width() - w) // 2
+        y = avail.y() + (avail.height() - h) // 2
+    else:
+        x = y = 0
+    if avail is not None:                     # 别跑到屏幕外
+        x = max(avail.x(), min(x, avail.x() + avail.width() - w))
+        y = max(avail.y(), min(y, avail.y() + avail.height() - h))
+    return int(x), int(y)
 
 
 class _CardOverlayDialog(QDialog):
@@ -3991,30 +4035,7 @@ class _CardOverlayDialog(QDialog):
 
     def _host_center(self, w, h):
         """窗口尺寸 (w, h) 时该摆在哪儿：宿主中央，宿主不可见就当前屏幕居中。"""
-        host = self._host
-        host_rect = None
-        try:
-            if host is not None and host.isVisible():
-                host_rect = host.frameGeometry()
-        except Exception:
-            host_rect = None
-        try:
-            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
-            avail = scr.availableGeometry()
-        except Exception:
-            avail = None
-        if host_rect is not None and host_rect.width() >= 200:
-            x = host_rect.x() + (host_rect.width() - w) // 2
-            y = host_rect.y() + (host_rect.height() - h) // 2
-        elif avail is not None:
-            x = avail.x() + (avail.width() - w) // 2
-            y = avail.y() + (avail.height() - h) // 2
-        else:
-            x = y = 0
-        if avail is not None:                     # 别跑到屏幕外
-            x = max(avail.x(), min(x, avail.x() + avail.width() - w))
-            y = max(avail.y(), min(y, avail.y() + avail.height() - h))
-        return int(x), int(y)
+        return _centered_pos(self._host, w, h)
 
     def _hug_card(self, w, h):
         """把卡片钉成窗口这么大：窗口 = 卡片，截图工具按窗口矩形抓到的就是卡片本身。
@@ -14416,10 +14437,35 @@ def _vault_add_from_values(vault, vals):
     return vault.add(kind="text", content=content, name=name, **extra)
 
 
+VAULT_AUTOLOCK_DEFAULT_MIN = 5
+VAULT_AUTOLOCK_CHOICES = (1, 5, 15, 30, 0)      # 0 = 不自动锁定
+
+
+def _vault_autolock_minutes(cfg=None):
+    """密库闲置多久自动锁定（分钟）；0 = 不自动锁定。"""
+    try:
+        cfg = cfg if isinstance(cfg, dict) else load_config()
+        return max(0, int(cfg.get("vault_autolock_minutes",
+                                  VAULT_AUTOLOCK_DEFAULT_MIN)))
+    except (TypeError, ValueError):
+        return VAULT_AUTOLOCK_DEFAULT_MIN
+
+
+def _set_vault_autolock_minutes(minutes):
+    """把"闲置自动锁定"写进配置；返回是否写成功。"""
+    try:
+        cfg = load_config()
+        cfg["vault_autolock_minutes"] = max(0, int(minutes))
+        return bool(save_config(cfg))
+    except (TypeError, ValueError, IOError, OSError):
+        return False
+
+
 class _VaultPasswordDialog(_CardOverlayDialog):
     """设置 / 修改密库的主密码（卡片式弹层，和其它弹层同一套风格）。
 
-    新密码留空 = 取消主密码（改回本机 youboard.key 加密）。
+    新密码留空 = 不改密码（只保存"闲置自动锁定"）；取消密码用密库窗口的
+    「关闭密码」按钮。
     """
 
     CARD_WIDTH = 520
@@ -14469,6 +14515,29 @@ class _VaultPasswordDialog(_CardOverlayDialog):
         add_row(row, tr("vault_f_pw_again"), self._again)
         lay.addLayout(grid)
 
+        # 闲置自动锁定：用户自己选"多久没动就锁上"（最后一档 = 不自动锁定）
+        lock_lbl = QLabel(tr("vault_f_autolock"))
+        lock_lbl.setObjectName("retSub")
+        lay.addWidget(lock_lbl)
+        self._lock_btns = {}
+        lock_grid = QGridLayout()
+        lock_grid.setContentsMargins(0, 0, 0, 0)
+        lock_grid.setHorizontalSpacing(8)
+        lock_grid.setVerticalSpacing(8)
+        self._autolock_min = _vault_autolock_minutes()
+        for idx, mins in enumerate(VAULT_AUTOLOCK_CHOICES):
+            btn = QPushButton(tr("vault_lock_never") if not mins
+                              else tr("vault_lock_min", n=mins))
+            btn.setCheckable(True)
+            btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btn.clicked.connect(lambda _c=False, m=mins: self._pick_autolock(m))
+            lock_grid.addWidget(btn, idx // 3, idx % 3)
+            self._lock_btns[mins] = btn
+        for col in range(3):
+            lock_grid.setColumnStretch(col, 1)
+        lay.addLayout(lock_grid)
+        self._pick_autolock(self._autolock_min)
+
         self._err = QLabel("")
         self._err.setObjectName("retNote")
         self._err.setWordWrap(True)
@@ -14494,8 +14563,18 @@ class _VaultPasswordDialog(_CardOverlayDialog):
         self._now.returnPressed.connect(self._save)
 
     def values(self):
-        """(当前主密码, 新主密码)；新主密码为空表示取消主密码。"""
+        """(当前主密码, 新主密码, 闲置自动锁定分钟数)。
+
+        新主密码留空 = 不改密码（只保存锁定时间）；取消密码用密库窗口的
+        「关闭密码」按钮。
+        """
         return self._result
+
+    def _pick_autolock(self, minutes):
+        """选闲置自动锁定时间；0 = 不自动锁定。"""
+        self._autolock_min = int(minutes or 0)
+        for mins, btn in self._lock_btns.items():
+            btn.setChecked(mins == self._autolock_min)
 
     def _save(self):
         now = self._now.text() if self._protected else ""
@@ -14508,13 +14587,14 @@ class _VaultPasswordDialog(_CardOverlayDialog):
             if new != again:
                 self._err.setText(tr("vault_pw_mismatch"))
                 return
-        elif self._protected:
-            # 留空 = 取消主密码：仍然要验证当前密码（由调用方校验）
-            new = ""
-        if self._protected and not now:
-            self._err.setText(tr("vault_pw_wrong"))
+            if self._protected and not now:
+                self._err.setText(tr("vault_pw_need_current"))
+                return
+        elif not self._protected:
+            # 第一次设置：必须给一个主密码
+            self._err.setText(tr("vault_pw_len"))
             return
-        self._result = (now, new)
+        self._result = (now, new, self._autolock_min)
         self.accept()
 
 
@@ -14579,6 +14659,8 @@ class VaultDialog(QDialog):
         super().__init__(app)
         self.app = app
         self.vault = getattr(app, "vault", None) or VaultStore()
+        # 闲置自动锁定：用户在「主密码…」里自己选的时间（0 = 不自动锁定）
+        self._autolock_min = _vault_autolock_minutes()
         # 弹层铺满本窗口时把桌面小组件抬回最上层（同「编辑标签」一套处理）
         self._desk_widget = getattr(app, "_desk_widget", None)
         header = _make_frameless_dialog(self, tr("vault_title"))
@@ -14736,8 +14818,6 @@ class VaultDialog(QDialog):
 
     # ---- 主密码 / 锁屏 ----
 
-    VAULT_IDLE_LOCK_MS = 5 * 60 * 1000
-
     def _build_lock_page(self):
         """锁屏页：设了主密码又没解锁时，密库内容一点都不露。"""
         page = QWidget()
@@ -14872,16 +14952,31 @@ class VaultDialog(QDialog):
             self._restart_lock_timer()
 
     def _restart_lock_timer(self):
-        if self.vault.is_protected() and not self.vault.is_locked():
-            self._lock_timer.start(self.VAULT_IDLE_LOCK_MS)
+        """按用户设的闲置时间重启倒计时；0 = 不自动锁定。"""
+        if (self.vault.is_protected() and not self.vault.is_locked()
+                and self._autolock_min > 0):
+            self._lock_timer.start(int(self._autolock_min * 60 * 1000))
+        else:
+            self._lock_timer.stop()
+
+    def _save_autolock(self, minutes):
+        """把"闲置自动锁定"存下来并立刻生效。"""
+        self._autolock_min = max(0, int(minutes or 0))
+        _set_vault_autolock_minutes(self._autolock_min)
+        self._restart_lock_timer()
 
     def _edit_master_password(self):
-        """设置 / 修改 / 取消主密码。"""
+        """设置 / 修改主密码 + 闲置自动锁定时间。"""
         protected = bool(self.vault.is_protected())
         dlg = _VaultPasswordDialog(self, self.app, protected)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        old_pw, new_pw = dlg.values()
+        old_pw, new_pw, minutes = dlg.values()
+        self._save_autolock(minutes)
+        if protected and not new_pw:
+            # 只调了锁定时间：密码不动，不用再验证
+            self._status.setText(tr("vault_pw_saved"))
+            return
         if protected:
             ok = self.vault.change_master_password(old_pw, new_pw)
         else:
@@ -14892,9 +14987,8 @@ class VaultDialog(QDialog):
             _info_card(self, tr("vault_pw_set_title"), msg, kind="warning")
             return
         self._refresh_lock_state()
-        self._status.setText(tr("vault_pw_removed") if not new_pw
-                             else (tr("vault_pw_change_ok") if protected
-                                   else tr("vault_pw_set_ok")))
+        self._status.setText(tr("vault_pw_change_ok") if protected
+                             else tr("vault_pw_set_ok"))
 
     def eventFilter(self, obj, event):
         """窗口里任何输入都算"还在用"，把闲置锁定倒计时往后推。"""

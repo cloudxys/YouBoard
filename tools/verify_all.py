@@ -1548,9 +1548,31 @@ def test_gui():
             _act.trigger()
         check("vault pw ui: toggle hides it again",
               _ed.echoMode() == yq.QLineEdit.EchoMode.Password)
+        # 闲置自动锁定：用户可自选时间 + 多一个"不自动锁定"
+        check("vault pw ui: auto-lock choices offered",
+              sorted(_pwdlg._lock_btns.keys()) == [0, 1, 5, 15, 30]
+              and _pwdlg._lock_btns[_pwdlg._autolock_min].isChecked())
+        _pwdlg._pick_autolock(15)
+        check("vault pw ui: picking an auto-lock time updates the value",
+              _pwdlg._autolock_min == 15
+              and _pwdlg._lock_btns[15].isChecked()
+              and not _pwdlg._lock_btns[5].isChecked())
+        # 只改锁定时间：新密码留空也能保存（不用再输当前密码）
+        _pwdlg._new.setText("")
+        _pwdlg._again.setText("")
+        _pwdlg._save()
+        check("vault pw ui: empty new password only saves the lock time",
+              _pwdlg.values() == ("", "", 15) and _pwdlg._err.text() == "")
+        _pwdlg2 = yq._VaultPasswordDialog(win, win, True)
+        _pwdlg2._new.setText("anotherpass")
+        _pwdlg2._again.setText("anotherpass")
+        _pwdlg2._save()
+        check("vault pw ui: changing the password still needs the current one",
+              _pwdlg2._err.text() != "" and _pwdlg2.result() == 0)
+        _pwdlg2.close()
         _pwdlg.close()
         # 闲置自动锁定：把倒计时调到 60ms 验证计时器真的会锁
-        _pwv2.VAULT_IDLE_LOCK_MS = 60
+        _pwv2._autolock_min = 0.001
         _pwv2._restart_lock_timer()
         time.sleep(0.25)
         for _ in range(4):
@@ -1558,6 +1580,42 @@ def test_gui():
         check("vault pw ui: idle timeout locks the vault",
               _pwv2._stack.currentWidget() is _pwv2._lock_page
               and win.vault.is_locked())
+        # 用户可自选锁定时间，也可以选"不自动锁定"
+        win.vault.unlock("hunter2pass")
+        for _ in range(4):
+            app.processEvents()
+        _pwv2._autolock_min = 5
+        _pwv2._restart_lock_timer()
+        _timer_on = (_pwv2._lock_timer.isActive()
+                     and _pwv2._lock_timer.interval() == 5 * 60 * 1000)
+        _pwv2._save_autolock(0)
+        check("vault pw ui: idle auto-lock time is user configurable",
+              _timer_on and not _pwv2._lock_timer.isActive()
+              and yq.load_config().get("vault_autolock_minutes") == 0)
+        _pwv2._save_autolock(5)
+        check("vault pw ui: auto-lock setting persisted",
+              yq.load_config().get("vault_autolock_minutes") == 5
+              and _pwv2._lock_timer.isActive()
+              and _pwv2._lock_timer.interval() == 5 * 60 * 1000)
+        # 确认卡片要落在"打开它的那个窗口"正中间（密库窗口），不是主窗口
+        _owner = yq._card_owner(_pwv2)
+        check("confirm card is owned by the window in front", _owner is _pwv2)
+        _conf = yq._UpdateStatusDialog(_owner, yq._card_host(_pwv2),
+                                       yq.APP_VERSION, title="确认卡居中",
+                                       detail="检查它是不是跟着密库窗口",
+                                       meta="")
+        _conf.show()
+        for _ in range(16):
+            app.processEvents()
+            time.sleep(0.02)
+        _cc2 = _conf.frameGeometry().center()
+        _vc2 = _pwv2.frameGeometry().center()
+        check("confirm card centers on the vault window",
+              _conf._host is _pwv2
+              and abs(_cc2.x() - _vc2.x()) <= 3
+              and abs(_cc2.y() - _vc2.y()) <= 3,
+              "%s vs %s" % ((_cc2.x(), _cc2.y()), (_vc2.x(), _vc2.y())))
+        _conf.close()
         # 就地解锁弹层（主界面"加入密库"前用）
         _unlock_dlg = yq._VaultUnlockDialog(_pwv2, win, win.vault)
         _unlock_dlg._edit.setText("hunter2pass")

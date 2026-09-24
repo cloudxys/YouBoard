@@ -17,6 +17,8 @@ __pycache__/
 .youboard_snapshots.json
 youboard_config.json
 images/
+# 运行时缓存：设了密库主密码后，解锁期间解密出来的图片副本会落在这里
+file_cache/
 # 密库（3.3.1）：用户主动存放的私密内容，绝对不能进公开仓库
 youboard_vault.json
 youboard_vault.json.bak
