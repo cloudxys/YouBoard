@@ -7,6 +7,7 @@ config persistence and Windows autostart (registry).
 
 import copy
 import ctypes
+import base64
 import hashlib
 import json
 import os
@@ -1151,12 +1152,113 @@ def entry_is_fav(entry):
     return bool(isinstance(entry, dict) and entry.get("fav"))
 
 
+# ---------------------------------------------------------------------------
+# 密库主密码（v3.3.4）
+#
+# 以前密库和剪贴板历史共用一把自动生成的 youboard.key：能防"文件被单独拷走 /
+# 云盘泄露"，但挡不住"能坐在这台电脑前的人"——打开密库直接就能看。
+# 现在可以给密库单独设一把用户主密码：PBKDF2-HMAC-SHA256 从主密码派生独立密钥，
+# 密库文件（以及 vault_files/ 里的图片）都用这把钥匙加密，和 youboard.key 无关；
+# 打开密库要解锁，闲置 / 关窗自动锁定；主密码只在本机校验、不落盘。
+# 边界要讲清楚：本地加密防的是"文件被拷走、云盘泄露、旁人翻程序"，挡不住本机上
+# 正在运行的恶意程序（它可以在你输入主密码时截键盘）。
+# ---------------------------------------------------------------------------
+
+VAULT_ENVELOPE_FORMAT = "youboard-vault"
+VAULT_KDF = "pbkdf2-hmac-sha256"
+VAULT_KDF_ITER = 200_000
+VAULT_MIN_PW_LEN = 6
+_VAULT_MAGIC = b"gAAAA"                 # Fernet 令牌前缀：识别"加密过的文件"
+_VAULT_SESSION = {"key": None}          # 已解锁时内存里的派生密钥（锁定即清空）
+
+
+def vault_session_key():
+    """当前解锁会话的主密码派生密钥（没解锁则为 None）。"""
+    return _VAULT_SESSION.get("key")
+
+
+def vault_open_cache_dir():
+    """解锁后解密出来的图片副本放这里（锁定时整目录删掉）。"""
+    return os.path.join(FILE_CACHE_DIR, "vault_open")
+
+
+def vault_clear_open_cache():
+    """锁定 / 退出时把"解密出来给人看"的图片副本清干净。"""
+    try:
+        shutil.rmtree(vault_open_cache_dir(), ignore_errors=True)
+    except Exception:
+        pass
+
+
+def derive_vault_key(password, salt, iterations=VAULT_KDF_ITER):
+    """用 PBKDF2 从主密码派生一把独立的 Fernet 密钥（和 youboard.key 无关）。"""
+    raw = hashlib.pbkdf2_hmac("sha256", str(password).encode("utf-8"),
+                              salt, int(iterations), dklen=32)
+    return base64.urlsafe_b64encode(raw)
+
+
+def _vault_file_encrypted(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read(5) == _VAULT_MAGIC
+    except OSError:
+        return False
+
+
+def _vault_token_bytes(value):
+    """信封里的 Fernet 令牌：存成 ASCII 字符串（JSON 装不下 bytes）。"""
+    if isinstance(value, bytes):
+        return value
+    return str(value or "").encode("ascii", "ignore")
+
+
+def _vault_token_text(value):
+    if isinstance(value, bytes):
+        return value.decode("ascii", "ignore")
+    return str(value or "")
+
+
+def _parse_vault_envelope(blob):
+    """认出"带主密码"的密库文件；旧格式（youboard.key 加密或明文）返回 None。"""
+    if not blob or blob[:1] != b"{":
+        return None
+    try:
+        env = json.loads(blob.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if (not isinstance(env, dict)
+            or env.get("format") != VAULT_ENVELOPE_FORMAT
+            or not env.get("salt") or not env.get("data")):
+        return None
+    return env
+
+
 def vault_image_path(entry):
-    """密库条目里带的图片文件的完整路径（没有则返回空串）。"""
+    """密库条目里带的图片文件的完整路径（没有则返回空串）。
+
+    v3.3.4 起密库可以设主密码：设了以后 vault_files/ 里的图片是加密存的，
+    解锁状态下这里会先解密出一份副本（file_cache/vault_open/）再返回，
+    查看 / AI / 导出都用那一份；锁定时只返回原路径（不泄露内容）。
+    """
     name = str((entry or {}).get("image") or "")
     if not name:
         return ""
-    return os.path.join(VAULT_FILES_DIR, os.path.basename(name))
+    path = os.path.join(VAULT_FILES_DIR, os.path.basename(name))
+    key = vault_session_key()
+    if not key or not _vault_file_encrypted(path):
+        return path
+    try:
+        out_dir = vault_open_cache_dir()
+        os.makedirs(out_dir, exist_ok=True)
+        out = os.path.join(out_dir, os.path.basename(name))
+        if (not os.path.exists(out)
+                or os.path.getmtime(out) < os.path.getmtime(path)):
+            with open(path, "rb") as f:
+                data = Fernet(key).decrypt(f.read())
+            _atomic_write(out, data)
+        return out
+    except Exception:
+        return path
 
 
 class VaultStore:
@@ -1170,11 +1272,15 @@ class VaultStore:
     - 手机传输、云同步、快照回滚都只认剪贴板历史，密库天然不参与。
     """
 
-    def __init__(self, path=VAULT_FILE):
+    def __init__(self, path=VAULT_FILE, password=None):
         self.path = path
         self._lock = threading.Lock()
         self._entries = []
-        self._load()
+        self._protected = False      # 设过主密码
+        self._locked = False         # 设了主密码但还没解锁
+        self._meta = {}              # 主密码信封（salt / iter / check / data）
+        self._wrong_password = False
+        self._load(password)
 
     # ---- persistence ----
 
@@ -1247,35 +1353,224 @@ class VaultStore:
                 "created": str(item.get("created") or now),
                 "updated": str(item.get("updated") or now)}
 
-    def _load(self):
+    def _load(self, password=None):
+        """读盘：带主密码的信封 → 需要解锁；旧格式 → 用 youboard.key 解（老行为）。"""
         if not os.path.exists(self.path):
             return
         try:
             with open(self.path, "rb") as f:
-                raw = _decrypt_data(f.read())
+                blob = f.read()
+        except (IOError, OSError):
+            return
+        env = _parse_vault_envelope(blob)
+        if env is not None:
+            self._protected = True
+            self._meta = env
+            self._locked = True
+            # 上次退出时可能留下解密出来的图片副本，启动就清掉
+            vault_clear_open_cache()
+            if password:
+                self.unlock(password)
+            return
+        try:
+            raw = _decrypt_data(blob)
             data = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError, IOError, OSError):
             return
         if not isinstance(data, dict):
             return
-        items = data.get("entries")
+        self._entries = self._clean_entries(data.get("entries"))
+
+    def _clean_entries(self, items):
         if not isinstance(items, list):
-            return
+            return []
         clean = []
         for item in items:
             entry = self._norm(item)
             if entry is not None:
                 clean.append(entry)
-        self._entries = clean
+        return clean
+
+    # ---- 主密码 ----
+
+    def is_protected(self):
+        """密库是否设了主密码。"""
+        return bool(self._protected)
+
+    def is_locked(self):
+        """设了主密码但还没解锁。"""
+        return bool(self._protected and self._locked)
+
+    def wrong_password(self):
+        """上一次解锁是不是密码不对（给界面提示用）。"""
+        return bool(self._wrong_password)
+
+    def kdf_iterations(self):
+        try:
+            return max(1000, int(self._meta.get("iter") or VAULT_KDF_ITER))
+        except (TypeError, ValueError):
+            return VAULT_KDF_ITER
+
+    def _derive(self, password):
+        salt = base64.b64decode(self._meta.get("salt") or b"")
+        return derive_vault_key(password, salt, self.kdf_iterations())
+
+    def verify_password(self, password):
+        """只校验主密码对不对，不动状态。"""
+        if not self._protected:
+            return True
+        try:
+            Fernet(self._derive(password)).decrypt(
+                _vault_token_bytes(self._meta.get("check")))
+            return True
+        except Exception:
+            return False
+
+    def unlock(self, password):
+        """用主密码解锁；成功返回 True。"""
+        if not self._protected:
+            return True
+        if not self.verify_password(password):
+            self._wrong_password = True
+            return False
+        key = self._derive(password)
+        try:
+            raw = Fernet(key).decrypt(
+                _vault_token_bytes(self._meta.get("data")))
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            self._wrong_password = True
+            return False
+        with self._lock:
+            self._entries = self._clean_entries(
+                (data or {}).get("entries") if isinstance(data, dict) else None)
+        _VAULT_SESSION["key"] = key
+        vault_clear_open_cache()
+        self._locked = False
+        self._wrong_password = False
+        return True
+
+    def lock(self):
+        """锁定：内存里的明文也一起丢掉，解密副本清干净。"""
+        self._wrong_password = False
+        if not self._protected:
+            return
+        with self._lock:
+            self._entries = []
+        _VAULT_SESSION["key"] = None
+        vault_clear_open_cache()
+        self._locked = True
+
+    def set_master_password(self, password):
+        """第一次设置主密码：内容（含图片）改用主密码派生密钥加密。"""
+        password = str(password or "")
+        if self.is_locked() or len(password) < VAULT_MIN_PW_LEN:
+            return False
+        salt = os.urandom(16)
+        key = derive_vault_key(password, salt)
+        self._rekey_files(None, key)
+        self._protected = True
+        self._locked = False
+        self._meta = {
+            "salt": base64.b64encode(salt).decode("ascii"),
+            "iter": VAULT_KDF_ITER,
+            "check": _vault_token_text(Fernet(key).encrypt(b"youboard-vault")),
+        }
+        _VAULT_SESSION["key"] = key
+        return bool(self._save())
+
+    def change_master_password(self, old_password, new_password):
+        """换主密码；new_password 为空 = 取消主密码（改回 youboard.key 加密）。"""
+        if not self._protected or self.is_locked():
+            return False
+        if not self.verify_password(old_password):
+            self._wrong_password = True
+            return False
+        old_key = _VAULT_SESSION.get("key") or self._derive(old_password)
+        new_password = str(new_password or "")
+        if not new_password:
+            return self.remove_master_password(old_password)
+        if len(new_password) < VAULT_MIN_PW_LEN:
+            return False
+        salt = os.urandom(16)
+        new_key = derive_vault_key(new_password, salt)
+        self._rekey_files(old_key, new_key)
+        self._meta = {
+            "salt": base64.b64encode(salt).decode("ascii"),
+            "iter": VAULT_KDF_ITER,
+            "check": _vault_token_text(
+                Fernet(new_key).encrypt(b"youboard-vault")),
+        }
+        _VAULT_SESSION["key"] = new_key
+        self._wrong_password = False
+        return bool(self._save())
+
+    def remove_master_password(self, password):
+        """取消主密码：图片解回明文、清单改回 youboard.key 加密。"""
+        if not self._protected or self.is_locked():
+            return False
+        if not self.verify_password(password):
+            self._wrong_password = True
+            return False
+        old_key = _VAULT_SESSION.get("key") or self._derive(password)
+        self._rekey_files(old_key, None)
+        self._protected = False
+        self._locked = False
+        self._meta = {}
+        _VAULT_SESSION["key"] = None
+        self._wrong_password = False
+        return bool(self._save())
+
+    def _rekey_files(self, old_key, new_key):
+        """vault_files/ 里的图片跟着换钥匙（None = 明文存放）。"""
+        try:
+            names = os.listdir(VAULT_FILES_DIR)
+        except OSError:
+            return
+        for name in names:
+            path = os.path.join(VAULT_FILES_DIR, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "rb") as f:
+                    blob = f.read()
+                if blob.startswith(_VAULT_MAGIC):
+                    if old_key is None:
+                        continue            # 不知道旧钥匙，别把人家文件弄坏
+                    data = Fernet(old_key).decrypt(blob)
+                else:
+                    data = blob
+                if new_key is None:
+                    _atomic_write(path, data)
+                else:
+                    _atomic_write(path, Fernet(new_key).encrypt(data))
+            except Exception:
+                continue
 
     def _save(self):
         """加密后原子落盘；返回是否写成功（失败时内存里的改动仍然生效）。"""
+        if self.is_locked():
+            # 锁着的时候内存里没有内容，写下去等于把密库清空 —— 绝对不写
+            return False
         with self._lock:
             payload = {"version": 1, "entries": self._entries}
             raw = json.dumps(payload, ensure_ascii=False,
                              indent=2).encode("utf-8")
         try:
-            _atomic_write(self.path, _encrypt_data(raw))
+            if self._protected:
+                key = _VAULT_SESSION.get("key")
+                if key is None:
+                    return False
+                env = {"format": VAULT_ENVELOPE_FORMAT, "version": 2,
+                       "kdf": VAULT_KDF, "iter": self.kdf_iterations(),
+                       "salt": self._meta.get("salt"),
+                       "check": self._meta.get("check"),
+                       "data": _vault_token_text(Fernet(key).encrypt(raw))}
+                self._meta.update(env)
+                _atomic_write(self.path, json.dumps(
+                    env, ensure_ascii=False, indent=2).encode("utf-8"))
+            else:
+                _atomic_write(self.path, _encrypt_data(raw))
             return True
         except (IOError, OSError, TypeError, ValueError):
             return False
@@ -1333,13 +1628,26 @@ class VaultStore:
         return out
 
     def store_image_file(self, src_path):
-        """把一张图片复制进密库自己的目录，返回文件名（失败返回空串）。"""
+        """把一张图片复制进密库自己的目录，返回文件名（失败返回空串）。
+
+        设了主密码就以加密形式落盘（解锁状态下查看会自动解密出副本）；
+        锁着的时候不落盘，免得留下没人认领的孤儿文件。
+        """
         try:
-            if not src_path or not os.path.exists(src_path):
+            if self.is_locked() or not src_path or not os.path.exists(src_path):
                 return ""
             os.makedirs(VAULT_FILES_DIR, exist_ok=True)
             name = uuid.uuid4().hex + os.path.splitext(src_path)[1].lower()
-            shutil.copyfile(src_path, os.path.join(VAULT_FILES_DIR, name))
+            dest = os.path.join(VAULT_FILES_DIR, name)
+            if self._protected:
+                key = _VAULT_SESSION.get("key")
+                if key is None:
+                    return ""
+                with open(src_path, "rb") as f:
+                    data = f.read()
+                _atomic_write(dest, Fernet(key).encrypt(data))
+            else:
+                shutil.copyfile(src_path, dest)
             return name
         except (IOError, OSError, shutil.Error):
             return ""
@@ -1353,6 +1661,8 @@ class VaultStore:
         ts / tags / fav / pinned 是"从历史移入"时带过来的来源信息：
         移出密库时按 ts 归位，标签与收藏也一起还回去。
         """
+        if self.is_locked():
+            return None
         now = datetime.now().isoformat(timespec="seconds")
         entry = self._norm({
             "id": uuid.uuid4().hex, "type": kind, "content": content,
@@ -1378,6 +1688,8 @@ class VaultStore:
 
     def rename(self, uid, name):
         """只改「名称」（留空 = 回到按内容显示）。"""
+        if self.is_locked():
+            return False
         changed = False
         with self._lock:
             for entry in self._entries:
@@ -1393,6 +1705,8 @@ class VaultStore:
 
     def update(self, uid, content=None, name=None):
         """改名称 / 改正文（图片、文件条目只改名称，内容靠重新加入）。"""
+        if self.is_locked():
+            return False
         changed = False
         with self._lock:
             for entry in self._entries:
@@ -1418,6 +1732,8 @@ class VaultStore:
 
     def delete(self, uid):
         """删除一条；如果是带图片的条目，把密库里的图片文件一起清掉。"""
+        if self.is_locked():
+            return False
         image = ""
         removed = False
         with self._lock:
@@ -1440,6 +1756,30 @@ class VaultStore:
             except OSError:
                 pass
         return removed
+
+    def wipe(self):
+        """清空密库（记录 + 图片文件 + 主密码）：忘记主密码时唯一出路。"""
+        with self._lock:
+            self._entries = []
+        try:
+            if os.path.exists(self.path):
+                os.remove(self.path)
+        except OSError:
+            pass
+        try:
+            for name in os.listdir(VAULT_FILES_DIR):
+                path = os.path.join(VAULT_FILES_DIR, name)
+                if os.path.isfile(path):
+                    os.remove(path)
+        except OSError:
+            pass
+        self._protected = False
+        self._locked = False
+        self._meta = {}
+        self._wrong_password = False
+        _VAULT_SESSION["key"] = None
+        vault_clear_open_cache()
+        return True
 
 
 class ClipboardStore:

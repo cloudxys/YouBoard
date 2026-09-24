@@ -67,7 +67,7 @@ from PyQt6.QtWidgets import (
     QStyle, QProgressDialog, QProgressBar, QStyledItemDelegate,
     QStyleOptionViewItem, QStyleOptionHeader, QGridLayout, QSpinBox,
     QDateTimeEdit, QSizeGrip, QDoubleSpinBox,
-    QColorDialog,
+    QColorDialog, QStackedWidget,
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
@@ -1552,7 +1552,7 @@ STRINGS = {
         # 密库（3.3.1）：用户主动放进去的私密内容，名称可选、四类归档
         "vault_btn": "密库",
         "vault_title": "密库",
-        "vault_sub": "只存在本机、加密保存；你主动添加的内容不会进剪贴板历史，也不会同步到手机 / 云端",
+        "vault_sub": "只存在本机、加密保存；可以设主密码，打开需解锁、闲置 / 关窗自动锁定；内容不进剪贴板历史，也不同步到手机 / 云端",
         "vault_add": "新增", "vault_edit": "编辑", "vault_delete": "删除",
         "vault_copy": "复制", "vault_open": "打开", "vault_rename": "重命名",
         "vault_search_ph": "搜索名称 / 内容",
@@ -1585,6 +1585,30 @@ STRINGS = {
         "vault_rename_sub": "留空就按内容显示",
         "vault_confirm_delete": "删除这条密库内容？",
         "vault_confirm_delete_sub": "删除后无法恢复（密库不参与历史快照回滚）",
+        # 主密码（3.3.4）：密库单独一把钥匙，打开要解锁，闲置 / 关窗自动锁定
+        "vault_pw_btn": "主密码…", "vault_lock_now": "锁定",
+        "vault_locked_title": "密库已锁定",
+        "vault_locked_sub": "输入主密码才能查看和修改密库内容",
+        "vault_pw_ph": "主密码",
+        "vault_unlock": "解锁",
+        "vault_pw_wrong": "主密码不对，再试一次",
+        "vault_pw_len": "主密码至少 6 位",
+        "vault_pw_mismatch": "两次输入的新主密码不一样",
+        "vault_pw_set_title": "设置主密码",
+        "vault_pw_change_title": "修改主密码",
+        "vault_pw_set_sub": "给密库单独设一把主密码：打开密库要解锁，闲置 5 分钟或关掉窗口自动锁定",
+        "vault_pw_change_sub": "先验证当前主密码；新密码留空 = 取消主密码",
+        "vault_f_pw_now": "当前主密码", "vault_f_pw_new": "新主密码",
+        "vault_f_pw_again": "再输一次",
+        "vault_pw_set_ok": "已启用主密码：下次打开密库需要解锁",
+        "vault_pw_change_ok": "主密码已修改",
+        "vault_pw_removed": "已取消主密码，密库改回本机密钥加密",
+        "vault_pw_note": "主密码只在本机校验、不存任何地方，忘了就打不开（只能清空密库重设）。它用 PBKDF2 派生独立密钥，和 youboard.key 无关：密库清单与图片都是加密存的，拷走文件也看不了；但它挡不住本机上正在运行的恶意程序。",
+        "vault_pw_forget": "忘记主密码？",
+        "vault_pw_forget_sub": "主密码没有找回功能。清空密库可以重设主密码，但密库里的内容会全部删除。",
+        "vault_pw_wipe": "清空密库并重设",
+        "vault_wiped": "密库已清空，可以重新设置主密码",
+        "vault_need_unlock": "密库已锁定，请先解锁",
         # AI 就地处理（3.2.7+）
         "ai_menu": "AI 处理",
         "ai_act_summarize": "总结要点", "ai_act_translate": "翻译",
@@ -2022,7 +2046,7 @@ STRINGS = {
         # Vault (3.3.1) — private items you add by hand; name is optional
         "vault_btn": "Vault",
         "vault_title": "Vault",
-        "vault_sub": "Encrypted on this device only — what you add by hand never enters clipboard history and is never synced to phone or cloud",
+        "vault_sub": "Encrypted on this device only; an optional master password is required to open it and it locks when idle or closed — nothing here enters clipboard history or syncs to phone/cloud",
         "vault_add": "Add", "vault_edit": "Edit", "vault_delete": "Delete",
         "vault_copy": "Copy", "vault_open": "Open", "vault_rename": "Rename",
         "vault_search_ph": "Search name / content",
@@ -2055,6 +2079,30 @@ STRINGS = {
         "vault_rename_sub": "Leave empty to show the content instead",
         "vault_confirm_delete": "Delete this vault item?",
         "vault_confirm_delete_sub": "This cannot be undone (the vault is not part of history snapshots)",
+        # Master password (3.3.4)
+        "vault_pw_btn": "Master password…", "vault_lock_now": "Lock",
+        "vault_locked_title": "Vault is locked",
+        "vault_locked_sub": "Enter your master password to view or edit the vault",
+        "vault_pw_ph": "Master password",
+        "vault_unlock": "Unlock",
+        "vault_pw_wrong": "Wrong master password — try again",
+        "vault_pw_len": "Use at least 6 characters",
+        "vault_pw_mismatch": "The two passwords don't match",
+        "vault_pw_set_title": "Set master password",
+        "vault_pw_change_title": "Change master password",
+        "vault_pw_set_sub": "Give the vault its own master password: opening it asks for the password, and it locks after 5 idle minutes or when you close the window",
+        "vault_pw_change_sub": "Verify the current password first; leave the new one empty to remove it",
+        "vault_f_pw_now": "Current password", "vault_f_pw_new": "New password",
+        "vault_f_pw_again": "Repeat it",
+        "vault_pw_set_ok": "Master password enabled — the vault will ask for it next time",
+        "vault_pw_change_ok": "Master password changed",
+        "vault_pw_removed": "Master password removed — the vault is back on the local key",
+        "vault_pw_note": "The master password is verified on this device only and is never stored — if you forget it the vault can't be opened (only wiped and re-created). It derives a separate key with PBKDF2 (unrelated to youboard.key): the list and the images are stored encrypted, so copying the files away doesn't help. It cannot stop malware already running on this machine.",
+        "vault_pw_forget": "Forgot the master password?",
+        "vault_pw_forget_sub": "There is no recovery. Wiping the vault lets you set a new master password, but every item inside is deleted.",
+        "vault_pw_wipe": "Wipe vault and start over",
+        "vault_wiped": "Vault wiped — you can set a master password again",
+        "vault_need_unlock": "The vault is locked — unlock it first",
         # AI actions (3.2.7+)
         "ai_menu": "AI actions",
         "ai_act_summarize": "Summarize", "ai_act_translate": "Translate",
@@ -3673,6 +3721,22 @@ def _retention_summary(policy):
     return tr("ret_summary_forever")
 
 
+def _overlay_host(owner, app):
+    """卡片弹层该跟谁对齐：优先它真正挂在的那个窗口。
+
+    设置窗口里打开的卡片就该落在设置窗口正中间。以前这里无条件按主窗口居中
+    （`app if app.isVisible() else owner`），可设置窗口经常被屏幕边挤得不在主
+    窗口正中，于是卡片看着和设置窗口"对不上"（用户实测反馈）。
+    """
+    for cand in (owner, app):
+        try:
+            if cand is not None and cand.isVisible() and cand.width() >= 300:
+                return cand
+        except Exception:
+            continue
+    return owner if owner is not None else app
+
+
 class _CardOverlayDialog(QDialog):
     """卡片式弹层基类：半透明遮罩 + 居中圆角卡片 + 图标 / 标题 / 副标题。
 
@@ -3684,7 +3748,11 @@ class _CardOverlayDialog(QDialog):
 
     def __init__(self, owner, app, icon_glyph, title_text, subtitle_text=""):
         super().__init__(owner)
-        self._host = app if app is not None and app.isVisible() else owner
+        self._app = app
+        # 卡片该跟谁对齐：优先它真正挂在的那个窗口 —— 设置窗口里打开的卡片就该落在
+        # 设置窗口正中间。以前无条件按主窗口居中，而设置窗口常常被屏幕边挤得不在
+        # 主窗口正中，于是卡片看着和设置窗口"对不上"（用户实测）。
+        self._host = _overlay_host(owner, app)
         self.setWindowTitle(title_text)
         self.setWindowFlags(
             Qt.WindowType.Dialog |
@@ -3831,7 +3899,8 @@ class _CardOverlayDialog(QDialog):
             pass
         self._hug_card(w, h)
         try:
-            desk = getattr(self._host, "_desk_widget", None)
+            # 桌面小组件挂在主窗口上，跟"卡片跟谁对齐"无关，这里要认主窗口
+            desk = getattr(self._app, "_desk_widget", None)
             if desk is not None and desk.isVisible():
                 desk.raise_()
         except Exception:
@@ -9152,6 +9221,11 @@ class YouBoardApp(QMainWindow):
         if not entry:
             self._set_status(tr("st_nothing_to_copy"), "warn")
             return
+        # 密库设了主密码又没解锁时，先就地解锁；取消就别往下走（绝不能写进锁着的密库）
+        if self.vault.is_locked():
+            unlock_dlg = _VaultUnlockDialog(self, self, self.vault)
+            if unlock_dlg.exec() != QDialog.DialogCode.Accepted:
+                return
         etype = entry.get("type", "text")
         tags = entry_tags(entry)
         # 记住这条记录原来的时间 / 标签 / 收藏 / 置顶：移出密库时按原样归位
@@ -14259,6 +14333,153 @@ def _vault_add_from_values(vault, vals):
     return vault.add(kind="text", content=content, name=name, **extra)
 
 
+class _VaultPasswordDialog(_CardOverlayDialog):
+    """设置 / 修改密库的主密码（卡片式弹层，和其它弹层同一套风格）。
+
+    新密码留空 = 取消主密码（改回本机 youboard.key 加密）。
+    """
+
+    CARD_WIDTH = 520
+
+    def __init__(self, owner, app, protected=False):
+        super().__init__(owner, app, "🔒",
+                         tr("vault_pw_change_title") if protected
+                         else tr("vault_pw_set_title"),
+                         tr("vault_pw_change_sub") if protected
+                         else tr("vault_pw_set_sub"))
+        self._protected = bool(protected)
+        self._result = ("", "")
+        lay = self._lay
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(1, 1)
+
+        def add_row(row, text, widget):
+            lbl = QLabel(text)
+            lbl.setObjectName("retSub")
+            grid.addWidget(lbl, row, 0,
+                           Qt.AlignmentFlag.AlignLeft |
+                           Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(widget, row, 1)
+            return widget
+
+        self._now = QLineEdit()
+        self._now.setEchoMode(QLineEdit.EchoMode.Password)
+        self._now.setPlaceholderText(tr("vault_pw_ph"))
+        self._new = QLineEdit()
+        self._new.setEchoMode(QLineEdit.EchoMode.Password)
+        self._new.setPlaceholderText(tr("vault_f_pw_new"))
+        self._again = QLineEdit()
+        self._again.setEchoMode(QLineEdit.EchoMode.Password)
+        self._again.setPlaceholderText(tr("vault_f_pw_again"))
+        row = 0
+        if self._protected:
+            add_row(row, tr("vault_f_pw_now"), self._now)
+            row += 1
+        add_row(row, tr("vault_f_pw_new"), self._new)
+        row += 1
+        add_row(row, tr("vault_f_pw_again"), self._again)
+        lay.addLayout(grid)
+
+        self._err = QLabel("")
+        self._err.setObjectName("retNote")
+        self._err.setWordWrap(True)
+        lay.addWidget(self._err)
+
+        note = QLabel(tr("vault_pw_note"))
+        note.setObjectName("retNote")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        save = QPushButton(tr("btn_save"))
+        save.setObjectName("retSave")
+        save.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        save.clicked.connect(self._save)
+        buttons.addWidget(save)
+        lay.addLayout(buttons)
+
+        target = self._now if self._protected else self._new
+        QTimer.singleShot(0, target.setFocus)
+        self._new.returnPressed.connect(self._save)
+        self._again.returnPressed.connect(self._save)
+        self._now.returnPressed.connect(self._save)
+
+    def values(self):
+        """(当前主密码, 新主密码)；新主密码为空表示取消主密码。"""
+        return self._result
+
+    def _save(self):
+        now = self._now.text() if self._protected else ""
+        new = self._new.text()
+        again = self._again.text()
+        if new or again:
+            if len(new) < 6:
+                self._err.setText(tr("vault_pw_len"))
+                return
+            if new != again:
+                self._err.setText(tr("vault_pw_mismatch"))
+                return
+        elif self._protected:
+            # 留空 = 取消主密码：仍然要验证当前密码（由调用方校验）
+            new = ""
+        if self._protected and not now:
+            self._err.setText(tr("vault_pw_wrong"))
+            return
+        self._result = (now, new)
+        self.accept()
+
+
+class _VaultUnlockDialog(_CardOverlayDialog):
+    """密库锁着时就地输入主密码（从主界面"加入密库"前用）。"""
+
+    CARD_WIDTH = 480
+
+    def __init__(self, owner, app, vault):
+        super().__init__(owner, app, "🔒", tr("vault_locked_title"),
+                         tr("vault_locked_sub"))
+        self._vault = vault
+        lay = self._lay
+        self._edit = QLineEdit()
+        self._edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._edit.setPlaceholderText(tr("vault_pw_ph"))
+        self._edit.returnPressed.connect(self._try)
+        lay.addWidget(self._edit)
+        self._msg = QLabel("")
+        self._msg.setObjectName("retNote")
+        self._msg.setWordWrap(True)
+        lay.addWidget(self._msg)
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel = QPushButton(tr("btn_cancel"))
+        cancel.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+        ok = QPushButton(tr("vault_unlock"))
+        ok.setObjectName("retSave")
+        ok.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        ok.clicked.connect(self._try)
+        buttons.addWidget(ok)
+        lay.addLayout(buttons)
+        QTimer.singleShot(0, self._edit.setFocus)
+
+    def _try(self):
+        if self._vault.unlock(self._edit.text()):
+            self.accept()
+            return
+        self._msg.setText(tr("vault_pw_wrong"))
+        self._msg.setStyleSheet(f"color: {C['DANGER']};")
+        self._edit.selectAll()
+        self._edit.setFocus()
+
+
 class VaultDialog(QDialog):
     """密库独立窗口：用户主动存放的私密内容（文本 / 图片 / 文件 / 网址）。
 
@@ -14317,7 +14538,13 @@ class VaultDialog(QDialog):
         root = QVBoxLayout(body)
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(10)
-        outer.addWidget(body, 1)
+        # 设了主密码就先用"锁屏页"挡住内容（解锁后才切到列表页）
+        self._content_page = body
+        self._lock_page = self._build_lock_page()
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._content_page)
+        self._stack.addWidget(self._lock_page)
+        outer.addWidget(self._stack, 1)
 
         desc = QLabel(tr("vault_sub"))
         desc.setObjectName("muted")
@@ -14387,6 +14614,14 @@ class VaultDialog(QDialog):
             b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btns.addWidget(b)
         btns.addStretch()
+        # 主密码：设置 / 修改 + 立即锁定（放在右下角，和内容操作分开）
+        self._pw_btn = QPushButton(tr("vault_pw_btn"))
+        self._lock_btn = QPushButton(tr("vault_lock_now"))
+        for b in (self._pw_btn, self._lock_btn):
+            b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            btns.addWidget(b)
+        self._pw_btn.clicked.connect(self._edit_master_password)
+        self._lock_btn.clicked.connect(self._lock_now)
         self._copy_btn.clicked.connect(self._copy_entry)
         self._open_btn.clicked.connect(self._open_entry)
         self._edit_btn.clicked.connect(self._edit_entry)
@@ -14400,7 +14635,196 @@ class VaultDialog(QDialog):
 
         self._kind = "all"
         self._rows = []
+        # 闲置自动锁定：设了主密码时，5 分钟没动过这个窗口就自己锁上
+        self._lock_timer = QTimer(self)
+        self._lock_timer.setSingleShot(True)
+        self._lock_timer.timeout.connect(self._lock_now)
+        _app_inst = QApplication.instance()
+        if _app_inst is not None:
+            _app_inst.installEventFilter(self)
         self._reload()
+        self._refresh_lock_state()
+
+    # ---- 主密码 / 锁屏 ----
+
+    VAULT_IDLE_LOCK_MS = 5 * 60 * 1000
+
+    def _build_lock_page(self):
+        """锁屏页：设了主密码又没解锁时，密库内容一点都不露。"""
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(40, 24, 40, 24)
+        lay.setSpacing(10)
+        lay.addStretch(1)
+        icon = QLabel("🔒")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet("font-size: 40px; background: transparent;")
+        lay.addWidget(icon)
+        title = QLabel(tr("vault_locked_title"))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet(
+            f"color: {C['TEXT']}; font-size: 17px; font-weight: 700;"
+            " background: transparent;")
+        lay.addWidget(title)
+        sub = QLabel(tr("vault_locked_sub"))
+        sub.setObjectName("muted")
+        sub.setWordWrap(True)
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(sub)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self._unlock_edit = QLineEdit()
+        self._unlock_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self._unlock_edit.setPlaceholderText(tr("vault_pw_ph"))
+        self._unlock_edit.setFixedWidth(240)
+        self._unlock_edit.returnPressed.connect(self._try_unlock)
+        row.addWidget(self._unlock_edit)
+        unlock_btn = QPushButton(tr("vault_unlock"))
+        unlock_btn.setProperty("cssClass", "accent")
+        unlock_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        unlock_btn.clicked.connect(self._try_unlock)
+        row.addWidget(unlock_btn)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self._unlock_msg = QLabel("")
+        self._unlock_msg.setWordWrap(True)
+        self._unlock_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self._unlock_msg)
+        note = QLabel(tr("vault_pw_note"))
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+        forget = QLabel(tr("vault_pw_forget"))
+        forget.setObjectName("muted")
+        forget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(forget)
+        wipe_btn = QPushButton(tr("vault_pw_wipe"))
+        wipe_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        wipe_btn.clicked.connect(self._wipe_vault)
+        frow = QHBoxLayout()
+        frow.addStretch(1)
+        frow.addWidget(wipe_btn)
+        frow.addStretch(1)
+        lay.addLayout(frow)
+        lay.addStretch(1)
+        return page
+
+    def _locked_now(self):
+        return bool(self.vault is not None and self.vault.is_locked())
+
+    def _try_unlock(self):
+        text = self._unlock_edit.text()
+        if not text:
+            return
+        if self.vault.unlock(text):
+            self._unlock_edit.clear()
+            self._unlock_msg.setText("")
+            self._refresh_lock_state()
+            self._reload()
+        else:
+            self._unlock_msg.setText(tr("vault_pw_wrong"))
+            self._unlock_msg.setStyleSheet(
+                f"color: {C['DANGER']}; font-size: 12px;"
+                " background: transparent;")
+            self._unlock_edit.selectAll()
+            self._unlock_edit.setFocus()
+
+    def _wipe_vault(self):
+        if not _confirm_card(self, tr("vault_pw_forget"),
+                             tr("vault_pw_forget_sub"),
+                             ok_text=tr("vault_pw_wipe")):
+            return
+        self.vault.wipe()
+        self._search.clear()
+        self._unlock_edit.clear()
+        self._unlock_msg.setText("")
+        self._refresh_lock_state()
+        self._reload()
+        self._status.setText(tr("vault_wiped"))
+
+    def _lock_now(self):
+        """立刻锁定（也可以由闲置计时器触发）。"""
+        if not self.vault.is_protected():
+            return
+        self.vault.lock()
+        self._refresh_lock_state()
+
+    def _refresh_lock_state(self):
+        locked = self._locked_now()
+        self._stack.setCurrentWidget(
+            self._lock_page if locked else self._content_page)
+        protected = bool(self.vault.is_protected())
+        self._pw_btn.setText(tr("vault_pw_change_title") if protected
+                             else tr("vault_pw_set_title"))
+        self._lock_btn.setVisible(protected and not locked)
+        if locked:
+            self._lock_timer.stop()
+            QTimer.singleShot(0, self._unlock_edit.setFocus)
+        else:
+            self._restart_lock_timer()
+
+    def _restart_lock_timer(self):
+        if self.vault.is_protected() and not self.vault.is_locked():
+            self._lock_timer.start(self.VAULT_IDLE_LOCK_MS)
+
+    def _edit_master_password(self):
+        """设置 / 修改 / 取消主密码。"""
+        protected = bool(self.vault.is_protected())
+        dlg = _VaultPasswordDialog(self, self.app, protected)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        old_pw, new_pw = dlg.values()
+        if protected:
+            ok = self.vault.change_master_password(old_pw, new_pw)
+        else:
+            ok = self.vault.set_master_password(new_pw)
+        if not ok:
+            msg = (tr("vault_pw_wrong") if self.vault.wrong_password()
+                   else tr("vault_pw_len"))
+            _info_card(self, tr("vault_pw_set_title"), msg, kind="warning")
+            return
+        self._refresh_lock_state()
+        self._status.setText(tr("vault_pw_removed") if not new_pw
+                             else (tr("vault_pw_change_ok") if protected
+                                   else tr("vault_pw_set_ok")))
+
+    def eventFilter(self, obj, event):
+        """窗口里任何输入都算"还在用"，把闲置锁定倒计时往后推。"""
+        try:
+            if event.type() in (QEvent.Type.MouseButtonPress,
+                                QEvent.Type.KeyPress, QEvent.Type.Wheel):
+                widget = obj if isinstance(obj, QWidget) else None
+                while widget is not None:
+                    if widget is self:
+                        self._restart_lock_timer()
+                        break
+                    widget = widget.parentWidget()
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def closeEvent(self, event):
+        self._release_vault()
+        super().closeEvent(event)
+
+    def done(self, result):
+        """accept / reject（含 Esc）也会走到这里：收尾 + 锁定。"""
+        self._release_vault()
+        super().done(result)
+
+    def _release_vault(self):
+        """关窗收尾：卸掉全局事件过滤器，并把密库锁上（下次打开要重新输主密码）。"""
+        try:
+            _app_inst = QApplication.instance()
+            if _app_inst is not None:
+                _app_inst.removeEventFilter(self)
+        except Exception:
+            pass
+        try:
+            if self.vault.is_protected():
+                self.vault.lock()
+        except Exception:
+            pass
 
     # ---- 列表 ----
 

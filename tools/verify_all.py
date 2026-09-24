@@ -283,6 +283,89 @@ def test_core():
           and "老备注" in migrated.entries()[0]["content"]
           and migrated.entries()[0]["type"] == "text")
 
+    # ---- 3.3.4 密库主密码：独立钥匙、锁上不给读、闲置 / 关窗自动锁定 ----
+    pw_path = os.path.join(tmp, "vault_pw.json")
+    pw_store = yc.VaultStore(path=pw_path)
+    pw_store.add_text("sk-master-secret-123", name="主密码回归条目")
+    pw_img = ""
+    if img_src:
+        pw_img = pw_store.store_image_file(img_src)
+        pw_store.add(kind="image", image=pw_img, name="照片")
+    check("vault pw: master password set",
+          pw_store.set_master_password("hunter2pass")
+          and pw_store.is_protected() and not pw_store.is_locked())
+    with open(pw_path, "rb") as fh:
+        pw_raw = fh.read()
+    check("vault pw: vault file is an envelope, no plaintext left",
+          pw_raw[:1] == b"{" and b"youboard-vault" in pw_raw
+          and b"sk-master-secret-123" not in pw_raw)
+    if pw_img:
+        with open(os.path.join(yc.VAULT_FILES_DIR, pw_img), "rb") as fh:
+            img_raw = fh.read()
+        check("vault pw: image file encrypted on disk",
+              img_raw[:5] == b"gAAAA"
+              and not img_raw.startswith(b"\x89PNG"))
+        _img_entry = next((e for e in pw_store.entries()
+                           if e.get("type") == "image"), None)
+        check("vault pw: unlocked view decrypts a copy",
+              _img_entry is not None
+              and os.path.exists(yc.vault_image_path(_img_entry)))
+    pw_n = 2 if pw_img else 1
+    pw_store.lock()
+    check("vault pw: locked store exposes nothing",
+          pw_store.is_locked() and pw_store.count() == 0
+          and pw_store.entries() == [] and pw_store.search("") == [])
+    check("vault pw: locked store refuses to write",
+          pw_store.flush() is False and pw_store.add_text("x") is None
+          and pw_store.rename("nope", "x") is False
+          and pw_store.delete("nope") is False)
+    with open(pw_path, "rb") as fh:
+        check("vault pw: locked save did not wipe the file",
+              b"youboard-vault" in fh.read())
+    if pw_img:
+        check("vault pw: decrypted copies cleared on lock",
+              not os.path.exists(yc.vault_open_cache_dir()))
+    wrong = yc.VaultStore(path=pw_path)
+    check("vault pw: reopening asks for the password",
+          wrong.is_protected() and wrong.is_locked() and wrong.count() == 0)
+    check("vault pw: wrong password rejected",
+          wrong.unlock("nope") is False and wrong.wrong_password()
+          and wrong.count() == 0)
+    check("vault pw: right password unlocks",
+          wrong.unlock("hunter2pass") and wrong.count() == pw_n
+          and any("sk-master-secret-123" == e.get("content")
+                  for e in wrong.entries()))
+    # 独立钥匙：把本机 youboard.key 换成另一把，主密码照样能开
+    other_key = os.path.join(tmp, "other_youboard.key")
+    with open(other_key, "wb") as fh:
+        fh.write(yc.Fernet.generate_key())
+    _orig_key_file = yc.KEY_FILE
+    try:
+        yc.KEY_FILE = other_key
+        wrong.lock()
+        check("vault pw: independent from youboard.key",
+              wrong.unlock("hunter2pass") and wrong.count() == pw_n)
+        check("vault pw: changing password",
+              wrong.change_master_password("hunter2pass", "newsecret9"))
+        wrong.lock()
+        check("vault pw: old password no longer works",
+              wrong.unlock("hunter2pass") is False)
+        check("vault pw: new password works", wrong.unlock("newsecret9"))
+    finally:
+        yc.KEY_FILE = _orig_key_file
+    check("vault pw: removing the password keeps the data",
+          wrong.remove_master_password("newsecret9")
+          and not wrong.is_protected() and wrong.count() == pw_n)
+    with open(pw_path, "rb") as fh:
+        check("vault pw: back to the local key format",
+              fh.read(5) == b"gAAAA")
+    check("vault pw: legacy reopen needs no password",
+          yc.VaultStore(path=pw_path).count() == pw_n)
+    wipe_store = yc.VaultStore(path=pw_path)
+    check("vault pw: wipe clears records and the password",
+          wipe_store.wipe() and not wipe_store.is_protected()
+          and wipe_store.count() == 0 and not os.path.exists(pw_path))
+
     # ---- 导入合并语义（v3.2.9）：合并而不是覆盖 + 完全重复只留一条 + 时间倒序 ----
     ms = yc.ClipboardStore(path=os.path.join(tmp, "merge_semantics.json"))
     ms.clear()
@@ -1371,6 +1454,83 @@ def test_gui():
           str((win.vault.get(_vai["id"]) or {}).get("content"))[:40])
     _vwin4.close()
 
+    # ---- 3.3.4 密库主密码：界面锁屏 / 解锁 / 关窗即锁 / 闲置自动锁 ----
+    _vault_rows_before = win.vault.count()
+    check("vault pw ui: starts without a master password",
+          not win.vault.is_protected())
+    if _vault_rows_before:
+        check("vault pw ui: master password set from the dialog",
+              win.vault.set_master_password("hunter2pass")
+              and win.vault.is_protected())
+        _pwv = yq.VaultDialog(win)
+        _pwv.show()
+        for _ in range(10):
+            app.processEvents()
+            time.sleep(0.02)
+        check("vault pw ui: open window shows the list while unlocked",
+              _pwv._stack.currentWidget() is _pwv._content_page
+              and _pwv._table.rowCount() > 0
+              and _pwv._lock_btn.isVisible())
+        _pwv.close()
+        for _ in range(6):
+            app.processEvents()
+        check("vault pw ui: closing the window locks the vault",
+              win.vault.is_locked() and win.vault.count() == 0)
+        _pwv2 = yq.VaultDialog(win)
+        _pwv2.show()
+        for _ in range(10):
+            app.processEvents()
+            time.sleep(0.02)
+        check("vault pw ui: reopening shows the lock page only",
+              _pwv2._stack.currentWidget() is _pwv2._lock_page
+              and _pwv2._table.rowCount() == 0
+              and not _pwv2._lock_btn.isVisible())
+        _pwv2._unlock_edit.setText("wrong-one")
+        _pwv2._try_unlock()
+        for _ in range(4):
+            app.processEvents()
+        check("vault pw ui: wrong password shows a message",
+              _pwv2._unlock_msg.text() != ""
+              and _pwv2._stack.currentWidget() is _pwv2._lock_page)
+        _pwv2._unlock_edit.setText("hunter2pass")
+        _pwv2._try_unlock()
+        for _ in range(8):
+            app.processEvents()
+            time.sleep(0.02)
+        check("vault pw ui: right password reveals the list",
+              _pwv2._stack.currentWidget() is _pwv2._content_page
+              and _pwv2._table.rowCount() == _vault_rows_before
+              and _pwv2._unlock_msg.text() == "")
+        check("vault pw ui: password button switches to change mode",
+              _pwv2._pw_btn.text() == yq.tr("vault_pw_change_title"))
+        # 闲置自动锁定：把倒计时调到 60ms 验证计时器真的会锁
+        _pwv2.VAULT_IDLE_LOCK_MS = 60
+        _pwv2._restart_lock_timer()
+        time.sleep(0.25)
+        for _ in range(4):
+            app.processEvents()
+        check("vault pw ui: idle timeout locks the vault",
+              _pwv2._stack.currentWidget() is _pwv2._lock_page
+              and win.vault.is_locked())
+        # 就地解锁弹层（主界面"加入密库"前用）
+        _unlock_dlg = yq._VaultUnlockDialog(_pwv2, win, win.vault)
+        _unlock_dlg._edit.setText("hunter2pass")
+        _unlock_dlg._try()
+        for _ in range(4):
+            app.processEvents()
+        check("vault pw ui: inline unlock dialog works",
+              _unlock_dlg.result() == yq.QDialog.DialogCode.Accepted.value
+              and not win.vault.is_locked())
+        _unlock_dlg.close()
+        _pwv2.close()
+        for _ in range(4):
+            app.processEvents()
+        check("vault pw ui: cancel the master password restores the old flow",
+              win.vault.unlock("hunter2pass")
+              and win.vault.remove_master_password("hunter2pass")
+              and not win.vault.is_protected()
+              and win.vault.count() == _vault_rows_before)
+
     # ---- 3.3.1 小组件右键：能手动关闭，且不被当成左键复制 ----
     # ---- 卡片弹层窗口只包住卡片（截图工具抓窗口时不再是"全屏"） ----
     card_probe = yq._TagsDialog(win, win, ["a"], ["a"], mode="edit", count=1)
@@ -1449,6 +1609,35 @@ def test_gui():
     except Exception:
         pass
     _ret.close()
+
+    # 卡片要跟"真正打开它的窗口"对齐：设置里开的卡片落在设置窗口正中间
+    _sdlg_c = yq.SettingsDialog(win)
+    _sdlg_c.show()
+    for _ in range(12):
+        app.processEvents()
+        time.sleep(0.02)
+    _cdlg_c = yq._RetentionDialog(_sdlg_c, win, {"mode": "forever"})
+    _cdlg_c.show()
+    for _ in range(20):
+        app.processEvents()
+        time.sleep(0.02)
+    _sc = _sdlg_c.frameGeometry().center()
+    _cc = _cdlg_c.frameGeometry().center()
+    check("card overlay centers on the window that opened it",
+          _cdlg_c._host is _sdlg_c
+          and abs(_cc.x() - _sc.x()) <= 3 and abs(_cc.y() - _sc.y()) <= 3,
+          "host=%s 卡片中心 %s / 设置中心 %s" % (
+              type(_cdlg_c._host).__name__, (_cc.x(), _cc.y()),
+              (_sc.x(), _sc.y())))
+    check("card overlay still hugs its card in the settings window",
+          abs(_cdlg_c.width() - _cdlg_c.card.width()) <= 4
+          and abs(_cdlg_c.height() - _cdlg_c.card.height()) <= 4)
+    try:
+        _cdlg_c.reject()
+    except Exception:
+        pass
+    _cdlg_c.close()
+    _sdlg_c.close()
 
     # 3.3.3：卡片要能按住拖动（所有卡片弹层一致），内容变多时窗口要跟着长
     from PyQt6.QtGui import QMouseEvent as _QMouseEvent
