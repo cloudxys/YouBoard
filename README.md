@@ -136,7 +136,13 @@ YouBoard/
 
 ## ☕ 支持作者
 
-如果 YouBoard 帮到了你，可以在爱发电请我喝杯咖啡嘛（感谢各位的鼎力支持）。
+如果 YouBoard 帮到了你，可以请我喝杯咖啡嘛（感谢各位的鼎力支持）。
+
+**微信**（扫码随意赞赏）：
+
+<img src="res/wechat_pay.png" alt="微信收款码" width="260">
+
+**爱发电**：
 
 [![化原/cloudxys 的爱发电](res/afdian.jpg)](https://afdian.com/a/mingdan?utm_source=copylink&utm_medium=link)
 
