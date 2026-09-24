@@ -91,6 +91,11 @@ def test_syntax():
     check("ai streaming worker", "class _AIWorker" in qt
           and "stream_chat" in ai_src)
     check("ai only openai-compatible", "chat/completions" in ai_src)
+    # 密库挂锁图标（res/suo.png / .ico）必须真的打进包里，否则打包后图标会缺
+    for _spec_name in ("YouBoard.spec", "YouBoard_Mac.spec"):
+        _spec = open(os.path.join(SRC, _spec_name), encoding="utf-8").read()
+        check("lock icon bundled in " + _spec_name,
+              "res/suo.png" in _spec and "res/suo.ico" in _spec)
 
 
 def test_core():
@@ -365,6 +370,20 @@ def test_core():
     check("vault pw: wipe clears records and the password",
           wipe_store.wipe() and not wipe_store.is_protected()
           and wipe_store.count() == 0 and not os.path.exists(pw_path))
+    # 「关闭密码」按钮走的路径：解锁状态下直接关，不用再输一次
+    off_path = os.path.join(tmp, "vault_off.json")
+    off_store = yc.VaultStore(path=off_path)
+    off_store.add_text("sk-off-secret", name="关密码回归")
+    off_store.set_master_password("hunter2pass")
+    off_store.lock()
+    check("vault pw: turn-off needs an unlocked session",
+          off_store.disable_master_password() is False
+          and off_store.is_protected())
+    off_store.unlock("hunter2pass")
+    check("vault pw: turn off while unlocked keeps the data",
+          off_store.disable_master_password()
+          and not off_store.is_protected() and off_store.count() == 1
+          and yc.VaultStore(path=off_path).count() == 1)
 
     # ---- 导入合并语义（v3.2.9）：合并而不是覆盖 + 完全重复只留一条 + 时间倒序 ----
     ms = yc.ClipboardStore(path=os.path.join(tmp, "merge_semantics.json"))
@@ -1503,6 +1522,33 @@ def test_gui():
               and _pwv2._unlock_msg.text() == "")
         check("vault pw ui: password button switches to change mode",
               _pwv2._pw_btn.text() == yq.tr("vault_pw_change_title"))
+        check("vault pw ui: turn-off button offered right after unlocking",
+              _pwv2._off_btn.isVisible()
+              and _pwv2._off_btn.text() == yq.tr("vault_pw_off"))
+        check("vault pw ui: lock page uses res/suo.png icon",
+              os.path.exists(yq._res_icon("suo.png"))
+              and any(not lbl.pixmap().isNull()
+                      for lbl in _pwv2._lock_page.findChildren(yq.QLabel)))
+        check("vault pw ui: long note removed from the lock page",
+              yq.tr("vault_pw_note") == "vault_pw_note"
+              and not any("PBKDF2" in (lbl.text() or "")
+                          for lbl in _pwv2._lock_page.findChildren(yq.QLabel)))
+        # 密码框右侧的"显示 / 隐藏"
+        _pwdlg = yq._VaultPasswordDialog(win, win, True)
+        _ed = _pwdlg._now
+        check("vault pw ui: note removed from the password dialog too",
+              not any("PBKDF2" in (lbl.text() or "")
+                      for lbl in _pwdlg.findChildren(yq.QLabel))
+              and _ed.echoMode() == yq.QLineEdit.EchoMode.Password)
+        for _act in _ed.actions():
+            _act.trigger()
+        check("vault pw ui: show toggle reveals the password",
+              _ed.echoMode() == yq.QLineEdit.EchoMode.Normal)
+        for _act in _ed.actions():
+            _act.trigger()
+        check("vault pw ui: toggle hides it again",
+              _ed.echoMode() == yq.QLineEdit.EchoMode.Password)
+        _pwdlg.close()
         # 闲置自动锁定：把倒计时调到 60ms 验证计时器真的会锁
         _pwv2.VAULT_IDLE_LOCK_MS = 60
         _pwv2._restart_lock_timer()
@@ -1527,7 +1573,7 @@ def test_gui():
             app.processEvents()
         check("vault pw ui: cancel the master password restores the old flow",
               win.vault.unlock("hunter2pass")
-              and win.vault.remove_master_password("hunter2pass")
+              and win.vault.disable_master_password()
               and not win.vault.is_protected()
               and win.vault.count() == _vault_rows_before)
 

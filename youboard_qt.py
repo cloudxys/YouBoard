@@ -71,7 +71,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import (
     Qt, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal,
-    QThread, QObject, QSize, QRect, QRectF, QPoint, QEvent,
+    QThread, QObject, QSize, QRect, QRectF, QPoint, QPointF, QEvent,
     QAbstractNativeEventFilter, QUrl, QDateTime,
 )
 from PyQt6.QtGui import (
@@ -664,6 +664,81 @@ def _lock_icon(size=20, color=None):
                       s * 0.13, s * 0.13)
     p.end()
     return QIcon(pm)
+
+
+_VAULT_LOCK_PM_CACHE = {}
+
+
+def _vault_lock_pixmap(size=64):
+    """密库的挂锁图标：优先用 res/suo.png（用户给的图片），没有才退回现画的那个。"""
+    size = int(size)
+    cached = _VAULT_LOCK_PM_CACHE.get(size)
+    if cached is not None:
+        return cached
+    pm = QPixmap(_res_icon("suo.png"))
+    if pm.isNull():
+        pm = _lock_icon(size).pixmap(size, size)
+    else:
+        pm = pm.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+    _VAULT_LOCK_PM_CACHE[size] = pm
+    return pm
+
+
+_EYE_PM_CACHE = {}
+
+
+def _eye_pixmap(size=16, color=None, open_=True):
+    """密码框右侧"显示 / 隐藏"的小眼睛（点开看明文，再点回隐藏）。"""
+    color = color or C.get("TEXT_SEC", "#aeb5bd")
+    key = (int(size), str(color), bool(open_))
+    cached = _EYE_PM_CACHE.get(key)
+    if cached is not None:
+        return cached
+    s = float(size)
+    pm = QPixmap(int(size), int(size))
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color))
+    pen.setWidthF(max(1.2, s * 0.09))
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    path = QPainterPath()
+    path.moveTo(s * 0.08, s * 0.5)
+    path.cubicTo(s * 0.30, s * 0.16, s * 0.70, s * 0.16, s * 0.92, s * 0.5)
+    path.cubicTo(s * 0.70, s * 0.84, s * 0.30, s * 0.84, s * 0.08, s * 0.5)
+    p.drawPath(path)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(color))
+    r = s * 0.15
+    p.drawEllipse(QPointF(s * 0.5, s * 0.5), r, r)
+    if not open_:
+        slash = QPen(QColor(color))
+        slash.setWidthF(max(1.4, s * 0.1))
+        slash.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(slash)
+        p.drawLine(QPointF(s * 0.16, s * 0.86), QPointF(s * 0.84, s * 0.14))
+    p.end()
+    _EYE_PM_CACHE[key] = pm
+    return pm
+
+
+def _attach_password_toggle(edit):
+    """给密码框右侧挂一个"显示 / 隐藏"按钮（点一下在明文和圆点之间切换）。"""
+    def _toggle(*_a):
+        show = edit.echoMode() == QLineEdit.EchoMode.Password
+        edit.setEchoMode(QLineEdit.EchoMode.Normal if show
+                         else QLineEdit.EchoMode.Password)
+        act.setIcon(QIcon(_eye_pixmap(16, open_=not show)))
+        act.setToolTip(tr("vault_pw_hide") if show else tr("vault_pw_show"))
+
+    act = edit.addAction(QIcon(_eye_pixmap(16, open_=False)),
+                         QLineEdit.ActionPosition.TrailingPosition)
+    act.setToolTip(tr("vault_pw_show"))
+    act.triggered.connect(_toggle)
+    return act
 
 
 def _force_square_corners(widget):
@@ -1603,7 +1678,11 @@ STRINGS = {
         "vault_pw_set_ok": "已启用主密码：下次打开密库需要解锁",
         "vault_pw_change_ok": "主密码已修改",
         "vault_pw_removed": "已取消主密码，密库改回本机密钥加密",
-        "vault_pw_note": "主密码只在本机校验、不存任何地方，忘了就打不开（只能清空密库重设）。它用 PBKDF2 派生独立密钥，和 youboard.key 无关：密库清单与图片都是加密存的，拷走文件也看不了；但它挡不住本机上正在运行的恶意程序。",
+        "vault_pw_show": "显示密码", "vault_pw_hide": "隐藏密码",
+        "vault_pw_off": "关闭密码",
+        "vault_pw_off_confirm": "关闭主密码？",
+        "vault_pw_off_sub": "关闭后打开密库不再需要密码（直接就能看）；随时可以再设回来。",
+        "vault_pw_off_done": "已关闭主密码，密库现在可以直接打开",
         "vault_pw_forget": "忘记主密码？",
         "vault_pw_forget_sub": "主密码没有找回功能。清空密库可以重设主密码，但密库里的内容会全部删除。",
         "vault_pw_wipe": "清空密库并重设",
@@ -2097,7 +2176,11 @@ STRINGS = {
         "vault_pw_set_ok": "Master password enabled — the vault will ask for it next time",
         "vault_pw_change_ok": "Master password changed",
         "vault_pw_removed": "Master password removed — the vault is back on the local key",
-        "vault_pw_note": "The master password is verified on this device only and is never stored — if you forget it the vault can't be opened (only wiped and re-created). It derives a separate key with PBKDF2 (unrelated to youboard.key): the list and the images are stored encrypted, so copying the files away doesn't help. It cannot stop malware already running on this machine.",
+        "vault_pw_show": "Show password", "vault_pw_hide": "Hide password",
+        "vault_pw_off": "Turn password off",
+        "vault_pw_off_confirm": "Turn the master password off?",
+        "vault_pw_off_sub": "The vault will open without asking for a password; you can turn it back on any time.",
+        "vault_pw_off_done": "Master password turned off — the vault opens directly now",
         "vault_pw_forget": "Forgot the master password?",
         "vault_pw_forget_sub": "There is no recovery. Wiping the vault lets you set a new master password, but every item inside is deleted.",
         "vault_pw_wipe": "Wipe vault and start over",
@@ -14347,6 +14430,7 @@ class _VaultPasswordDialog(_CardOverlayDialog):
                          else tr("vault_pw_set_title"),
                          tr("vault_pw_change_sub") if protected
                          else tr("vault_pw_set_sub"))
+        self._icon_lbl.setPixmap(_vault_lock_pixmap(44))
         self._protected = bool(protected)
         self._result = ("", "")
         lay = self._lay
@@ -14374,6 +14458,8 @@ class _VaultPasswordDialog(_CardOverlayDialog):
         self._again = QLineEdit()
         self._again.setEchoMode(QLineEdit.EchoMode.Password)
         self._again.setPlaceholderText(tr("vault_f_pw_again"))
+        for _ed in (self._now, self._new, self._again):
+            _attach_password_toggle(_ed)
         row = 0
         if self._protected:
             add_row(row, tr("vault_f_pw_now"), self._now)
@@ -14387,11 +14473,6 @@ class _VaultPasswordDialog(_CardOverlayDialog):
         self._err.setObjectName("retNote")
         self._err.setWordWrap(True)
         lay.addWidget(self._err)
-
-        note = QLabel(tr("vault_pw_note"))
-        note.setObjectName("retNote")
-        note.setWordWrap(True)
-        lay.addWidget(note)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
@@ -14445,12 +14526,14 @@ class _VaultUnlockDialog(_CardOverlayDialog):
     def __init__(self, owner, app, vault):
         super().__init__(owner, app, "🔒", tr("vault_locked_title"),
                          tr("vault_locked_sub"))
+        self._icon_lbl.setPixmap(_vault_lock_pixmap(44))
         self._vault = vault
         lay = self._lay
         self._edit = QLineEdit()
         self._edit.setEchoMode(QLineEdit.EchoMode.Password)
         self._edit.setPlaceholderText(tr("vault_pw_ph"))
         self._edit.returnPressed.connect(self._try)
+        _attach_password_toggle(self._edit)
         lay.addWidget(self._edit)
         self._msg = QLabel("")
         self._msg.setObjectName("retNote")
@@ -14500,7 +14583,10 @@ class VaultDialog(QDialog):
         self._desk_widget = getattr(app, "_desk_widget", None)
         header = _make_frameless_dialog(self, tr("vault_title"))
         self.setFixedSize(700 if LANG == "en" else 680, 580)
-        if LOGO_ICO and os.path.exists(LOGO_ICO):
+        _suo_ico = _res_icon("suo.ico")
+        if os.path.exists(_suo_ico):
+            self.setWindowIcon(QIcon(_suo_ico))
+        elif LOGO_ICO and os.path.exists(LOGO_ICO):
             self.setWindowIcon(QIcon(LOGO_ICO))
         self.setStyleSheet(f"""
             QDialog {{ background-color: {C['DIALOG_BG']};
@@ -14617,10 +14703,13 @@ class VaultDialog(QDialog):
         # 主密码：设置 / 修改 + 立即锁定（放在右下角，和内容操作分开）
         self._pw_btn = QPushButton(tr("vault_pw_btn"))
         self._lock_btn = QPushButton(tr("vault_lock_now"))
-        for b in (self._pw_btn, self._lock_btn):
+        # 「关闭密码」：用主密码打开之后，一键退回"直接就能打开"的状态（随时能再设回来）
+        self._off_btn = QPushButton(tr("vault_pw_off"))
+        for b in (self._pw_btn, self._off_btn, self._lock_btn):
             b.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             btns.addWidget(b)
         self._pw_btn.clicked.connect(self._edit_master_password)
+        self._off_btn.clicked.connect(self._disable_master_password)
         self._lock_btn.clicked.connect(self._lock_now)
         self._copy_btn.clicked.connect(self._copy_entry)
         self._open_btn.clicked.connect(self._open_entry)
@@ -14656,10 +14745,16 @@ class VaultDialog(QDialog):
         lay.setContentsMargins(40, 24, 40, 24)
         lay.setSpacing(10)
         lay.addStretch(1)
-        icon = QLabel("🔒")
+        icon_row = QHBoxLayout()
+        icon_row.addStretch(1)
+        icon = QLabel()
+        icon.setPixmap(_vault_lock_pixmap(64))
+        icon.setFixedSize(72, 72)
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size: 40px; background: transparent;")
-        lay.addWidget(icon)
+        icon.setStyleSheet("background: transparent;")
+        icon_row.addWidget(icon)
+        icon_row.addStretch(1)
+        lay.addLayout(icon_row)
         title = QLabel(tr("vault_locked_title"))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(
@@ -14678,6 +14773,7 @@ class VaultDialog(QDialog):
         self._unlock_edit.setPlaceholderText(tr("vault_pw_ph"))
         self._unlock_edit.setFixedWidth(240)
         self._unlock_edit.returnPressed.connect(self._try_unlock)
+        _attach_password_toggle(self._unlock_edit)
         row.addWidget(self._unlock_edit)
         unlock_btn = QPushButton(tr("vault_unlock"))
         unlock_btn.setProperty("cssClass", "accent")
@@ -14690,10 +14786,6 @@ class VaultDialog(QDialog):
         self._unlock_msg.setWordWrap(True)
         self._unlock_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._unlock_msg)
-        note = QLabel(tr("vault_pw_note"))
-        note.setObjectName("muted")
-        note.setWordWrap(True)
-        lay.addWidget(note)
         forget = QLabel(tr("vault_pw_forget"))
         forget.setObjectName("muted")
         forget.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -14749,6 +14841,21 @@ class VaultDialog(QDialog):
         self.vault.lock()
         self._refresh_lock_state()
 
+    def _disable_master_password(self):
+        """关闭主密码：以后打开密库直接就能看（随时可以再设回来）。"""
+        if not self.vault.is_protected() or self.vault.is_locked():
+            return
+        if not _confirm_card(self, tr("vault_pw_off_confirm"),
+                             tr("vault_pw_off_sub"),
+                             ok_text=tr("vault_pw_off")):
+            return
+        if self.vault.disable_master_password():
+            self._refresh_lock_state()
+            self._status.setText(tr("vault_pw_off_done"))
+        else:
+            _info_card(self, tr("vault_pw_off_confirm"),
+                       tr("vault_pw_wrong"), kind="warning")
+
     def _refresh_lock_state(self):
         locked = self._locked_now()
         self._stack.setCurrentWidget(
@@ -14756,6 +14863,7 @@ class VaultDialog(QDialog):
         protected = bool(self.vault.is_protected())
         self._pw_btn.setText(tr("vault_pw_change_title") if protected
                              else tr("vault_pw_set_title"))
+        self._off_btn.setVisible(protected and not locked)
         self._lock_btn.setVisible(protected and not locked)
         if locked:
             self._lock_timer.stop()

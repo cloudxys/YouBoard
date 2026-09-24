@@ -1513,6 +1513,19 @@ class VaultStore:
             self._wrong_password = True
             return False
         old_key = _VAULT_SESSION.get("key") or self._derive(password)
+        return self._drop_master_password(old_key)
+
+    def disable_master_password(self):
+        """已经解锁时直接关闭主密码（界面上的「关闭密码」按钮，不用再输一次）。"""
+        if not self._protected or self.is_locked():
+            return False
+        key = _VAULT_SESSION.get("key")
+        if key is None:
+            return False
+        return self._drop_master_password(key)
+
+    def _drop_master_password(self, old_key):
+        """取消主密码的公共部分：图片解回明文、清单改回 youboard.key 加密。"""
         self._rekey_files(old_key, None)
         self._protected = False
         self._locked = False
