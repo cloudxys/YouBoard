@@ -1762,12 +1762,17 @@ def test_gui():
         time.sleep(0.02)
     _sc = _sdlg_c.frameGeometry().center()
     _cc = _cdlg_c.frameGeometry().center()
+    # 期望位置直接问代码要（屏幕不够宽时它会夹回屏幕内，卡片就只能差几像素）
+    _want_xy = yq._centered_pos(_cdlg_c._host, _cdlg_c.width(),
+                                _cdlg_c.height())
     check("card overlay centers on the window that opened it",
           _cdlg_c._host is _sdlg_c
-          and abs(_cc.x() - _sc.x()) <= 3 and abs(_cc.y() - _sc.y()) <= 3,
-          "host=%s 卡片中心 %s / 设置中心 %s" % (
-              type(_cdlg_c._host).__name__, (_cc.x(), _cc.y()),
-              (_sc.x(), _sc.y())))
+          and abs(_cdlg_c.x() - _want_xy[0]) <= 2
+          and abs(_cdlg_c.y() - _want_xy[1]) <= 2
+          and max(abs(_cc.x() - _sc.x()), abs(_cc.y() - _sc.y())) <= 12,
+          "host=%s 卡片 %s / 期望 %s / 设置中心 %s" % (
+              type(_cdlg_c._host).__name__, (_cdlg_c.x(), _cdlg_c.y()),
+              _want_xy, (_sc.x(), _sc.y())))
     check("card overlay still hugs its card in the settings window",
           abs(_cdlg_c.width() - _cdlg_c.card.width()) <= 4
           and abs(_cdlg_c.height() - _cdlg_c.card.height()) <= 4)
