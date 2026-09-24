@@ -75,8 +75,9 @@
   3. 主密码只在本机校验、不落盘；忘记了只能用「清空密库并重设」（`VaultStore.wipe()`）。
   4. 界面上的锁屏 / 自动锁定 / 关窗即锁在 `VaultDialog`；
      改密码、取消密码都要先验证当前密码，取消时图片要解回明文（`_rekey_files`）。
-     闲置自动锁定时间由用户在「主密码…」里选（1/5/15/30 分钟 / 不自动锁定），
-     存在配置项 `vault_autolock_minutes`（0 = 不锁），`VaultDialog._restart_lock_timer()`
+     闲置自动锁定时间由用户在「主密码…」里自己填数值 + 选单位（秒 / 分钟），
+     或选「不自动锁定」；配置项是 `vault_autolock_seconds`（0 = 不锁，旧版的
+     `vault_autolock_minutes` 仍能读），`VaultDialog._restart_lock_timer()`
      按它起停计时器；卡片里只要新密码留空就只保存这个时间，不用重输当前密码。
   5. 本地加密的边界要在 README 与密库窗口里写明：防离线 / 拷贝，不防本机运行的恶意程序。
 

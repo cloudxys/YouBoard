@@ -1548,21 +1548,36 @@ def test_gui():
             _act.trigger()
         check("vault pw ui: toggle hides it again",
               _ed.echoMode() == yq.QLineEdit.EchoMode.Password)
-        # 闲置自动锁定：用户可自选时间 + 多一个"不自动锁定"
-        check("vault pw ui: auto-lock choices offered",
-              sorted(_pwdlg._lock_btns.keys()) == [0, 1, 5, 15, 30]
-              and _pwdlg._lock_btns[_pwdlg._autolock_min].isChecked())
-        _pwdlg._pick_autolock(15)
-        check("vault pw ui: picking an auto-lock time updates the value",
-              _pwdlg._autolock_min == 15
-              and _pwdlg._lock_btns[15].isChecked()
-              and not _pwdlg._lock_btns[5].isChecked())
+        # 闲置自动锁定：自己填数值 + 选单位（秒 / 分钟），或者直接不自动锁定
+        check("vault pw ui: auto-lock offers seconds/minutes/never",
+              set(_pwdlg._unit_btns) == {"s", "m"}
+              and _pwdlg._never_btn.isCheckable()
+              and _pwdlg._lock_value.minimum() == 1)
+        _pwdlg._pick_unit("s")
+        _pwdlg._lock_value.setValue(45)
+        check("vault pw ui: seconds unit is used as typed",
+              _pwdlg.autolock_seconds() == 45
+              and _pwdlg._unit_btns["s"].isChecked()
+              and not _pwdlg._never_btn.isChecked())
+        _pwdlg._pick_unit("m")
+        _pwdlg._lock_value.setValue(2)
+        check("vault pw ui: minutes unit multiplies by 60",
+              _pwdlg.autolock_seconds() == 120
+              and _pwdlg._unit_btns["m"].isChecked())
         # 只改锁定时间：新密码留空也能保存（不用再输当前密码）
         _pwdlg._new.setText("")
         _pwdlg._again.setText("")
         _pwdlg._save()
         check("vault pw ui: empty new password only saves the lock time",
-              _pwdlg.values() == ("", "", 15) and _pwdlg._err.text() == "")
+              _pwdlg.values() == ("", "", 120) and _pwdlg._err.text() == "")
+        _pwdlg4 = yq._VaultPasswordDialog(win, win, True)
+        _pwdlg4._pick_never()
+        check("vault pw ui: never-lock disables the value box",
+              _pwdlg4.autolock_seconds() == 0
+              and not _pwdlg4._lock_value.isEnabled()
+              and _pwdlg4._never_btn.isChecked()
+              and not _pwdlg4._unit_btns["m"].isChecked())
+        _pwdlg4.close()
         _pwdlg2 = yq._VaultPasswordDialog(win, win, True)
         _pwdlg2._new.setText("anotherpass")
         _pwdlg2._again.setText("anotherpass")
@@ -1572,7 +1587,7 @@ def test_gui():
         _pwdlg2.close()
         _pwdlg.close()
         # 闲置自动锁定：把倒计时调到 60ms 验证计时器真的会锁
-        _pwv2._autolock_min = 0.001
+        _pwv2._autolock_sec = 0.001
         _pwv2._restart_lock_timer()
         time.sleep(0.25)
         for _ in range(4):
@@ -1584,19 +1599,30 @@ def test_gui():
         win.vault.unlock("hunter2pass")
         for _ in range(4):
             app.processEvents()
-        _pwv2._autolock_min = 5
+        _pwv2._autolock_sec = 300
         _pwv2._restart_lock_timer()
         _timer_on = (_pwv2._lock_timer.isActive()
-                     and _pwv2._lock_timer.interval() == 5 * 60 * 1000)
+                     and _pwv2._lock_timer.interval() == 300 * 1000)
         _pwv2._save_autolock(0)
         check("vault pw ui: idle auto-lock time is user configurable",
               _timer_on and not _pwv2._lock_timer.isActive()
-              and yq.load_config().get("vault_autolock_minutes") == 0)
-        _pwv2._save_autolock(5)
+              and yq.load_config().get("vault_autolock_seconds") == 0)
+        _pwv2._save_autolock(300)
         check("vault pw ui: auto-lock setting persisted",
-              yq.load_config().get("vault_autolock_minutes") == 5
+              yq.load_config().get("vault_autolock_seconds") == 300
               and _pwv2._lock_timer.isActive()
-              and _pwv2._lock_timer.interval() == 5 * 60 * 1000)
+              and _pwv2._lock_timer.interval() == 300 * 1000)
+        # 存的是 300 秒：下次打开卡片要显示成"5 分钟"
+        _pwdlg3 = yq._VaultPasswordDialog(win, win, True)
+        check("vault pw ui: stored seconds shown in the right unit",
+              _pwdlg3._lock_value.value() == 5
+              and _pwdlg3._unit_btns["m"].isChecked()
+              and not _pwdlg3._never_btn.isChecked())
+        _pwdlg3.close()
+        check("vault ui: long subtitle removed from the window",
+              not any(("加密保存" in (lbl.text() or ""))
+                      or ("Encrypted on this device" in (lbl.text() or ""))
+                      for lbl in _pwv2.findChildren(yq.QLabel)))
         # 确认卡片要落在"打开它的那个窗口"正中间（密库窗口），不是主窗口
         _owner = yq._card_owner(_pwv2)
         check("confirm card is owned by the window in front", _owner is _pwv2)

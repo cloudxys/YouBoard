@@ -1627,7 +1627,6 @@ STRINGS = {
         # 密库（3.3.1）：用户主动放进去的私密内容，名称可选、四类归档
         "vault_btn": "密库",
         "vault_title": "密库",
-        "vault_sub": "只存在本机、加密保存；可以设主密码，打开需解锁、闲置 / 关窗自动锁定；内容不进剪贴板历史，也不同步到手机 / 云端",
         "vault_add": "新增", "vault_edit": "编辑", "vault_delete": "删除",
         "vault_copy": "复制", "vault_open": "打开", "vault_rename": "重命名",
         "vault_search_ph": "搜索名称 / 内容",
@@ -1680,7 +1679,8 @@ STRINGS = {
         "vault_pw_removed": "已取消主密码，密库改回本机密钥加密",
         "vault_pw_show": "显示密码", "vault_pw_hide": "隐藏密码",
         "vault_f_autolock": "闲置自动锁定",
-        "vault_lock_min": "{n} 分钟", "vault_lock_never": "不自动锁定",
+        "vault_lock_unit_s": "秒", "vault_lock_unit_m": "分钟",
+        "vault_lock_never": "不自动锁定",
         "vault_pw_saved": "设置已保存",
         "vault_pw_need_current": "先填当前主密码",
         "vault_pw_off": "关闭密码",
@@ -2129,7 +2129,6 @@ STRINGS = {
         # Vault (3.3.1) — private items you add by hand; name is optional
         "vault_btn": "Vault",
         "vault_title": "Vault",
-        "vault_sub": "Encrypted on this device only; an optional master password is required to open it and it locks when idle or closed — nothing here enters clipboard history or syncs to phone/cloud",
         "vault_add": "Add", "vault_edit": "Edit", "vault_delete": "Delete",
         "vault_copy": "Copy", "vault_open": "Open", "vault_rename": "Rename",
         "vault_search_ph": "Search name / content",
@@ -2182,7 +2181,8 @@ STRINGS = {
         "vault_pw_removed": "Master password removed — the vault is back on the local key",
         "vault_pw_show": "Show password", "vault_pw_hide": "Hide password",
         "vault_f_autolock": "Auto-lock when idle",
-        "vault_lock_min": "{n} min", "vault_lock_never": "Never",
+        "vault_lock_unit_s": "sec", "vault_lock_unit_m": "min",
+        "vault_lock_never": "Never",
         "vault_pw_saved": "Settings saved",
         "vault_pw_need_current": "Enter the current master password first",
         "vault_pw_off": "Turn password off",
@@ -14437,28 +14437,42 @@ def _vault_add_from_values(vault, vals):
     return vault.add(kind="text", content=content, name=name, **extra)
 
 
-VAULT_AUTOLOCK_DEFAULT_MIN = 5
-VAULT_AUTOLOCK_CHOICES = (1, 5, 15, 30, 0)      # 0 = 不自动锁定
+VAULT_AUTOLOCK_DEFAULT_SEC = 5 * 60             # 默认 5 分钟
 
 
-def _vault_autolock_minutes(cfg=None):
-    """密库闲置多久自动锁定（分钟）；0 = 不自动锁定。"""
+def _vault_autolock_seconds(cfg=None):
+    """密库闲置多久自动锁定（秒）；0 = 不自动锁定。
+
+    配置里存秒（vault_autolock_seconds）；早期的分钟配置继续兼容。
+    """
     try:
         cfg = cfg if isinstance(cfg, dict) else load_config()
-        return max(0, int(cfg.get("vault_autolock_minutes",
-                                  VAULT_AUTOLOCK_DEFAULT_MIN)))
+        if "vault_autolock_seconds" in cfg:
+            return max(0, int(cfg.get("vault_autolock_seconds") or 0))
+        if "vault_autolock_minutes" in cfg:
+            return max(0, int(cfg.get("vault_autolock_minutes") or 0)) * 60
     except (TypeError, ValueError):
-        return VAULT_AUTOLOCK_DEFAULT_MIN
+        pass
+    return VAULT_AUTOLOCK_DEFAULT_SEC
 
 
-def _set_vault_autolock_minutes(minutes):
-    """把"闲置自动锁定"写进配置；返回是否写成功。"""
+def _set_vault_autolock_seconds(seconds):
+    """把"闲置自动锁定"（秒）写进配置；返回是否写成功。"""
     try:
         cfg = load_config()
-        cfg["vault_autolock_minutes"] = max(0, int(minutes))
+        cfg["vault_autolock_seconds"] = max(0, int(seconds))
+        cfg.pop("vault_autolock_minutes", None)
         return bool(save_config(cfg))
     except (TypeError, ValueError, IOError, OSError):
         return False
+
+
+def _split_autolock_seconds(seconds):
+    """把秒数拆成界面上的 (数值, 单位)：整分钟就用分钟，否则用秒。"""
+    seconds = max(0, int(seconds or 0))
+    if seconds and seconds % 60 == 0:
+        return seconds // 60, "m"
+    return seconds, "s"
 
 
 class _VaultPasswordDialog(_CardOverlayDialog):
@@ -14515,28 +14529,36 @@ class _VaultPasswordDialog(_CardOverlayDialog):
         add_row(row, tr("vault_f_pw_again"), self._again)
         lay.addLayout(grid)
 
-        # 闲置自动锁定：用户自己选"多久没动就锁上"（最后一档 = 不自动锁定）
+        # 闲置自动锁定：用户自己填数值 + 选单位（秒 / 分钟），或干脆不自动锁定
         lock_lbl = QLabel(tr("vault_f_autolock"))
         lock_lbl.setObjectName("retSub")
         lay.addWidget(lock_lbl)
-        self._lock_btns = {}
-        lock_grid = QGridLayout()
-        lock_grid.setContentsMargins(0, 0, 0, 0)
-        lock_grid.setHorizontalSpacing(8)
-        lock_grid.setVerticalSpacing(8)
-        self._autolock_min = _vault_autolock_minutes()
-        for idx, mins in enumerate(VAULT_AUTOLOCK_CHOICES):
-            btn = QPushButton(tr("vault_lock_never") if not mins
-                              else tr("vault_lock_min", n=mins))
+        lock_row = QHBoxLayout()
+        lock_row.setSpacing(8)
+        self._lock_value = QSpinBox()
+        self._lock_value.setRange(1, 9999)
+        self._lock_value.setFixedWidth(110)
+        lock_row.addWidget(self._lock_value)
+        self._unit_btns = {}
+        for key, text in (("s", tr("vault_lock_unit_s")),
+                          ("m", tr("vault_lock_unit_m"))):
+            btn = QPushButton(text)
+            btn.setObjectName("unitPill")
             btn.setCheckable(True)
             btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-            btn.clicked.connect(lambda _c=False, m=mins: self._pick_autolock(m))
-            lock_grid.addWidget(btn, idx // 3, idx % 3)
-            self._lock_btns[mins] = btn
-        for col in range(3):
-            lock_grid.setColumnStretch(col, 1)
-        lay.addLayout(lock_grid)
-        self._pick_autolock(self._autolock_min)
+            btn.clicked.connect(lambda _c=False, k=key: self._pick_unit(k))
+            lock_row.addWidget(btn)
+            self._unit_btns[key] = btn
+        self._never_btn = QPushButton(tr("vault_lock_never"))
+        self._never_btn.setObjectName("unitPill")
+        self._never_btn.setCheckable(True)
+        self._never_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._never_btn.clicked.connect(lambda _c=False: self._pick_never())
+        lock_row.addWidget(self._never_btn)
+        lock_row.addStretch(1)
+        lay.addLayout(lock_row)
+        self._autolock_sec = _vault_autolock_seconds()
+        self._paint_autolock()
 
         self._err = QLabel("")
         self._err.setObjectName("retNote")
@@ -14563,18 +14585,43 @@ class _VaultPasswordDialog(_CardOverlayDialog):
         self._now.returnPressed.connect(self._save)
 
     def values(self):
-        """(当前主密码, 新主密码, 闲置自动锁定分钟数)。
+        """(当前主密码, 新主密码, 闲置自动锁定秒数)。
 
         新主密码留空 = 不改密码（只保存锁定时间）；取消密码用密库窗口的
         「关闭密码」按钮。
         """
         return self._result
 
-    def _pick_autolock(self, minutes):
-        """选闲置自动锁定时间；0 = 不自动锁定。"""
-        self._autolock_min = int(minutes or 0)
-        for mins, btn in self._lock_btns.items():
-            btn.setChecked(mins == self._autolock_min)
+    def _pick_unit(self, unit):
+        """选单位（秒 / 分钟）：选了单位就是要自动锁定。"""
+        self._lock_unit = "m" if unit == "m" else "s"
+        self._never = False
+        self._paint_autolock()
+
+    def _pick_never(self):
+        """不自动锁定。"""
+        self._never = True
+        self._paint_autolock()
+
+    def _paint_autolock(self):
+        """按当前状态刷新（数值 + 单位，或者"不自动锁定"）。"""
+        if not hasattr(self, "_never"):
+            # 第一次进来：按配置里的秒数决定显示成"秒"还是"分钟"
+            value, unit = _split_autolock_seconds(self._autolock_sec)
+            self._never = (self._autolock_sec <= 0)
+            self._lock_unit = unit
+            self._lock_value.setValue(max(1, int(value)))
+        self._never_btn.setChecked(self._never)
+        for key, btn in self._unit_btns.items():
+            btn.setChecked((not self._never) and key == self._lock_unit)
+        self._lock_value.setEnabled(not self._never)
+
+    def autolock_seconds(self):
+        """用户选的闲置时间（秒）；0 = 不自动锁定。"""
+        if getattr(self, "_never", False):
+            return 0
+        value = max(1, int(self._lock_value.value()))
+        return value * (60 if getattr(self, "_lock_unit", "s") == "m" else 1)
 
     def _save(self):
         now = self._now.text() if self._protected else ""
@@ -14594,7 +14641,7 @@ class _VaultPasswordDialog(_CardOverlayDialog):
             # 第一次设置：必须给一个主密码
             self._err.setText(tr("vault_pw_len"))
             return
-        self._result = (now, new, self._autolock_min)
+        self._result = (now, new, self.autolock_seconds())
         self.accept()
 
 
@@ -14659,8 +14706,8 @@ class VaultDialog(QDialog):
         super().__init__(app)
         self.app = app
         self.vault = getattr(app, "vault", None) or VaultStore()
-        # 闲置自动锁定：用户在「主密码…」里自己选的时间（0 = 不自动锁定）
-        self._autolock_min = _vault_autolock_minutes()
+        # 闲置自动锁定：用户在「主密码…」里自己填的时间（0 = 不自动锁定）
+        self._autolock_sec = _vault_autolock_seconds()
         # 弹层铺满本窗口时把桌面小组件抬回最上层（同「编辑标签」一套处理）
         self._desk_widget = getattr(app, "_desk_widget", None)
         header = _make_frameless_dialog(self, tr("vault_title"))
@@ -14713,11 +14760,6 @@ class VaultDialog(QDialog):
         self._stack.addWidget(self._content_page)
         self._stack.addWidget(self._lock_page)
         outer.addWidget(self._stack, 1)
-
-        desc = QLabel(tr("vault_sub"))
-        desc.setObjectName("muted")
-        desc.setWordWrap(True)
-        root.addWidget(desc)
 
         # 分类胶囊：和主界面顶部一样的一排（带各自数量）
         self._kind_btns = {}
@@ -14954,15 +14996,15 @@ class VaultDialog(QDialog):
     def _restart_lock_timer(self):
         """按用户设的闲置时间重启倒计时；0 = 不自动锁定。"""
         if (self.vault.is_protected() and not self.vault.is_locked()
-                and self._autolock_min > 0):
-            self._lock_timer.start(int(self._autolock_min * 60 * 1000))
+                and self._autolock_sec > 0):
+            self._lock_timer.start(int(self._autolock_sec * 1000))
         else:
             self._lock_timer.stop()
 
-    def _save_autolock(self, minutes):
+    def _save_autolock(self, seconds):
         """把"闲置自动锁定"存下来并立刻生效。"""
-        self._autolock_min = max(0, int(minutes or 0))
-        _set_vault_autolock_minutes(self._autolock_min)
+        self._autolock_sec = max(0, int(seconds or 0))
+        _set_vault_autolock_seconds(self._autolock_sec)
         self._restart_lock_timer()
 
     def _edit_master_password(self):
@@ -14971,8 +15013,8 @@ class VaultDialog(QDialog):
         dlg = _VaultPasswordDialog(self, self.app, protected)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        old_pw, new_pw, minutes = dlg.values()
-        self._save_autolock(minutes)
+        old_pw, new_pw, seconds = dlg.values()
+        self._save_autolock(seconds)
         if protected and not new_pw:
             # 只调了锁定时间：密码不动，不用再验证
             self._status.setText(tr("vault_pw_saved"))
