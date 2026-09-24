@@ -1340,6 +1340,11 @@ def test_gui():
         ("update status", yq._UpdateStatusDialog(win, win, yq.APP_VERSION)),
         ("retention", yq._RetentionDialog(win, win, {"mode": "forever"})),
         ("bridge", yq._BridgeDialog(win, win)),
+        ("tags", yq._TagsDialog(win, win, ["a"], ["a"], mode="edit", count=1)),
+        ("ai prompt", yq._AIPromptDialog(win, win)),
+        ("vault entry", yq._VaultEntryDialog(win, win)),
+        ("ai settings", yq._AISettingsDialog(win, win,
+                                             yq.default_ai_settings())),
     ]
     for _name, _dlg in window_probes:
         _dlg.show()
@@ -1365,6 +1370,31 @@ def test_gui():
         except Exception:
             pass
         _dlg.close()
+
+    # 内容变化（点「自定义」多出一行）后窗口尺寸变了，位置要跟着重新居中
+    _ret = yq._RetentionDialog(win, win, {"mode": "forever"})
+    _ret.show()
+    for _ in range(12):
+        app.processEvents()
+        time.sleep(0.02)
+    _ret._pick("custom")
+    for _ in range(20):
+        app.processEvents()
+        time.sleep(0.02)
+    _want_xy = _ret._host_center(*_ret._target_size())
+    check("card overlay stays centered when content changes",
+          abs(_ret.x() - _want_xy[0]) <= 3 and abs(_ret.y() - _want_xy[1]) <= 3,
+          "%s vs %s" % ((_ret.x(), _ret.y()), _want_xy))
+    check("card overlay still hugs the card after content change",
+          abs(_ret.width() - _ret.card.width()) <= 4
+          and abs(_ret.height() - _ret.card.height()) <= 4,
+          "窗口 %dx%d / 卡片 %dx%d" % (_ret.width(), _ret.height(),
+                                       _ret.card.width(), _ret.card.height()))
+    try:
+        _ret.reject()
+    except Exception:
+        pass
+    _ret.close()
 
     # 3.3.3：卡片要能按住拖动（所有卡片弹层一致），内容变多时窗口要跟着长
     from PyQt6.QtGui import QMouseEvent as _QMouseEvent
@@ -1753,6 +1783,24 @@ def test_gui():
           cfg_dlg._base.text() == "http://localhost:11434/v1"
           and cfg_dlg._model.text() == "qwen3.5",
           "%s / %s" % (cfg_dlg._base.text(), cfg_dlg._model.text()))
+    # 用户实测：自定义服务商配好保存后，再进来点一下别的、又点回「自定义」，
+    # 地址和模型全没了（切服务商时被空默认值覆盖）。切走再切回必须原样还原。
+    cfg_dlg._pick_provider("custom")
+    cfg_dlg._base.setText("http://127.0.0.1:9999/v1")
+    cfg_dlg._model.setText("my-model")
+    cfg_dlg._model_label.setText("我的模型")
+    cfg_dlg._pick_provider("deepseek")
+    _mid = (cfg_dlg._base.text(), cfg_dlg._model.text())
+    cfg_dlg._pick_provider("custom")
+    check("ai: custom provider keeps what the user typed",
+          (cfg_dlg._base.text(), cfg_dlg._model.text(),
+           cfg_dlg._model_label.text())
+          == ("http://127.0.0.1:9999/v1", "my-model", "我的模型")
+          and cfg_dlg.values()["base_url"] == "http://127.0.0.1:9999/v1"
+          and cfg_dlg.values()["model"] == "my-model",
+          "%s -> %s" % (str(_mid), cfg_dlg._base.text()))
+    check("ai: switching away fills the other provider's defaults",
+          _mid == ("https://api.deepseek.com", "deepseek-flash"), str(_mid))
     check("ai: spin arrows flattened (no square block)",
           "up-button" in cfg_dlg.card.styleSheet()
           and "background: transparent" in cfg_dlg.card.styleSheet())
@@ -2361,6 +2409,174 @@ def test_updater():
         srv.server_close()
 
 
+def _render_update_bat(new_path, app_path, sha256, source=None):
+    """按 _finish_update 里的写法把替换脚本渲染出来（source 可传旧版本做对照）。"""
+    src = source if source is not None else open(
+        os.path.join(SRC, "youboard_qt.py"), encoding="utf-8").read()
+    mark = 'bat_content = f"""'
+    i = src.index(mark) + len(mark)
+    j = src.index('"""', i)
+    return src[i:j].format(tmp_exe=new_path, current_exe=app_path,
+                           sha256=sha256)
+
+
+def test_update_safety():
+    """换包脚本的状态机：任何失败路径都不能让用户手上没有主程序。
+
+    背景（2026-09-24 用户真实事故）：新版一起来就把 .bak 删了，替换脚本 20 秒后
+    判定"没起来"去回滚，备份已经不在；旧脚本那行 `del /f "%_YB_APP%"` 又把刚装上的
+    文件删掉，于是主程序消失，只剩一个 YouBoard.exe.update_failed。
+    """
+    src = open(os.path.join(SRC, "youboard_qt.py"), encoding="utf-8").read()
+    bat = _render_update_bat("NEW.exe", "APP.exe", "0" * 64)
+    check("updater: rollback checks the backup before touching the app",
+          'if not exist "%_YB_BAK%" goto _yb_keep' in bat
+          and ":_yb_putback" in bat
+          and 'del /f "%_YB_APP%" >nul 2>&1\nmove' not in bat)
+    check("updater: stale .bak cleared, wait loop keys on the app moving",
+          'del /f /q "%_YB_BAK%"' in bat
+          and 'if not exist "%_YB_APP%" goto _yb_install' in bat)
+    check("updater: success needs the new build to report itself",
+          'set "_YB_OK=' in bat and "_yb_live" in bat)
+    check("updater: unverified build is never launched at the user",
+          'if "%_YB_VERIFIED%"=="1" start' in bat)
+    _done = bat[bat.index(":_yb_done"):bat.index(":_yb_rollback")]
+    check("updater: backup deleted only on the success path",
+          'del /f /q "%_YB_BAK%"' in _done
+          and 'del /f /q "%_YB_BAK%"' not in bat[bat.index(":_yb_rollback"):])
+    body = src[src.index("def _check_update_leftover"):]
+    body = body[:body.index("\n    def ")]
+    check("updater: app keeps the backup while the script is still running",
+          "_update.bat" in body and "update_ok" in body
+          and "getmtime" in body and "os.remove(bak)" not in body)
+
+    # 端到端：把脚本真跑一遍（cmd.exe 只有 Windows 有）
+    if not sys.platform.startswith("win"):
+        check("updater: replacement script scenarios (skipped)", True)
+        return
+    import hashlib as _hashlib
+    import threading as _threading2
+
+    OLD_B = b"MZ" + b"OLD-BUILD" * 120
+    NEW_B = b"MZ" + b"NEW-BUILD" * 120
+    TASKLINE = ('tasklist /fi "imagename eq YouBoard.exe" 2>nul | findstr /i '
+                '"YouBoard.exe" >nul')
+
+    def _read(path):
+        try:
+            with open(path, "rb") as f:
+                return f.read()
+        except OSError:
+            return None
+
+    def _case(name, app_data, new_data, sha, watcher=None):
+        d = tempfile.mkdtemp(prefix="yb_bat_")
+        try:
+            app = os.path.join(d, "YouBoard.exe")
+            new = os.path.join(d, "_YouBoard_update.exe")
+            if app_data is not None:
+                with open(app, "wb") as f:
+                    f.write(app_data)
+            with open(new, "wb") as f:
+                f.write(new_data)
+            text = _render_update_bat(new, app, sha)
+            # 测试里把节奏缩短，并且不真的启动进程、不清 %TEMP%\_MEI*
+            text = text.replace("ping -n 4", "ping -n 1")
+            text = text.replace("GEQ 60", "GEQ 2").replace("GEQ 30", "GEQ 3")
+            text = text.replace('start "" ', "echo START ")
+            text = text.replace(TASKLINE, "cmd /c exit /b 1")
+            text = text.replace('for /d %%i in ("%TEMP%\\_MEI*") do',
+                                "rem skipped-for-test")
+            bat_path = os.path.join(d, "_update.bat")
+            with open(bat_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            stop = _threading2.Event()
+            th = None
+            if watcher is not None:
+                th = _threading2.Thread(target=watcher, args=(d, stop),
+                                        daemon=True)
+                th.start()
+            try:
+                subprocess.run(["cmd.exe", "/c", bat_path], cwd=d,
+                               timeout=180, capture_output=True)
+            finally:
+                stop.set()
+                if th is not None:
+                    th.join(timeout=5)
+            left = sorted(os.listdir(d))
+            got = _read(app)
+            return left, got
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def _report_new(d, stop):
+        """模拟新版启动后写 .update_ok。"""
+        mark = os.path.join(d, "YouBoard.exe.update_ok")
+        app = os.path.join(d, "YouBoard.exe")
+        while not stop.is_set():
+            try:
+                if _read(app) == NEW_B:
+                    with open(mark, "w", encoding="utf-8") as f:
+                        f.write("x")
+            except OSError:
+                pass
+            time.sleep(0.2)
+
+    def _drop_bak(d, stop):
+        """模拟"新版一起来就把备份删了，随后自己又崩了"。"""
+        app = os.path.join(d, "YouBoard.exe")
+        bak = os.path.join(d, "YouBoard.exe.bak")
+        while not stop.is_set():
+            try:
+                if _read(app) == NEW_B and _read(bak) == OLD_B:
+                    os.remove(bak)
+            except OSError:
+                pass
+            time.sleep(0.2)
+
+    good = _hashlib.sha256(NEW_B).hexdigest()
+    left, got = _case("new build starts and reports itself", OLD_B, NEW_B,
+                      good, watcher=_report_new)
+    check("updater: script installs new build and cleans up",
+          got == NEW_B and "YouBoard.exe.bak" not in left
+          and "_update.bat" not in left, str(left))
+    left, got = _case("hash mismatch rolls back", OLD_B, NEW_B, "0" * 64)
+    check("updater: script rolls back to the previous build",
+          got == OLD_B and "YouBoard.exe.update_failed" in left
+          and "YouBoard.exe.bak" not in left, str(left))
+    left, got = _case("no backup available", None, NEW_B, "0" * 64)
+    check("updater: script never leaves an empty install",
+          got is not None and "YouBoard.exe.update_failed" in left, str(left))
+    stale_dir = tempfile.mkdtemp(prefix="yb_bat_")
+    try:
+        app = os.path.join(stale_dir, "YouBoard.exe")
+        new = os.path.join(stale_dir, "_YouBoard_update.exe")
+        with open(app, "wb") as f:
+            f.write(OLD_B)
+        with open(new, "wb") as f:
+            f.write(NEW_B)
+        with open(app + ".bak", "wb") as f:
+            f.write(b"STALE LEFT OVER")
+        text = _render_update_bat(new, app, "0" * 64)
+        text = text.replace("ping -n 4", "ping -n 1")
+        text = text.replace("GEQ 60", "GEQ 2")
+        text = text.replace('start "" ', "echo START ")
+        text = text.replace(TASKLINE, "cmd /c exit /b 1")
+        bat_path = os.path.join(stale_dir, "_update.bat")
+        with open(bat_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        subprocess.run(["cmd.exe", "/c", bat_path], cwd=stale_dir,
+                       timeout=180, capture_output=True)
+        check("updater: stale .bak is not mistaken for this round's backup",
+              _read(app) == OLD_B, str(sorted(os.listdir(stale_dir))))
+    finally:
+        shutil.rmtree(stale_dir, ignore_errors=True)
+    left, got = _case("backup vanishes mid-flight", OLD_B, NEW_B, good,
+                      watcher=_drop_bak)
+    check("updater: script keeps the app when the backup is gone",
+          got is not None and "YouBoard.exe.update_failed" in left, str(left))
+
+
 def main():
     print("== syntax ==")
     test_syntax()
@@ -2369,6 +2585,7 @@ def main():
         return 1
     print("== updater ==")
     test_updater()
+    test_update_safety()
     print("== extension ==")
     test_extension()
     print("== core ==")

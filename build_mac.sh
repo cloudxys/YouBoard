@@ -1,7 +1,7 @@
 #!/bin/bash
 # ===========================================================================
 # YouBoard macOS 一键构建脚本（必须在 macOS 上运行）
-# 产物：dist/YouBoard.app（可选：YouBoard_macOS_v3.3.3.dmg）
+# 产物：dist/YouBoard.app（可选：YouBoard_macOS_v3.3.4.dmg）
 # ===========================================================================
 set -e
 cd "$(dirname "$0")"

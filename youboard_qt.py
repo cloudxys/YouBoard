@@ -3806,14 +3806,39 @@ class _CardOverlayDialog(QDialog):
         """
         w, h = self._target_size()
         if self._placed:
-            # 已经摆好（甚至被用户拖过）：只调整尺寸，位置保持不动
+            # 已经摆好（甚至被用户拖过）：先调尺寸；尺寸变了再决定要不要重新居中
+            changed = (abs(int(w) - self.width()) > 2
+                       or abs(int(h) - self.height()) > 2)
             try:
                 self.resize(int(w), int(h))
-                # 卡片上限要一起放开，否则内容变多时卡片被旧上限卡住（底部被裁）
-                self.card.setMaximumHeight(int(h))
+                self._hug_card(w, h)
             except Exception:
                 pass
+            # 内容变多/变少导致窗口尺寸变化时，卡片要跟着回到宿主正中间
+            # （用户自己拖过的位置要留着，不能被居中覆盖）
+            if changed and not self._user_moved:
+                try:
+                    x, y = self._host_center(w, h)
+                    self.move(int(x), int(y))
+                except Exception:
+                    pass
             return
+        x, y = self._host_center(w, h)
+        try:
+            self.setGeometry(int(x), int(y), int(w), int(h))
+            self._placed = True
+        except Exception:
+            pass
+        self._hug_card(w, h)
+        try:
+            desk = getattr(self._host, "_desk_widget", None)
+            if desk is not None and desk.isVisible():
+                desk.raise_()
+        except Exception:
+            pass
+
+    def _host_center(self, w, h):
+        """窗口尺寸 (w, h) 时该摆在哪儿：宿主中央，宿主不可见就当前屏幕居中。"""
         host = self._host
         host_rect = None
         try:
@@ -3830,7 +3855,6 @@ class _CardOverlayDialog(QDialog):
             x = host_rect.x() + (host_rect.width() - w) // 2
             y = host_rect.y() + (host_rect.height() - h) // 2
         elif avail is not None:
-            # 宿主不可见时在当前屏幕居中，别把卡片丢到角落
             x = avail.x() + (avail.width() - w) // 2
             y = avail.y() + (avail.height() - h) // 2
         else:
@@ -3838,31 +3862,40 @@ class _CardOverlayDialog(QDialog):
         if avail is not None:                     # 别跑到屏幕外
             x = max(avail.x(), min(x, avail.x() + avail.width() - w))
             y = max(avail.y(), min(y, avail.y() + avail.height() - h))
+        return int(x), int(y)
+
+    def _hug_card(self, w, h):
+        """把卡片钉成窗口这么大：窗口 = 卡片，截图工具按窗口矩形抓到的就是卡片本身。
+
+        以前只给窗口设尺寸、卡片自己还是固定宽度，两者不一致时窗口就比卡片宽出
+        一大条背景（用户反馈 AI 服务卡片"识别截图给截宽了"）。
+        """
         try:
-            self.setGeometry(int(x), int(y), int(w), int(h))
-            self._placed = True
+            if (int(self.card.width()) != int(w)
+                    or int(self.card.minimumWidth()) != int(w)):
+                self.card.setFixedWidth(int(w))
         except Exception:
             pass
         try:
+            # 卡片上限要一起放开，否则内容变多时卡片被旧上限卡住（底部被裁）
             self.card.setMaximumHeight(int(h))
-        except Exception:
-            pass
-        try:
-            desk = getattr(host, "_desk_widget", None)
-            if desk is not None and desk.isVisible():
-                desk.raise_()
         except Exception:
             pass
 
     def _target_size(self):
-        """卡片当前内容需要的窗口尺寸（= 卡片的首选尺寸，受屏幕限制）。"""
+        """卡片当前内容需要的窗口尺寸（宽度=内容真正需要的最小宽度，受屏幕限制）。"""
         try:
             for _lay in (self.card.layout(), self.layout()):
                 if _lay is not None:
                     _lay.invalidate()
                     _lay.activate()
             hint = self.card.sizeHint()
-            w = max(self.CARD_WIDTH, int(hint.width()))
+            # 宽度按"内容真正需要的最小宽度"算，不能按 sizeHint：卡片里的说明文字是
+            # 自动换行的，sizeHint 会按"整段排成一行"算出八百多像素，窗口跟着变那么宽，
+            # 而卡片本身就是 CARD_WIDTH 宽 —— 窗口比卡片宽出一条背景，截图全带进来。
+            # 同时也不能比内容的最小宽度窄，否则卡片里的按钮/文字会被挤掉。
+            need = int(self.card.minimumSizeHint().width())
+            w = max(self.CARD_WIDTH, need)
             h = max(160, int(hint.height()))
         except Exception:
             w, h = self.CARD_WIDTH, 260
@@ -3880,16 +3913,10 @@ class _CardOverlayDialog(QDialog):
         if not self.isVisible():
             return
         w, h = self._target_size()
-        if abs(w - self.width()) <= 2 and abs(h - self.height()) <= 2:
+        if (abs(w - self.width()) <= 2 and abs(h - self.height()) <= 2
+                and abs(int(w) - self.card.width()) <= 2):
             return
-        try:
-            if self._placed:
-                self.resize(int(w), int(h))
-                self.card.setMaximumHeight(int(h))
-            else:
-                self._sync_to_host()
-        except Exception:
-            pass
+        self._sync_to_host()
 
     # ---- 拖动卡片移动窗口 ----
     def eventFilter(self, obj, event):
@@ -4469,7 +4496,11 @@ class _AISettingsDialog(_CardOverlayDialog):
         buttons.addWidget(save)
         lay.addLayout(buttons)
 
+        # 每个服务商各自记住用户填过的内容：切走再切回来不能把刚填的地址/模型清空
+        # （「自定义」的服务商默认值是空的，以前切过去就直接变成一片空白）
+        self._drafts = {}
         self._pick_provider(self._provider, fill=False)
+        self._drafts[self._provider] = self._fields_text()
 
     # ---- 小组件 ----
     def _add_field(self, label_text, widget, extra=None):
@@ -4503,18 +4534,37 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._sync_key_ui()
         self._test_lbl.setText("")
 
+    def _fields_text(self):
+        """当前三个输入框里的内容（接口地址 / 模型 / 显示名）。"""
+        return (self._base.text(), self._model.text(), self._model_label.text())
+
+    def _fill_fields(self, base, model, label):
+        self._base.setText(str(base or ""))
+        self._model.setText(str(model or ""))
+        self._model_label.setText(str(label or ""))
+
     def _pick_provider(self, pid, fill=True):
-        """选服务商；fill=True 时把接口地址与模型填成该服务商的默认值。"""
+        """选服务商；fill=True 时把该服务商上次填过的内容放回来（没填过就用默认值）。"""
         if pid not in PROVIDERS:
             pid = "custom"
+        if fill and pid != self._provider:
+            # 先把眼前这一份存到原服务商名下，切回来时原样还原
+            self._drafts[self._provider] = self._fields_text()
+        prev = self._provider
         self._provider = pid
         for key, btn in self._prov_btns.items():
             btn.setChecked(key == pid)
         if fill:
-            info = provider_info(pid)
-            self._base.setText(str(info.get("base_url") or ""))
-            self._model.setText(str(info.get("model") or ""))
-            self._model_label.setText(str(info.get("model_label") or ""))
+            draft = self._drafts.get(pid)
+            if draft is None and pid == prev:
+                draft = self._fields_text()
+            if draft is None:
+                info = provider_info(pid)
+                draft = (str(info.get("base_url") or ""),
+                         str(info.get("model") or ""),
+                         str(info.get("model_label") or ""))
+                self._drafts[pid] = draft
+            self._fill_fields(*draft)
             self._test_lbl.setText("")
 
     # ---- 取值 / 保存 ----
@@ -9556,8 +9606,19 @@ class YouBoardApp(QMainWindow):
             exe = (os.path.abspath(sys.executable)
                    if getattr(sys, "frozen", False)
                    else os.path.abspath(sys.argv[0]))
+            exe_dir = os.path.dirname(exe)
             flag = exe + ".update_failed"
             bak = exe + ".bak"
+            ok_mark = exe + ".update_ok"
+            # 换包脚本还在跑（它成功或回滚后都会自删）＝这次更新的结果还没定下来：
+            # 这时候绝不能删备份，否则脚本回滚时没有旧版本可用，用户的主程序会消失。
+            # 脚本卡死超过 10 分钟也按结束处理，免得备份永远清不掉。
+            bat_path = os.path.join(exe_dir, "_update.bat")
+            busy = False
+            try:
+                busy = (time.time() - os.path.getmtime(bat_path)) < 600
+            except OSError:
+                busy = False
             if os.path.exists(flag):
                 reason = ""
                 try:
@@ -9574,9 +9635,19 @@ class YouBoardApp(QMainWindow):
                            tr("upd_rollback_detail", err=reason or "—"),
                            kind="warning")
                 return
-            if os.path.exists(bak):
+            if busy and os.path.exists(bat_path):
+                # 给脚本一个"新版确实起来了"的凭据：它看到标记才算更新成功，
+                # 才敢删掉备份（标记写不出来时脚本会退回用进程名判断）
                 try:
-                    os.remove(bak)
+                    with open(ok_mark, "w", encoding="utf-8") as f:
+                        f.write(str(APP_VERSION))
+                except OSError:
+                    pass
+                return
+            for junk in (bak, ok_mark, exe + ".failed"):
+                try:
+                    if os.path.exists(junk):
+                        os.remove(junk)
                 except OSError:
                     pass
         except Exception:
@@ -10277,6 +10348,10 @@ class YouBoardApp(QMainWindow):
         QTimer.singleShot(3000, self._enable_state_autosave)
         # 更新后的收尾（删备份 / 提示上次自动回滚）
         QTimer.singleShot(1200, self._check_update_leftover)
+        # 换包脚本要等新版"活着的凭据"才敢删备份，所以再来两拍收尾：
+        # 脚本正常结束（自删）后把备份清掉；脚本被强行结束也照样清理
+        QTimer.singleShot(20000, self._check_update_leftover)
+        QTimer.singleShot(60000, self._check_update_leftover)
         # 内存占用：启动稳定后回收一次；之后每分钟检查——后台静默 / 长时间空闲时
         # 再把工作集还给系统（任务管理器里显示的就是这个数）
         # 启动阶段先按 6 / 12 / 20 秒各回收一次（加载完那 100 多 MB 很快就降下来），
@@ -13471,12 +13546,19 @@ set "_YB_NEW={tmp_exe}"
 set "_YB_APP={current_exe}"
 set "_YB_BAK={current_exe}.bak"
 set "_YB_FLAG={current_exe}.update_failed"
+set "_YB_OK={current_exe}.update_ok"
 set "_YB_HASH={sha256}"
 set /a _yb_try=0
+rem 上一次更新被强行打断（主程序被挪走、新的没装进来）时先自愈：
+rem 备份还在就先复制回主程序位置，保证目录里始终有一个能启动的程序。
+if not exist "%_YB_APP%" if exist "%_YB_BAK%" copy /y "%_YB_BAK%" "%_YB_APP%" >nul 2>&1
 rem 第 1 步：把旧主程序改名成 .bak（旧程序还在运行时改不了，退出了就能改）
+rem  先清掉上一轮残留的 .bak：否则下面会把"旧备份"当成"这次备份好了"，
+rem  于是在主程序还锁着的时候就去替换，最后回滚又找不到备份可用 —— 用户的主程序就没了。
+if exist "%_YB_APP%" del /f /q "%_YB_BAK%" >nul 2>&1
 :wait_loop
 move /y "%_YB_APP%" "%_YB_BAK%" >nul 2>&1
-if exist "%_YB_BAK%" goto _yb_install
+if not exist "%_YB_APP%" goto _yb_install
 set /a _yb_try+=1
 if %_yb_try% GEQ 60 goto _yb_giveup
 ping -n 2 127.0.0.1 >nul 2>&1
@@ -13492,22 +13574,54 @@ findstr /i /c:"%_YB_HASH%" "%TEMP%\\_yb_hash.txt" >nul
 if errorlevel 1 goto _yb_rollback
 del "%TEMP%\\_yb_hash.txt" >nul 2>&1
 :_yb_ok
+set "_YB_VERIFIED=1"
 for /d %%i in ("%TEMP%\\_MEI*") do rd /s /q "%%i" >nul 2>&1
+del /f /q "%_YB_OK%" >nul 2>&1
 ping -n 2 127.0.0.1 >nul 2>&1
 start "" "%_YB_APP%"
-rem 第 4 步：确认新版本真的活着。起来就崩 / 被杀软拦掉的话，直接回滚，
-rem 绝不让用户面对一个打不开的软件（PyInstaller 解压慢，等 20 秒再判）。
-ping -n 20 127.0.0.1 >nul 2>&1
+rem 第 4 步：确认新版本真的活着。新版起来后会写一个 .update_ok 标记，
+rem 看到它才算成功（PyInstaller 解压慢，最多等 60 秒）；万一标记写不出来
+rem （目录只读、杀软拦写等），再用进程名兜底。起来就崩的话直接回滚，
+rem 绝不让用户面对一个打不开的软件。
+set /a _yb_wait=0
+:_yb_live
+if exist "%_YB_OK%" goto _yb_done
+set /a _yb_wait+=1
+if %_yb_wait% GEQ 30 goto _yb_live_fallback
+ping -n 2 127.0.0.1 >nul 2>&1
+goto _yb_live
+:_yb_live_fallback
 tasklist /fi "imagename eq YouBoard.exe" 2>nul | findstr /i "YouBoard.exe" >nul
 if errorlevel 1 goto _yb_rollback
+:_yb_done
+rem 更新确实成功了：这时候才能删备份。以前是主程序一启动就删，
+rem 它半路崩掉 / 被用户关掉时，回滚那边就没有备份可用了。
+del /f /q "%_YB_OK%" >nul 2>&1
+del /f /q "%_YB_BAK%" >nul 2>&1
 del "%~f0"
 exit /b 0
 :_yb_rollback
-rem 校验没过 / 起来就挂：删掉坏文件，把备份改回来，再用旧版本启动（用户只会看到一次提示）
-del /f "%_YB_APP%" >nul 2>&1
+rem 校验没过 / 起来就挂：把备份改回主程序位置，再用旧版本启动（用户只会看到一次提示）。
+rem 备份不在就绝不能先删主程序——宁可留着刚装进去的那份，也不能让用户手上什么都没有。
+if not exist "%_YB_BAK%" goto _yb_keep
+if exist "%_YB_APP%" move /y "%_YB_APP%" "%_YB_APP%.failed" >nul 2>&1
+if exist "%_YB_APP%" goto _yb_keep
 move /y "%_YB_BAK%" "%_YB_APP%" >nul 2>&1
+if not exist "%_YB_APP%" goto _yb_putback
+del /f /q "%_YB_APP%.failed" >nul 2>&1
+del /f /q "%_YB_OK%" >nul 2>&1
 >"%_YB_FLAG%" echo 新版本没通过校验或启动失败，已自动回滚到更新前的版本
 start "" "%_YB_APP%"
+del "%~f0"
+exit /b 0
+:_yb_putback
+rem 备份搬不回来（极少见）：把刚挪开的那份放回去，至少保证有一个主程序
+move /y "%_YB_APP%.failed" "%_YB_APP%" >nul 2>&1
+:_yb_keep
+del /f /q "%_YB_OK%" >nul 2>&1
+>"%_YB_FLAG%" echo 这次没能替换主程序（旧版本备份不可用，已保留现有主程序），建议到 Releases 页面重新下载安装包覆盖安装
+rem 校验过的那份才值得启动；没通过校验的残缺文件让用户手动重装，别弹"不是有效应用"的错
+if exist "%_YB_APP%" if "%_YB_VERIFIED%"=="1" start "" "%_YB_APP%"
 del "%~f0"
 exit /b 0
 :_yb_giveup

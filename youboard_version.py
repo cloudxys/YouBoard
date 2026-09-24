@@ -15,5 +15,5 @@
 都是直接读这个模块的 APP_VERSION，不需要手工同步。
 """
 
-APP_VERSION = "3.3.3"
+APP_VERSION = "3.3.4"
 APP_NAME = "YouBoard"
