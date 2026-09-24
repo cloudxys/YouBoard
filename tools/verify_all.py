@@ -1544,10 +1544,19 @@ def test_gui():
             _act.trigger()
         check("vault pw ui: show toggle reveals the password",
               _ed.echoMode() == yq.QLineEdit.EchoMode.Normal)
+        # 小眼睛的图形要跟状态对上：明文 = 睁眼，隐藏 = 带斜杠的眼睛
+        check("vault pw ui: eye icon matches the visible state",
+              _ed.actions()[0].icon().pixmap(16, 16).toImage()
+              == yq._eye_pixmap(16, open_=True).toImage()
+              and yq._eye_pixmap(16, open_=True).toImage()
+              != yq._eye_pixmap(16, open_=False).toImage())
         for _act in _ed.actions():
             _act.trigger()
         check("vault pw ui: toggle hides it again",
               _ed.echoMode() == yq.QLineEdit.EchoMode.Password)
+        check("vault pw ui: eye icon back to the hidden state",
+              _ed.actions()[0].icon().pixmap(16, 16).toImage()
+              == yq._eye_pixmap(16, open_=False).toImage())
         # 闲置自动锁定：自己填数值 + 选单位（秒 / 分钟），或者直接不自动锁定
         check("vault pw ui: auto-lock offers seconds/minutes/never",
               set(_pwdlg._unit_btns) == {"s", "m"}

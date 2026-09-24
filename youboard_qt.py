@@ -731,7 +731,8 @@ def _attach_password_toggle(edit):
         show = edit.echoMode() == QLineEdit.EchoMode.Password
         edit.setEchoMode(QLineEdit.EchoMode.Normal if show
                          else QLineEdit.EchoMode.Password)
-        act.setIcon(QIcon(_eye_pixmap(16, open_=not show)))
+        # 图标要跟"现在能不能看见"对上：刚点开明文 = 睁眼，点回圆点 = 带斜杠的眼睛
+        act.setIcon(QIcon(_eye_pixmap(16, open_=show)))
         act.setToolTip(tr("vault_pw_hide") if show else tr("vault_pw_show"))
 
     act = edit.addAction(QIcon(_eye_pixmap(16, open_=False)),
