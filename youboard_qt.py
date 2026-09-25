@@ -4612,7 +4612,11 @@ class _AISettingsDialog(_CardOverlayDialog):
         # 每个服务商各自的 Key 状态："清除过"标记 + 内存里的明文（测试连接用）
         self._key_cleared = {}
         self._plain_keys = {}
-        self._saved = dict(self._values.get("providers") or {})
+        # 每家服务商的存档以**配置里最新的那份**为准：设置页会缓存一份 values，
+        # 而卡片保存后缓存里的 providers 可能是旧的（甚至没有），只认传入的快照
+        # 就会出现"重开卡片发现别家内容空了"（用户实测）。
+        self._saved = dict(provider_saved_settings())
+        self._saved.update(self._values.get("providers") or {})
         if self._values.get("api_key"):
             self._plain_keys[self._provider] = str(self._values["api_key"])
         self._test_worker = None
@@ -4926,7 +4930,7 @@ class _AISettingsDialog(_CardOverlayDialog):
         # Key 只能来自"当前这家"：不能把别家存过的 Key 顺手抄过来
         values.pop("api_key", None)
         values.pop("api_key_saved", None)
-        values.pop("providers", None)
+        # providers 留着（保存时用不上，但设置页要把它一起缓存，重开卡片才有各家的存档）
         values["provider"] = self._provider
         values["base_url"] = self._base.text().strip()
         values["model"] = self._model.text().strip()

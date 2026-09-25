@@ -2274,7 +2274,18 @@ def test_gui():
     sdlg = yq.SettingsDialog(win)
     check("ai: settings page row only", sdlg._ai_lbl.text() != ""
           and not hasattr(sdlg, "_ai_provider"))
-    # 用内置默认预设构造，避免用户自己存过 AI 配置后这里断言不到默认值
+    # 用内置默认预设构造，避免用户自己存过 AI 配置后这里断言不到默认值。
+    # 卡片还会去配置里读"每家一份的存档"，所以先把副本里的 AI 段清掉，
+    # 这样"没存过时切服务商填默认值"这条才测得准。
+    _cfg_path = os.path.join(dst, "youboard_config.json")
+    try:
+        with open(_cfg_path, "r", encoding="utf-8") as _f:
+            _cfg_now = json.load(_f)
+        _cfg_now.pop("ai", None)
+        with open(_cfg_path, "w", encoding="utf-8") as _f:
+            json.dump(_cfg_now, _f, ensure_ascii=False)
+    except Exception:
+        pass
     cfg_dlg = yq._AISettingsDialog(sdlg, win, yq.default_ai_settings())
     check("ai: config dialog is card style",
           isinstance(cfg_dlg, yq._CardOverlayDialog)
@@ -2318,6 +2329,32 @@ def test_gui():
           and _keep_vals_out.get("api_key_saved") is True,
           str(_keep_vals_out.get("api_key"))[:12])
     _keep_dlg.close()
+    # 用户的完整路径：设置页 → AI 配置（存自定义）→ 设置页 → AI 配置（存 DeepSeek）
+    # → 重开设置 → AI 配置 → 点回自定义，那家必须还在
+    _sdlg_ai = yq.SettingsDialog(win)
+    _card_a = yq._AISettingsDialog(_sdlg_ai, win, _sdlg_ai._ai_values)
+    _card_a._pick_provider("custom")
+    _card_a._base.setText("https://api.xiaomimimo.com/v1")
+    _card_a._model.setText("mimo-v2.6-pro")
+    _card_a._key.setText("sk-mimo-keep")
+    _card_a._save_and_close()
+    _sdlg_ai._ai_values = _card_a.values()
+    check("ai: settings cache keeps the per-provider map",
+          bool((_sdlg_ai._ai_values or {}).get("providers")),
+          str(sorted((_sdlg_ai._ai_values or {}).get("providers", {}).keys())))
+    _card_b = yq._AISettingsDialog(_sdlg_ai, win, _sdlg_ai._ai_values)
+    _card_b._pick_provider("deepseek")
+    _card_b._save_and_close()
+    _sdlg_ai._ai_values = _card_b.values()
+    _card_c = yq._AISettingsDialog(_sdlg_ai, win, _sdlg_ai._ai_values)
+    _card_c._pick_provider("custom")
+    check("ai: custom values survive the settings round trip",
+          _card_c._base.text() == "https://api.xiaomimimo.com/v1"
+          and _card_c._model.text() == "mimo-v2.6-pro"
+          and _card_c._key_btn.isEnabled(),
+          "%s / %s" % (_card_c._base.text(), _card_c._model.text()))
+    _card_c.close()
+    _sdlg_ai.close()
     check("ai: settings defaults",
           cfg_dlg._base.text() == "https://api.deepseek.com"
           and cfg_dlg._model.text() == "deepseek-flash",
