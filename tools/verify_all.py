@@ -2316,15 +2316,21 @@ def test_gui():
     check("ai: key box is per provider (empty + saved hint)",
           _keep_dlg._key.text() == "" and _keep_dlg._key_btn.isEnabled()
           and _keep_dlg._key.placeholderText() == yq.tr("set_ai_key_ph"))
-    # 「清除 Key」按钮不能被挤到裁字（用户实测过"清除 Ke"）
+    # 「清除 Key」按钮：既不能被挤窄（裁左右），也不能被压矮（中文最下缘被切，
+    # 用户实测过"清除 Ke"和"清除下缘少一截"）。所以两边都按文字墨迹 + 余量来卡。
     _kb = _keep_dlg._key_btn
-    check("ai: clear-key button keeps its full text",
-          _kb.sizePolicy().horizontalPolicy() == yq.QSizePolicy.Policy.Fixed
-          and _kb.minimumWidth() >= _kb.sizeHint().width()
-          and _keep_dlg._fields.columnMinimumWidth(2) >= _kb.sizeHint().width()
-          and _kb.width() >= _kb.sizeHint().width(),
-          "%d/%d policy=%s" % (_kb.width(), _kb.sizeHint().width(),
-                               _kb.sizePolicy().horizontalPolicy()))
+    _ink = _kb.fontMetrics().tightBoundingRect(_kb.text())
+    check("ai: clear-key button has room for the whole glyph (incl. bottom)",
+          _kb.sizePolicy().horizontalPolicy() == yq.QSizePolicy.Policy.Minimum
+          and _kb.sizePolicy().verticalPolicy() == yq.QSizePolicy.Policy.Minimum
+          and _kb.minimumWidth() >= _ink.width() + 20
+          and _kb.minimumHeight() >= _ink.height() + 16
+          and _keep_dlg._fields.columnMinimumWidth(2) >= _kb.minimumWidth()
+          and _keep_dlg._fields.rowMinimumHeight(
+              _keep_dlg._fields.rowCount() - 1) >= _kb.minimumHeight(),
+          "按钮最小 %dx%d / 墨迹 %dx%d" % (_kb.minimumWidth(),
+                                          _kb.minimumHeight(),
+                                          _ink.width(), _ink.height()))
     _keep_vals_out = _keep_dlg.values()
     check("ai: values never carry the other provider's key",
           _keep_vals_out.get("api_key", "") == ""

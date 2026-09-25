@@ -1722,7 +1722,7 @@ STRINGS = {
         "set_ai_model": "模型", "set_ai_key": "API Key",
         "set_ai_key_ph": "已保存，留空表示不修改",
         "set_ai_key_new": "粘贴你的 API Key",
-        "set_ai_key_clear": "清除",
+        "set_ai_key_clear": "清除 Key",
         "set_ai_key_clear_tip": "清除已保存的 API Key",
         "set_ai_temp": "温度（推荐 0.3，越低越稳）", "set_ai_proxy": "代理（可留空）",
         "set_ai_proxy_ph": "如 http://127.0.0.1:7890",
@@ -2236,7 +2236,7 @@ STRINGS = {
         "set_ai_model": "Model", "set_ai_key": "API key",
         "set_ai_key_ph": "Saved — leave empty to keep it",
         "set_ai_key_new": "Paste your API key",
-        "set_ai_key_clear": "Clear",
+        "set_ai_key_clear": "Clear key",
         "set_ai_key_clear_tip": "Remove the saved API key",
         "set_ai_temp": "Temperature (0.3 recommended; lower = steadier)",
         "set_ai_proxy": "Proxy (optional)",
@@ -4695,24 +4695,20 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_btn = QPushButton(tr("set_ai_key_clear"))
         self._key_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        # 文字用更短的「清除」：旁边就是 API Key 输入框，意思很清楚，
-        # 而且短到不可能被压窄裁字（用户反馈过"清除 Key"看着像被截断）
+        # 完整写「清除 Key」（别缩写成「清除」，用户会以为后半截被截掉了），
+        # 宽度靠下面几行按文字需要钉死，所以完整文字也不会被压窄裁字
         self._key_btn.setToolTip(tr("set_ai_key_clear_tip"))
         self._key_btn.clicked.connect(self._on_key_clear)
         self._add_field(tr("set_ai_key"), self._key, self._key_btn)
-        # 这个按钮不给挤：以前网格空间紧张时它会被压窄，「清除 Key」被裁成「清除 Ke」
-        # （用户实测）。做法：样式生效后按文字需要量出宽度，把按钮和它所在的这一列
-        # 一起钉死，空间不够时压缩输入框那边。
-        try:
-            self._key_btn.ensurePolished()
-            _need = self._key_btn.sizeHint().width() + 6
-            self._key_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
-                                        QSizePolicy.Policy.Fixed)
-            self._key_btn.setMinimumWidth(_need)
-            self._key_btn.setMaximumWidth(_need)
-            self._fields.setColumnMinimumWidth(2, _need)
-        except Exception:
-            pass
+        # 这个按钮不给挤、也不给压低：按"文字墨迹 + 内边距 + 余量"算出最小尺寸，
+        # 并且**两个方向都用 Minimum**（只保证不小于这个值，不再钉死上限）。
+        # 教训：上一版把它垂直方向设成 Fixed，分数缩放（125%/150%）下 sizeHint 会
+        # 算小一两像素，中文最底下的笔画就被切掉了（用户实测「清除」下缘缺一块）；
+        # 只想防"被压窄"，不能顺手把高度也锁了。
+        # 量尺寸这一步要等样式表生效（字体/内边距才算得准），所以先立刻量一次，
+        # 再在事件循环里补量一次（那次才是准的）
+        self._fit_key_btn()
+        QTimer.singleShot(0, self._fit_key_btn)
         self._sync_key_ui()
 
         self._temp = QDoubleSpinBox()
@@ -4775,6 +4771,29 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._sync_local_rows()
 
     # ---- 小组件 ----
+    def _fit_key_btn(self):
+        """按「清除 Key」这几个字的**真实墨迹**算出按钮最小尺寸。
+
+        只保证"不小于"（Minimum 策略），绝不锁上限：上一版把垂直方向设成 Fixed，
+        分数缩放（125%/150%）下算矮了一两个像素，中文最底下的笔画就被切掉了
+        （用户实测「清除 Key」下缘缺一块）。这里连墨迹高度一起算，并留 24px 余量。
+        """
+        try:
+            self._key_btn.ensurePolished()
+            _fm = self._key_btn.fontMetrics()
+            _text = self._key_btn.text()
+            _ink = _fm.tightBoundingRect(_text)      # 真实墨迹（含最下缘）
+            _need_w = max(_fm.horizontalAdvance(_text), _ink.width()) + 28
+            _need_h = max(_fm.height(), _ink.height()) + 24
+            self._key_btn.setMinimumSize(_need_w, _need_h)
+            self._key_btn.setSizePolicy(QSizePolicy.Policy.Minimum,
+                                        QSizePolicy.Policy.Minimum)
+            self._fields.setColumnMinimumWidth(2, _need_w)
+            self._fields.setRowMinimumHeight(self._fields.rowCount() - 1,
+                                             _need_h)
+        except Exception:
+            pass
+
     def _add_field(self, label_text, widget, extra=None):
         """表单加一行：左标签（宽度自适应、不裁字）+ 输入框（+ 可选小按钮）。
 
