@@ -1722,7 +1722,8 @@ STRINGS = {
         "set_ai_model": "模型", "set_ai_key": "API Key",
         "set_ai_key_ph": "已保存，留空表示不修改",
         "set_ai_key_new": "粘贴你的 API Key",
-        "set_ai_key_clear": "清除 Key",
+        "set_ai_key_clear": "清除",
+        "set_ai_key_clear_tip": "清除已保存的 API Key",
         "set_ai_temp": "温度（推荐 0.3，越低越稳）", "set_ai_proxy": "代理（可留空）",
         "set_ai_proxy_ph": "如 http://127.0.0.1:7890",
         "set_ai_vision": "识图模型",
@@ -2235,7 +2236,8 @@ STRINGS = {
         "set_ai_model": "Model", "set_ai_key": "API key",
         "set_ai_key_ph": "Saved — leave empty to keep it",
         "set_ai_key_new": "Paste your API key",
-        "set_ai_key_clear": "Clear key",
+        "set_ai_key_clear": "Clear",
+        "set_ai_key_clear_tip": "Remove the saved API key",
         "set_ai_temp": "Temperature (0.3 recommended; lower = steadier)",
         "set_ai_proxy": "Proxy (optional)",
         "set_ai_proxy_ph": "e.g. http://127.0.0.1:7890",
@@ -4693,6 +4695,9 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_btn = QPushButton(tr("set_ai_key_clear"))
         self._key_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        # 文字用更短的「清除」：旁边就是 API Key 输入框，意思很清楚，
+        # 而且短到不可能被压窄裁字（用户反馈过"清除 Key"看着像被截断）
+        self._key_btn.setToolTip(tr("set_ai_key_clear_tip"))
         self._key_btn.clicked.connect(self._on_key_clear)
         self._add_field(tr("set_ai_key"), self._key, self._key_btn)
         # 这个按钮不给挤：以前网格空间紧张时它会被压窄，「清除 Key」被裁成「清除 Ke」
