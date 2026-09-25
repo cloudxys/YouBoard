@@ -89,11 +89,17 @@ PROVIDERS = {
     "ollama": {
         "zh": "Ollama 本地模型（不联网、不花钱）",
         "en": "Ollama (local)",
-        "base_url": "http://localhost:11434/v1",
-        "model": "qwen3.5",
+        # 用 127.0.0.1 而不是 localhost：Windows 上 localhost 会先解析成 IPv6 ::1，
+        # 而 Ollama 默认只监听 IPv4 的 127.0.0.1，于是报 WinError 10061"积极拒绝"。
+        "base_url": "http://127.0.0.1:11434/v1",
+        "model": "qwen3.5:4b",
         "model_label": "Qwen3.5（本地）",
-        "models": ["qwen3.5", "qwen3", "glm-5", "deepseek-r1"],
+        "models": ["qwen3.5:4b", "qwen3.5:2b", "qwen3.5:0.8b", "qwen3.8",
+                   "minicpm-v4.5", "gemma4", "glm-5.3-flash"],
+        # 能看图的本地模型：图片请求会自动换成它（留空 = 还是用上面那个）
+        "vision_model": "qwen3.5:4b",
         "needs_key": False,
+        "local": True,
     },
     "custom": {
         "zh": "自定义（任意 OpenAI 兼容接口）",
@@ -126,6 +132,20 @@ AI_TEXT = {
                          "en": "Unreadable response: {detail}"},
     "err_network": {"zh": "连不上服务器：{detail}（若需要代理，请在设置里填代理地址）",
                     "en": "Cannot reach the server: {detail} (set a proxy in Settings if needed)"},
+    "err_local_offline": {
+        "zh": "连不上本机模型服务：{detail}\n"
+              "本地免费 AI 要先装 Ollama（https://ollama.com/download），"
+              "装好后在命令行跑一次：ollama pull qwen3.5:4b"
+              "（这个模型能识图；小机器可以换 qwen3.5:2b 或 qwen3.5:0.8b），"
+              "然后回到这里点「检测本地模型」。"
+              "如果服务跑在别的端口，把上面的接口地址改成实际地址即可。",
+        "en": "Cannot reach the local model service: {detail}\n"
+              "For free local AI, install Ollama (https://ollama.com/download), "
+              "then run: ollama pull qwen3.5:4b "
+              "(this one can see images; use qwen3.5:2b / qwen3.5:0.8b on small "
+              "machines), and click \"Detect local models\" back here. "
+              "If your server uses another port, point the Base URL at it.",
+    },
     "err_timeout": {"zh": "请求超时（{seconds}s），可以在设置里把超时调大",
                     "en": "Request timed out after {seconds}s — raise the timeout in Settings"},
     "err_empty": {"zh": "模型没有返回内容", "en": "The model returned nothing"},
@@ -143,6 +163,14 @@ AI_TEXT = {
                     "en": "Image analysis needs a vision model, e.g. "
                           "deepseek-v4-flash-vision-exp, gpt-5.6, "
                           "qwen3.5-omni-plus, glm-5v or a local vision model"},
+    "need_vision_local": {
+        "zh": "本地模型 {model} 看不了图：在设置里把「识图模型」填成能识图的本地模型"
+              "（例如 qwen3.5:4b / minicpm-v4.5 / llava），"
+              "没有的话先在命令行跑：ollama pull qwen3.5:4b",
+        "en": "The local model {model} cannot read images: set Vision model to a "
+              "vision-capable local model (e.g. qwen3.5:4b / minicpm-v4.5 / "
+              "llava), or run: ollama pull qwen3.5:4b",
+    },
 }
 
 
@@ -161,6 +189,104 @@ def ai_text(key, lang="zh", **kw):
 
 def provider_info(pid):
     return PROVIDERS.get(pid) or PROVIDERS["custom"]
+
+
+# ---------------------------------------------------------------------------
+# 本地模型（v3.3.5）：Ollama / LM Studio / llama.cpp 这类跑在本机的服务
+# —— 免费、不联网，而且很多模型还能看图（识图）。这里提供三件小事：
+#    1) 认得出"本机地址"（localhost / 127.0.0.1 / ::1），
+#    2) localhost 连不上时自动换成 127.0.0.1 再试一次（Windows 上常见坑），
+#    3) 问一下本机服务装了哪些模型，顺便标出哪些能识图。
+# ---------------------------------------------------------------------------
+
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+# 名字里带这些片段的本地模型基本都能识图（用户装了别的也可以自己填）
+VISION_MODEL_HINTS = (
+    "qwen3.5", "qwen3.6", "qwen3.8", "qwen3-vl", "qwen2.5vl", "qwen2.5-vl",
+    "qwen2-vl", "minicpm-v", "llava", "bakllava", "moondream", "vision",
+    "gemma3", "gemma4", "medgemma", "glm-4v", "glm-5", "internvl", "pixtral",
+    "cogvlm", "mistral-small3", "mistral-medium", "omni", "ocr",
+)
+
+
+def is_local_url(url):
+    """这个接口地址是不是指向本机（本地模型服务）。"""
+    text = str(url or "").strip().lower()
+    if not text:
+        return False
+    for scheme in ("http://", "https://"):
+        if text.startswith(scheme):
+            text = text[len(scheme):]
+    host = text.split("/", 1)[0].split("@")[-1]
+    if host.startswith("["):                      # [::1]:11434
+        host = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    return host in LOCAL_HOSTS
+
+
+def alternate_local_url(url):
+    """本机地址的"另一种写法"：localhost ↔ 127.0.0.1（连不上时拿它再试一次）。"""
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    for old, new in (("//localhost", "//127.0.0.1"),
+                     ("//127.0.0.1", "//localhost")):
+        if old in text:
+            return text.replace(old, new, 1)
+    return ""
+
+
+def local_service_root(url):
+    """从接口地址推出本机服务的根地址（去掉结尾的 /v1）。"""
+    text = str(url or "").strip().rstrip("/")
+    if text.endswith("/chat/completions"):
+        text = text[:-len("/chat/completions")].rstrip("/")
+    if text.endswith("/v1"):
+        text = text[:-3].rstrip("/")
+    return text
+
+
+def looks_like_vision_model(name):
+    """本地模型名看着像不像"能识图"的那种（用户也可以自己填别的）。"""
+    low = str(name or "").lower()
+    return any(hint in low for hint in VISION_MODEL_HINTS)
+
+
+def probe_local_models(base_url, timeout=4):
+    """问一下本机服务装了哪些模型；返回 (ok, 模型名列表, 说明)。
+
+    先试 Ollama 的 /api/tags，再试通用的 /v1/models（LM Studio / llama.cpp 等）。
+    """
+    root = local_service_root(base_url) or "http://127.0.0.1:11434"
+    candidates = [root + "/api/tags",
+                  (str(base_url or "").rstrip("/") or root + "/v1") + "/models"]
+    alt = alternate_local_url(root)
+    if alt:
+        candidates.append(alt + "/api/tags")
+    detail = ""
+    for url in candidates:
+        try:
+            req = urllib.request.Request(url, method="GET")
+            req.add_header("User-Agent", "%s/%s" % (APP_NAME, APP_VERSION))
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+            data = json.loads(raw.decode("utf-8", "replace"))
+        except Exception as err:                   # noqa: BLE001 - 探测失败就换下一个
+            detail = str(err)[:160]
+            continue
+        names = []
+        if isinstance(data, dict):
+            for item in (data.get("models") or []):
+                if isinstance(item, dict) and item.get("name"):
+                    names.append(str(item["name"]).strip())
+            for item in (data.get("data") or []):
+                if isinstance(item, dict) and item.get("id"):
+                    names.append(str(item["id"]).strip())
+        names = sorted({n for n in names if n})
+        return True, names, ""
+    return False, [], detail or "no response"
 
 
 def provider_label(pid, lang="zh"):
@@ -202,6 +328,8 @@ def default_ai_settings():
         "base_url": info["base_url"],
         "model": info["model"],
         "model_label": info.get("model_label", ""),
+        # 识图模型：留空 = 用上面那个模型（本地模型常是"文本一个、识图一个"）
+        "vision_model": "",
         "api_key": "",
         "api_key_saved": False,
         "temperature": 0.3,
@@ -225,6 +353,12 @@ def load_ai_settings(config=None):
     out["base_url"] = str(raw.get("base_url") or info["base_url"] or "")
     out["model"] = str(raw.get("model") or info["model"] or "")
     out["model_label"] = str(raw.get("model_label") or "")
+    if "vision_model" in raw:
+        out["vision_model"] = str(raw.get("vision_model") or "").strip()
+    elif is_local_url(out["base_url"]):
+        out["vision_model"] = str(info.get("vision_model") or "").strip()
+    else:
+        out["vision_model"] = ""
     out["temperature"] = min(2.0, max(0.0, _as_float(
         raw.get("temperature"), out["temperature"])))
     out["max_tokens"] = max(0, _as_int(raw.get("max_tokens"),
@@ -254,6 +388,7 @@ def save_ai_settings(settings, config=None):
         "base_url": str(settings.get("base_url") or ""),
         "model": str(settings.get("model") or ""),
         "model_label": str(settings.get("model_label") or "").strip(),
+        "vision_model": str(settings.get("vision_model") or "").strip(),
         "temperature": round(min(2.0, max(0.0, _as_float(
             settings.get("temperature"), 0.3))), 2),
         "max_tokens": max(0, _as_int(settings.get("max_tokens"),
@@ -669,6 +804,33 @@ class AIClient:
         return str(self.settings.get("model") or "").strip()
 
     @property
+    def vision_model(self):
+        return str(self.settings.get("vision_model") or "").strip()
+
+    @property
+    def is_local(self):
+        """是不是在跟本机上的模型服务说话（Ollama / LM Studio 之类）。"""
+        return is_local_url(self.base_url)
+
+    @staticmethod
+    def has_image(messages):
+        """这轮请求里带没带图片。"""
+        for msg in messages or []:
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, list):
+                for part in content:
+                    if (isinstance(part, dict)
+                            and part.get("type") == "image_url"):
+                        return True
+        return False
+
+    def model_for(self, messages):
+        """识图请求优先用「识图模型」：本地免费方案经常是文本一个、识图一个。"""
+        if self.vision_model and self.has_image(messages):
+            return self.vision_model
+        return self.model
+
+    @property
     def api_key(self):
         return ai_api_key(self.settings)
 
@@ -693,13 +855,23 @@ class AIClient:
     def is_ready(self):
         return not self.config_problem()
 
-    def endpoint(self):
-        base = self.base_url
+    def endpoint(self, base=None):
+        base = self.base_url if base is None else str(base or "").strip()
         if not base:
             return ""
         if base.endswith("/chat/completions"):
             return base
         return base + "/chat/completions"
+
+    def endpoint_candidates(self):
+        """要试的接口地址：本机地址连不上时，再拿 localhost ↔ 127.0.0.1 换个写法试。"""
+        out = []
+        for base in (self.base_url,
+                     alternate_local_url(self.base_url) if self.is_local else ""):
+            url = self.endpoint(base) if base else ""
+            if url and url not in out:
+                out.append(url)
+        return out
 
     # ---- 请求 ----
     def _opener(self):
@@ -722,7 +894,8 @@ class AIClient:
         return headers
 
     def build_payload(self, messages, stream=True, max_tokens=None):
-        body = {"model": self.model, "messages": list(messages or []),
+        body = {"model": self.model_for(messages),
+                "messages": list(messages or []),
                 "stream": bool(stream)}
         try:
             body["temperature"] = float(self.settings.get("temperature", 0.3))
@@ -766,6 +939,9 @@ class AIClient:
         if isinstance(err, TimeoutError) or "timed out" in text.lower():
             return AIError(self.t("err_timeout", seconds=self.timeout()),
                            "timeout", text)
+        if self.is_local:
+            hint = self.t("err_local_offline", detail=text[:120])
+            return AIError(hint, "network", text)
         return AIError(self.t("err_network", detail=text[:160]), "network",
                        text)
 
@@ -795,34 +971,36 @@ class AIClient:
         if alt != payload:
             variants.append(alt)
         last = None
-        for index, body in enumerate(variants):
-            request = urllib.request.Request(
-                self.endpoint(), data=json.dumps(body).encode("utf-8"),
-                method="POST")
-            for key, value in self._headers(stream=False).items():
-                request.add_header(key, value)
-            try:
-                with self._opener().open(request,
-                                         timeout=self.timeout()) as resp:
-                    raw = resp.read()
-            except urllib.error.HTTPError as err:
-                detail = err.read()[:400]
-                if err.code in (400, 422) and index + 1 < len(variants):
-                    last = self._error_from_http(err.code, detail)
-                    continue
-                raise self._error_from_http(err.code, detail)
-            except (urllib.error.URLError, TimeoutError, OSError) as err:
-                raise self._net_error(err)
-            try:
-                data = json.loads(raw.decode("utf-8", "replace"))
-            except Exception:
-                raise AIError(self.t("err_bad_response",
-                                     detail=_short_detail(raw)),
-                              "bad_response")
-            text = _extract_text(data).strip()
-            if text:
-                return text
-            last = AIError(self.t("err_empty"), "empty")
+        for url in (self.endpoint_candidates() or [self.endpoint()]):
+            for index, body in enumerate(variants):
+                request = urllib.request.Request(
+                    url, data=json.dumps(body).encode("utf-8"),
+                    method="POST")
+                for key, value in self._headers(stream=False).items():
+                    request.add_header(key, value)
+                try:
+                    with self._opener().open(request,
+                                             timeout=self.timeout()) as resp:
+                        raw = resp.read()
+                except urllib.error.HTTPError as err:
+                    detail = err.read()[:400]
+                    if err.code in (400, 422) and index + 1 < len(variants):
+                        last = self._error_from_http(err.code, detail)
+                        continue
+                    raise self._error_from_http(err.code, detail)
+                except (urllib.error.URLError, TimeoutError, OSError) as err:
+                    last = self._net_error(err)
+                    break               # 这个地址连不上：换下一个地址写法再试
+                try:
+                    data = json.loads(raw.decode("utf-8", "replace"))
+                except Exception:
+                    raise AIError(self.t("err_bad_response",
+                                         detail=_short_detail(raw)),
+                                  "bad_response")
+                text = _extract_text(data).strip()
+                if text:
+                    return text
+                last = AIError(self.t("err_empty"), "empty")
         raise last or AIError(self.t("err_empty"), "empty")
 
     def test_connection(self):
@@ -863,21 +1041,30 @@ class AIClient:
         if alt != payload:
             variants.append(alt)
         self._emitted = 0
+        urls = self.endpoint_candidates() or [self.endpoint()]
+        last = None
         for index, body in enumerate(variants):
-            request = urllib.request.Request(
-                self.endpoint(), data=json.dumps(body).encode("utf-8"),
-                method="POST")
-            for key, value in self._headers(stream=True).items():
-                request.add_header(key, value)
-            try:
-                resp = self._opener().open(request, timeout=self.timeout())
-            except urllib.error.HTTPError as err:
-                detail = err.read()[:400]
-                if err.code in (400, 422) and index + 1 < len(variants):
-                    continue
-                raise self._error_from_http(err.code, detail)
-            except (urllib.error.URLError, TimeoutError, OSError) as err:
-                raise self._net_error(err)
+            resp = None
+            for url in urls:
+                request = urllib.request.Request(
+                    url, data=json.dumps(body).encode("utf-8"),
+                    method="POST")
+                for key, value in self._headers(stream=True).items():
+                    request.add_header(key, value)
+                try:
+                    resp = self._opener().open(request, timeout=self.timeout())
+                except urllib.error.HTTPError as err:
+                    detail = err.read()[:400]
+                    if err.code in (400, 422) and index + 1 < len(variants):
+                        last = self._error_from_http(err.code, detail)
+                        break             # 这个变体不行：换下一个 payload 变体
+                    raise self._error_from_http(err.code, detail)
+                except (urllib.error.URLError, TimeoutError, OSError) as err:
+                    last = self._net_error(err)
+                    continue              # 这个地址连不上：换下一个地址写法
+                break
+            if resp is None:
+                continue
             with self._resp_lock:
                 self._resp = resp
             parts = []
@@ -925,7 +1112,5 @@ class AIClient:
                 return text
             if self._cancelled.is_set():
                 raise AIError(self.t("err_cancelled"), "cancelled")
-            if index + 1 < len(variants):
-                continue
-            raise AIError(self.t("err_empty"), "empty")
-        raise AIError(self.t("err_empty"), "empty")
+            last = AIError(self.t("err_empty"), "empty")
+        raise last or AIError(self.t("err_empty"), "empty")

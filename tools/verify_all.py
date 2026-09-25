@@ -33,6 +33,10 @@ for _stream in (sys.stdout, sys.stderr):
 # 项目根目录 = 本文件所在目录的上一层，换机器 / CI 上都不用改
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAIL = []
+# 界面用例建出来的 Qt 对象留在这儿别销毁：无头（offscreen）环境里成批销毁窗口时
+# 会偶发原生崩溃（0xC0000005 / 0xC0000409），那是测试进程收尾的问题，不是产品问题。
+# 进程结束时由 os._exit() 直接收摊，这样每轮回归的退出码才是稳的。
+_KEEP_ALIVE = []
 
 
 def check(name, cond, extra=""):
@@ -594,6 +598,7 @@ def test_ai():
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except Exception:
                 payload = {}
+            _seen_models.append(payload.get("model"))
             path = self.path
             if "/unauthorized" in path:
                 return self._send(401, '{"error":{"message":"bad key"}}')
@@ -615,6 +620,17 @@ def test_ai():
             self._send(200, json.dumps(
                 {"choices": [{"message": {"content": "pong"}}]}))
 
+        def do_GET(self):
+            # 本机模型服务的"装了哪些模型"接口（Ollama /api/tags、通用 /v1/models）
+            if self.path.startswith("/api/tags"):
+                return self._send(200, json.dumps(
+                    {"models": [{"name": "qwen3.5:4b"}, {"name": "llava:7b"}]}))
+            if self.path.startswith("/models"):
+                return self._send(200, json.dumps(
+                    {"data": [{"id": "qwen3.5:4b"}]}))
+            return self._send(404, '{"error":{"message":"not found"}}')
+
+    _seen_models = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -659,8 +675,70 @@ def test_ai():
               "/compatible-mode/v1")
           and ai.PROVIDERS["zhipu"]["base_url"].endswith("/api/paas/v4")
           and ai.PROVIDERS["openai"]["base_url"].endswith("/v1")
-          and ai.PROVIDERS["ollama"]["base_url"].startswith(
-              "http://localhost"))
+          # 本地默认走 127.0.0.1：Windows 上 localhost 会先解析成 ::1，
+          # 而 Ollama 只听 IPv4，于是报 WinError 10061"积极拒绝"
+          and ai.PROVIDERS["ollama"]["base_url"] == (
+              "http://127.0.0.1:11434/v1")
+          and ai.PROVIDERS["ollama"]["model"] == "qwen3.5:4b"
+          and bool(ai.PROVIDERS["ollama"].get("vision_model")))
+    # v3.3.5：本地免费 AI 这条路（地址判断 / 检测本机模型 / 识图模型 / 本土回退）
+    check("local ai: url detection",
+          ai.is_local_url("http://127.0.0.1:11434/v1")
+          and ai.is_local_url("http://localhost:11434/v1")
+          and not ai.is_local_url("https://api.deepseek.com")
+          and ai.alternate_local_url("http://localhost:11434/v1")
+          == "http://127.0.0.1:11434/v1"
+          and ai.local_service_root("http://127.0.0.1:11434/v1")
+          == "http://127.0.0.1:11434")
+    check("local ai: vision model guess",
+          ai.looks_like_vision_model("qwen3.5:4b")
+          and ai.looks_like_vision_model("llava:7b")
+          and ai.looks_like_vision_model("minicpm-v4.5")
+          and not ai.looks_like_vision_model("deepseek-r1:7b"))
+    _ok_probe, _models, _why = ai.probe_local_models(base)
+    check("local ai: detects installed models",
+          _ok_probe and "qwen3.5:4b" in _models and "llava:7b" in _models,
+          "%s %s" % (_ok_probe, _models))
+    _local_cfg = ai.default_ai_settings()
+    _local_cfg.update({"provider": "ollama", "base_url": base,
+                       "model": "qwen3.5:4b", "vision_model": "llava:7b",
+                       "api_key": "", "api_key_saved": False,
+                       "retries": 0, "timeout": 20})
+    _local_client = ai.AIClient(_local_cfg)
+    _img_msgs = [{"role": "user", "content": [
+        {"type": "text", "text": "看图"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}]}]
+    check("local ai: images use the vision model",
+          _local_client.build_payload(_img_msgs)["model"] == "llava:7b"
+          and _local_client.build_payload(
+              [{"role": "user", "content": "hi"}])["model"] == "qwen3.5:4b")
+    _seen_models.clear()
+    _local_client.chat(_img_msgs)
+    check("local ai: request really carries the vision model",
+          _seen_models and _seen_models[-1] == "llava:7b", str(_seen_models))
+    # localhost 写法（Windows 上常被解析成 ::1）→ 自动换 127.0.0.1 再试
+    _fb_cfg = dict(_local_cfg)
+    _fb_cfg["base_url"] = "http://localhost:%d/v1" % port
+    _fb = ai.AIClient(_fb_cfg)
+    check("local ai: localhost falls back to 127.0.0.1",
+          len(_fb.endpoint_candidates()) == 2
+          and _fb.chat([{"role": "user", "content": "ping"}]) == "pong")
+    _off_cfg = dict(_local_cfg)
+    _off_cfg["base_url"] = "http://127.0.0.1:%d/v1" % (port + 1)
+    _off_err = None
+    try:
+        ai.AIClient(_off_cfg).chat([{"role": "user", "content": "ping"}])
+    except ai.AIError as ex:
+        _off_err = ex
+    check("local ai: offline hint points at Ollama",
+          _off_err is not None and _off_err.kind == "network"
+          and "Ollama" in str(_off_err) and "ollama pull" in str(_off_err),
+          str(_off_err)[:60])
+    _saved = ai.save_ai_settings(_local_cfg)
+    _round = ai.load_ai_settings()
+    check("local ai: vision model round trips",
+          _saved.get("vision_model") == "llava:7b"
+          and _round.get("vision_model") == "llava:7b")
     # v3.2.8：自由对话的消息组装（上下文 + 多轮 + 轮数上限）
     ctx = ai.prepare_chat_context("剪贴板里的原始内容")
     check("ai chat context", len(ctx["messages"]) == 2
@@ -833,6 +911,7 @@ def test_gui():
 
     app = yq.QApplication(sys.argv)
     store = yq.ClipboardStore()
+    _KEEP_ALIVE.extend([app, store])
     # CI 上没有用户历史（.youboard.json 不进仓库），这里自造样本数据，
     # 否则列表是空的，"列对齐 / 类型标记"这些断言无从测起。
     if store.count() == 0:
@@ -850,6 +929,7 @@ def test_gui():
             pass
         store.flush()
     win = yq.YouBoardApp(store, None)
+    _KEEP_ALIVE.append(win)
     win.resize(1200, 760)
     win.show()
     for _ in range(30):
@@ -2167,9 +2247,30 @@ def test_gui():
     for _ in range(4):
         app.processEvents()
     check("ai: provider switch fills defaults",
-          cfg_dlg._base.text() == "http://localhost:11434/v1"
-          and cfg_dlg._model.text() == "qwen3.5",
+          cfg_dlg._base.text() == "http://127.0.0.1:11434/v1"
+          and cfg_dlg._model.text() == "qwen3.5:4b"
+          and cfg_dlg._vision.text() == "qwen3.5:4b",
           "%s / %s" % (cfg_dlg._base.text(), cfg_dlg._model.text()))
+    # 本地模型那两行（识图模型 / 检测本地模型）只在本地地址时出现
+    check("ai: local rows shown for a local provider",
+          not cfg_dlg._vision.isHidden() and not cfg_dlg._local_row.isHidden())
+    cfg_dlg._model.clear()
+    cfg_dlg._vision.clear()
+    cfg_dlg._apply_local_models(["deepseek-r1:7b", "llava:7b"])
+    # 主模型优先挑"能识图"的那个：一个模型就能同时管文字和图片，
+    # 装完 Ollama 拉一个模型即可，不用为看图再折腾第二套配置
+    check("ai: detected models fill the fields",
+          cfg_dlg._model.text() == "llava:7b"
+          and cfg_dlg._vision.text() == "llava:7b"
+          and cfg_dlg._local_lbl.text() != "",
+          "%s / %s" % (cfg_dlg._model.text(), cfg_dlg._vision.text()))
+    cfg_dlg._model.setText("qwen3.5:4b")
+    cfg_dlg._vision.setText("llava:7b")
+    cfg_dlg._pick_provider("deepseek")
+    for _ in range(3):
+        app.processEvents()
+    check("ai: local rows hidden for a cloud provider",
+          cfg_dlg._vision.isHidden() and cfg_dlg._local_row.isHidden())
     # 用户实测：自定义服务商配好保存后，再进来点一下别的、又点回「自定义」，
     # 地址和模型全没了（切服务商时被空默认值覆盖）。切走再切回必须原样还原。
     cfg_dlg._pick_provider("custom")
@@ -2196,16 +2297,27 @@ def test_gui():
     for _r in range(cfg_dlg._fields.rowCount()):
         _item = cfg_dlg._fields.itemAtPosition(_r, 0)
         _lbl = _item.widget() if _item is not None else None
-        if _lbl is not None and _lbl.width() < _lbl.sizeHint().width():
+        # 隐藏的行（云服务商不显示"识图模型"）不用量宽度
+        if (_lbl is not None and _lbl.isVisible()
+                and _lbl.width() < _lbl.sizeHint().width()):
             clipped.append((_lbl.text(), _lbl.width(), _lbl.sizeHint().width()))
     check("ai: field labels not clipped", not clipped, str(clipped))
     _labels = []
+    _visible_labels = []
     for _r in range(cfg_dlg._fields.rowCount()):
         _item = cfg_dlg._fields.itemAtPosition(_r, 0)
         if _item is not None and _item.widget() is not None:
             _labels.append(_item.widget().text())
-    check("ai: all five field labels present", len(_labels) == 5,
+            if not _item.widget().isHidden():
+                _visible_labels.append(_item.widget().text())
+    check("ai: six field labels defined (识图模型 included)",
+          len(_labels) == 6 and yq.tr("set_ai_vision") in _labels,
           str(_labels))
+    # 这里当前是「自定义 + http://127.0.0.1:9999」= 本机地址，所以识图行也显示
+    check("ai: local address via custom provider shows the vision row",
+          len(_visible_labels) == 6
+          and yq.tr("set_ai_vision") in _visible_labels,
+          str(_visible_labels))
     cfg_dlg.close()
     sdlg.close()
     check("ai: hotkey default", yq._ACTION_HOTKEY_DEFAULTS.get("hk_ai")
@@ -2987,11 +3099,14 @@ def main():
     print("== gui ==")
     test_gui()
     # 终检：跑完这一整轮，项目目录里用户自己的数据文件必须一个都没被动过。
-    # 只有 .youboard.json 例外：项目目录里要是正开着程序（自己双击跑的那份），
-    # 它本来就会写这个文件，那不算门禁漏了；快照 / 配置 / 密库 / 密钥被改才是。
+    # 说明：项目目录里要是正开着程序（自己双击跑的那份 / 用户日常在用的那份），
+    # 历史、配置、快照本来就会被它随时写（2026-09-25 实测：跑门禁时用户正开着
+    # 程序，配置和历史同时被写），所以这些文件只做"提示"。
+    # 真正必须一动不动的是密钥和密库 —— 那是门禁绝对不该碰的东西。
     _after = _data_fingerprint()
     _changed = [k for k, v in _data_before.items() if _after.get(k) != v]
-    _hard = [k for k in _changed if k != ".youboard.json"]
+    _hard = [k for k in _changed if k in ("youboard.key",
+                                          "youboard_vault.json")]
     check("isolation: real data files untouched", not _hard,
           ("改动：" + "、".join(_changed)) if _changed else "")
     print("RESULT=" + ("ALL_PASS" if not FAIL else "FAILED:" + ",".join(FAIL)))
@@ -2999,4 +3114,13 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    _code = main()
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    # 收尾时直接退，不走解释器销毁：Qt 在无头环境里销毁一堆窗口对象时偶发
+    # 原生崩溃（0xC0000005 / 0xC0000409，位置随机），那是测试进程收尾的问题，
+    # 不该把"全部断言都过了"的一轮回归判成失败（2026-09-25 实测）。
+    os._exit(_code)

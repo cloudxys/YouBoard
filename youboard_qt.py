@@ -121,6 +121,7 @@ from youboard_ai import (
     AI_IMAGE_ACTIONS, AI_FILE_ACTIONS, prepare_image_request,
     prepare_image_chat_context, file_entries_text,
     model_display_name,
+    is_local_url, looks_like_vision_model, probe_local_models,
 )
 # 版本号唯一来源：youboard_version.py（改版本只改那一个文件）
 from youboard_version import APP_NAME, APP_VERSION
@@ -1723,6 +1724,16 @@ STRINGS = {
         "set_ai_key_clear": "清除 Key",
         "set_ai_temp": "温度（推荐 0.3，越低越稳）", "set_ai_proxy": "代理（可留空）",
         "set_ai_proxy_ph": "如 http://127.0.0.1:7890",
+        "set_ai_vision": "识图模型",
+        "set_ai_vision_ph": "留空 = 用上面的模型",
+        "set_ai_vision_tip": "分析图片时改用这个本地模型（要能识图的那种）：文字走上面的模型，看图自动换成它。",
+        "set_ai_local_detect": "检测本地模型",
+        "set_ai_local_probing": "正在问本机服务…",
+        "set_ai_local_none": "没连上本机模型服务：先装 Ollama（ollama.com/download），"
+                             "再跑一次 ollama pull qwen3.5:4b（能识图），然后回来点这里；"
+                             "服务跑在别的端口就把「接口地址」改成实际地址。",
+        "set_ai_local_found": "检测到 {n} 个本地模型：{list}",
+        "set_ai_local_more": "…等共 {n} 个",
         "set_ai_note": "Key 在本机加密保存（Windows 用系统 DPAPI），不写日志；"
                        "请求只发送你在列表里选中的那一条记录（单次最多 2.4 万字符、"
                        "最多生成约 1200 字，不会带上别的历史记录）。",
@@ -2227,6 +2238,14 @@ STRINGS = {
         "set_ai_temp": "Temperature (0.3 recommended; lower = steadier)",
         "set_ai_proxy": "Proxy (optional)",
         "set_ai_proxy_ph": "e.g. http://127.0.0.1:7890",
+        "set_ai_vision": "Vision model",
+        "set_ai_vision_ph": "empty = use the model above",
+        "set_ai_vision_tip": "Local model used for images (must be able to see them): text uses the model above, images switch to this one.",
+        "set_ai_local_detect": "Detect local models",
+        "set_ai_local_probing": "Asking the local service…",
+        "set_ai_local_none": "Cannot reach a local model service: install Ollama (ollama.com/download), run ollama pull qwen3.5:4b (it can see images), then click here again; if your server uses another port, point Base URL at it.",
+        "set_ai_local_found": "{n} local model(s) found: {list}",
+        "set_ai_local_more": "…{n} in total",
         "set_ai_note": "The key is encrypted on this machine (DPAPI on Windows) and "
                        "never logged; requests contain only the entry you selected "
                        "(max 24k characters in, ~1200 tokens out, no other history).",
@@ -4525,6 +4544,23 @@ class _AITestWorker(QThread):
             pass
 
 
+class _LocalModelWorker(QThread):
+    """问本机模型服务装了哪些模型（Ollama 的 /api/tags，或通用的 /v1/models）。"""
+
+    done = pyqtSignal(bool, list, str)
+
+    def __init__(self, base_url, parent=None):
+        super().__init__(parent)
+        self._base_url = str(base_url or "")
+
+    def run(self):
+        try:
+            ok, models, detail = probe_local_models(self._base_url)
+        except Exception as ex:                     # noqa: BLE001
+            ok, models, detail = False, [], str(ex)
+        self.done.emit(bool(ok), list(models or []), str(detail or ""))
+
+
 class _AIPromptDialog(_CardOverlayDialog):
     """自定义提示词输入（卡片风格，与其它弹层一致）。"""
 
@@ -4620,6 +4656,29 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._add_field(tr("set_ai_base"), self._base)
         self._add_field(tr("set_ai_model"), _model_box)
 
+        # 识图模型（本地模型专用）：图片请求会自动换成它 —— 本地免费方案里
+        # 文本模型和"能看图"的模型经常不是同一个
+        self._vision = QLineEdit(str(self._values.get("vision_model") or ""))
+        self._vision.setPlaceholderText(tr("set_ai_vision_ph"))
+        self._vision.setToolTip(tr("set_ai_vision_tip"))
+        self._vision_lbl = self._add_field(tr("set_ai_vision"), self._vision)
+        # 本地模型检测：问一下本机服务装了哪些模型（顺便标出能识图的）
+        self._local_row = QWidget()
+        _local_lay = QHBoxLayout(self._local_row)
+        _local_lay.setContentsMargins(0, 0, 0, 0)
+        _local_lay.setSpacing(8)
+        self._local_btn = QPushButton(tr("set_ai_local_detect"))
+        self._local_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._local_btn.clicked.connect(self._detect_local)
+        _local_lay.addWidget(self._local_btn)
+        self._local_lbl = QLabel("")
+        self._local_lbl.setObjectName("retNote")
+        self._local_lbl.setWordWrap(True)
+        _local_lay.addWidget(self._local_lbl, 1)
+        lay.addWidget(self._local_row)
+        self._local_worker = None
+        self._base.textChanged.connect(lambda _t: self._sync_local_rows())
+
         self._key = QLineEdit()
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_btn = QPushButton(tr("set_ai_key_clear"))
@@ -4675,6 +4734,7 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._drafts = {}
         self._pick_provider(self._provider, fill=False)
         self._drafts[self._provider] = self._fields_text()
+        self._sync_local_rows()
 
     # ---- 小组件 ----
     def _add_field(self, label_text, widget, extra=None):
@@ -4694,6 +4754,7 @@ class _AISettingsDialog(_CardOverlayDialog):
         if extra is not None:
             self._fields.addWidget(extra, row, 2,
                                    Qt.AlignmentFlag.AlignRight)
+        return lbl
 
     def _sync_key_ui(self):
         saved = (bool(self._values.get("api_key_saved"))
@@ -4708,14 +4769,80 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._sync_key_ui()
         self._test_lbl.setText("")
 
-    def _fields_text(self):
-        """当前三个输入框里的内容（接口地址 / 模型 / 显示名）。"""
-        return (self._base.text(), self._model.text(), self._model_label.text())
+    # ---- 本地模型（Ollama / LM Studio 之类）----
+    def _is_local_now(self):
+        """当前是不是在配本机上的模型服务。"""
+        return (self._provider == "ollama"
+                or is_local_url(self._base.text().strip()))
 
-    def _fill_fields(self, base, model, label):
+    def _sync_local_rows(self):
+        """本机服务才显示「识图模型」和「检测本地模型」。"""
+        local = self._is_local_now()
+        try:
+            self._vision_lbl.setVisible(local)
+            self._vision.setVisible(local)
+            self._local_row.setVisible(local)
+        except Exception:
+            pass
+        if local and not self._vision.text().strip():
+            self._vision.setPlaceholderText(tr("set_ai_vision_ph"))
+
+    def _detect_local(self):
+        """问一下本机服务装了哪些模型（后台线程，别卡住界面）。"""
+        worker = self._local_worker
+        if worker is not None and worker.isRunning():
+            return
+        base = self._base.text().strip()
+        if not base:
+            base = str(provider_info("ollama").get("base_url") or "")
+        self._local_lbl.setText(tr("set_ai_local_probing"))
+        self._local_lbl.setStyleSheet("")
+        worker = _LocalModelWorker(base, self)
+        worker.done.connect(self._on_local_models)
+        worker.finished.connect(worker.deleteLater)
+        self._local_worker = worker
+        worker.start()
+
+    def _on_local_models(self, ok, models, detail):
+        self._local_worker = None
+        try:
+            if not ok or not models:
+                self._local_lbl.setText(tr("set_ai_local_none"))
+                self._local_lbl.setStyleSheet(f"color: {C['AMBER']};")
+                return
+            self._apply_local_models(models)
+        except RuntimeError:
+            pass
+
+    def _apply_local_models(self, models):
+        """把检测到的模型填进去：主模型用第一个，识图模型用第一个能识图的。"""
+        models = [str(m) for m in (models or []) if str(m or "").strip()]
+        if not models:
+            return
+        vision = next((m for m in models if looks_like_vision_model(m)), "")
+        if not self._model.text().strip():
+            self._model.setText(vision or models[0])
+        if not self._vision.text().strip() and vision:
+            self._vision.setText(vision)
+        shown = "、".join(m + ("（可识图）" if looks_like_vision_model(m) else "")
+                         for m in models[:6])
+        more = "" if len(models) <= 6 else tr("set_ai_local_more",
+                                             n=len(models) - 6)
+        self._local_lbl.setText(tr("set_ai_local_found", n=len(models),
+                                   list=shown + more))
+        self._local_lbl.setStyleSheet(f"color: {C['SUCCESS']};")
+        self._sync_local_rows()
+
+    def _fields_text(self):
+        """当前几个输入框里的内容（接口地址 / 模型 / 显示名 / 识图模型）。"""
+        return (self._base.text(), self._model.text(),
+                self._model_label.text(), self._vision.text())
+
+    def _fill_fields(self, base, model, label, vision=""):
         self._base.setText(str(base or ""))
         self._model.setText(str(model or ""))
         self._model_label.setText(str(label or ""))
+        self._vision.setText(str(vision or ""))
 
     def _pick_provider(self, pid, fill=True):
         """选服务商；fill=True 时把该服务商上次填过的内容放回来（没填过就用默认值）。"""
@@ -4736,10 +4863,12 @@ class _AISettingsDialog(_CardOverlayDialog):
                 info = provider_info(pid)
                 draft = (str(info.get("base_url") or ""),
                          str(info.get("model") or ""),
-                         str(info.get("model_label") or ""))
+                         str(info.get("model_label") or ""),
+                         str(info.get("vision_model") or ""))
                 self._drafts[pid] = draft
             self._fill_fields(*draft)
             self._test_lbl.setText("")
+        self._sync_local_rows()
 
     # ---- 取值 / 保存 ----
     def values(self):
@@ -4748,6 +4877,7 @@ class _AISettingsDialog(_CardOverlayDialog):
         values["base_url"] = self._base.text().strip()
         values["model"] = self._model.text().strip()
         values["model_label"] = self._model_label.text().strip()
+        values["vision_model"] = self._vision.text().strip()
         values["temperature"] = float(self._temp.value())
         values["proxy"] = self._proxy.text().strip()
         key = self._key.text().strip()
@@ -4798,6 +4928,10 @@ class _AISettingsDialog(_CardOverlayDialog):
             worker.cancel()
             worker.wait(3000)
         self._test_worker = None
+        probe = self._local_worker
+        if probe is not None and probe.isRunning():
+            probe.wait(3000)
+        self._local_worker = None
 
     def reject(self):
         self._stop_test()

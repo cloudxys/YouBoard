@@ -80,6 +80,15 @@
      `vault_autolock_minutes` 仍能读），`VaultDialog._restart_lock_timer()`
      按它起停计时器；卡片里只要新密码留空就只保存这个时间，不用重输当前密码。
   5. 本地加密的边界要在 README 与密库窗口里写明：防离线 / 拷贝，不防本机运行的恶意程序。
+- 本地模型（3.3.5）：
+  1. 默认地址一律写 `127.0.0.1`，不要用 `localhost` —— Windows 会把 localhost 先解析成
+     IPv6 `::1`，而 Ollama 默认只听 IPv4，于是报 WinError 10061"积极拒绝"。
+     `AIClient.endpoint_candidates()` 会在两种写法之间自动回退（老配置因此不用改）。
+  2. 图片请求走 `vision_model`（留空才回落到主模型）：见 `AIClient.model_for()`。
+  3. `probe_local_models()` 只做一次本机 GET（先 `/api/tags` 再 `/v1/models`），
+     必须保持"点按钮才发"，别挂到启动路径上（内存与启动时间是红线）。
+  4. 门禁进程收尾用 `os._exit()`：无头环境成批销毁窗口会偶发原生崩溃，
+     不能让它把"全部断言都过了"的一轮回归判成失败。
 
 ## 6. 改代码的两条老规矩
 
