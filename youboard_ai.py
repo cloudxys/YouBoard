@@ -442,11 +442,22 @@ AI_PROVIDER_FIELDS = ("base_url", "model", "model_label", "vision_model")
 
 
 def _provider_blocks(cfg=None):
-    """配置里的 ai.providers 原始表（Key 是密文，不外传）。"""
+    """配置里的 ai.providers 原始表（Key 是密文，不外传）。
+
+    老配置（3.3.4 及更早）只存了"当前这一家"的顶层字段：这里顺手把那家补成一条
+    存档，免得升级后第一次换服务商保存就把它的地址 / 模型 / Key 顶掉。
+    """
     cfg = cfg if isinstance(cfg, dict) else load_config()
     ai = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
     saved = ai.get("providers") if isinstance(ai.get("providers"), dict) else {}
-    return saved if isinstance(saved, dict) else {}
+    saved = dict(saved) if isinstance(saved, dict) else {}
+    legacy_pid = str(ai.get("provider") or "")
+    if legacy_pid in PROVIDERS and legacy_pid not in saved:
+        block = {key: str(ai.get(key) or "") for key in AI_PROVIDER_FIELDS}
+        block["api_key"] = str(ai.get("api_key") or "")
+        if block.get("base_url") or block.get("model") or block.get("api_key"):
+            saved[legacy_pid] = block
+    return saved
 
 
 def provider_saved_settings(cfg=None):

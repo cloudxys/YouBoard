@@ -778,6 +778,26 @@ def test_ai():
     check("ai providers: clearing one key leaves the others alone",
           _saved_d.get("api_key") == ""
           and ai.provider_api_key("deepseek") == "sk-keep-deepseek")
+    # 老配置（3.3.4 及更早只有顶层一份）升级上来：那一家要被自动补成存档，
+    # 换别家保存时不能把它顶掉（用户实测：升上来第一次保存就丢了本地模型那家）
+    yc.save_config({"ai": {
+        "provider": "ollama", "base_url": "http://127.0.0.1:11434/v1",
+        "model": "qwen3.5:4b", "model_label": "老配置本地",
+        "vision_model": "qwen3.5:4b", "api_key": "", "temperature": 0.3,
+        "proxy": ""}})
+    _legacy = ai.provider_saved_settings()
+    check("ai providers: legacy single block is archived",
+          _legacy.get("ollama", {}).get("model") == "qwen3.5:4b"
+          and _legacy.get("ollama", {}).get("model_label") == "老配置本地",
+          str(_legacy))
+    _ds = ai.default_ai_settings()
+    _ds.update({"provider": "deepseek", "model": "deepseek-flash",
+                "api_key": "sk-new-ds", "api_key_saved": True})
+    ai.save_ai_settings(_ds)
+    _kept = ai.provider_saved_settings()
+    check("ai providers: first save after upgrade keeps the old provider",
+          _kept.get("ollama", {}).get("model") == "qwen3.5:4b"
+          and _kept.get("deepseek", {}).get("has_key"), str(_kept))
     # v3.2.8：自由对话的消息组装（上下文 + 多轮 + 轮数上限）
     ctx = ai.prepare_chat_context("剪贴板里的原始内容")
     check("ai chat context", len(ctx["messages"]) == 2
