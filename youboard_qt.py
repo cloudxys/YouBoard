@@ -122,6 +122,7 @@ from youboard_ai import (
     prepare_image_chat_context, file_entries_text,
     model_display_name,
     is_local_url, looks_like_vision_model, probe_local_models,
+    provider_api_key, provider_saved_settings,
 )
 # 版本号唯一来源：youboard_version.py（改版本只改那一个文件）
 from youboard_version import APP_NAME, APP_VERSION
@@ -4608,7 +4609,12 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._provider = str(self._values.get("provider") or "deepseek")
         if self._provider not in PROVIDERS:
             self._provider = "custom"
-        self._key_cleared = False
+        # 每个服务商各自的 Key 状态："清除过"标记 + 内存里的明文（测试连接用）
+        self._key_cleared = {}
+        self._plain_keys = {}
+        self._saved = dict(self._values.get("providers") or {})
+        if self._values.get("api_key"):
+            self._plain_keys[self._provider] = str(self._values["api_key"])
         self._test_worker = None
         lay = self._lay
 
@@ -4730,8 +4736,18 @@ class _AISettingsDialog(_CardOverlayDialog):
         lay.addLayout(buttons)
 
         # 每个服务商各自记住用户填过的内容：切走再切回来不能把刚填的地址/模型清空
-        # （「自定义」的服务商默认值是空的，以前切过去就直接变成一片空白）
+        # （「自定义」的服务商默认值是空的，以前切过去就直接变成一片空白）；
+        # 优先用"上次保存过的那一份"，其次才是服务商默认值 —— 换一家保存后，
+        # 上一家的地址 / 模型 / Key 都还在（用户实测：以前会一起丢）
         self._drafts = {}
+        for pid, block in self._saved.items():
+            if pid not in PROVIDERS or not isinstance(block, dict):
+                continue
+            if block.get("base_url") or block.get("model"):
+                self._drafts[pid] = (block.get("base_url") or "",
+                                     block.get("model") or "",
+                                     block.get("model_label") or "",
+                                     block.get("vision_model") or "")
         self._pick_provider(self._provider, fill=False)
         self._drafts[self._provider] = self._fields_text()
         self._sync_local_rows()
@@ -4757,14 +4773,41 @@ class _AISettingsDialog(_CardOverlayDialog):
         return lbl
 
     def _sync_key_ui(self):
-        saved = (bool(self._values.get("api_key_saved"))
-                 and not self._key_cleared)
+        saved = self._key_saved_for()
         self._key.setPlaceholderText(
             tr("set_ai_key_ph") if saved else tr("set_ai_key_new"))
         self._key_btn.setEnabled(saved)
 
+    def _key_saved_for(self, pid=None):
+        """这家服务商有没有存过 Key（点过「清除 Key」就不算）。"""
+        pid = pid or self._provider
+        if self._key_cleared.get(pid):
+            return False
+        return bool((self._saved.get(pid) or {}).get("has_key")
+                    or self._plain_keys.get(pid))
+
+    def _stash_key(self):
+        """把输入框里的 Key / 清除标记记到当前服务商名下（切换前调用）。"""
+        text = self._key.text().strip()
+        if text:
+            self._plain_keys[self._provider] = text
+        elif self._key_cleared.get(self._provider):
+            self._plain_keys.pop(self._provider, None)
+
+    def _load_key_for(self, pid):
+        """切到某一家：清空输入框，按这家的存档决定占位文字。"""
+        self._key.clear()
+        if (pid not in self._plain_keys
+                and (self._saved.get(pid) or {}).get("has_key")):
+            try:
+                self._plain_keys[pid] = provider_api_key(pid)
+            except Exception:
+                pass
+        self._sync_key_ui()
+
     def _on_key_clear(self):
-        self._key_cleared = True
+        self._key_cleared[self._provider] = True
+        self._plain_keys.pop(self._provider, None)
         self._key.clear()
         self._sync_key_ui()
         self._test_lbl.setText("")
@@ -4851,6 +4894,7 @@ class _AISettingsDialog(_CardOverlayDialog):
         if fill and pid != self._provider:
             # 先把眼前这一份存到原服务商名下，切回来时原样还原
             self._drafts[self._provider] = self._fields_text()
+            self._stash_key()
         prev = self._provider
         self._provider = pid
         for key, btn in self._prov_btns.items():
@@ -4868,11 +4912,16 @@ class _AISettingsDialog(_CardOverlayDialog):
                 self._drafts[pid] = draft
             self._fill_fields(*draft)
             self._test_lbl.setText("")
+            self._load_key_for(pid)
         self._sync_local_rows()
 
     # ---- 取值 / 保存 ----
     def values(self):
         values = dict(self._values)
+        # Key 只能来自"当前这家"：不能把别家存过的 Key 顺手抄过来
+        values.pop("api_key", None)
+        values.pop("api_key_saved", None)
+        values.pop("providers", None)
         values["provider"] = self._provider
         values["base_url"] = self._base.text().strip()
         values["model"] = self._model.text().strip()
@@ -4884,9 +4933,12 @@ class _AISettingsDialog(_CardOverlayDialog):
         if key:
             values["api_key"] = key
             values["api_key_saved"] = True
-        elif self._key_cleared:
+        elif self._key_cleared.get(self._provider):
             values["api_key"] = ""
             values["api_key_saved"] = False
+        else:
+            values["api_key"] = str(self._plain_keys.get(self._provider) or "")
+            values["api_key_saved"] = self._key_saved_for()
         return values
 
     def _save_and_close(self):

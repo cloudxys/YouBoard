@@ -739,6 +739,45 @@ def test_ai():
     check("local ai: vision model round trips",
           _saved.get("vision_model") == "llava:7b"
           and _round.get("vision_model") == "llava:7b")
+    # v3.3.5：换一家服务商保存，上一家的地址 / 模型 / Key 不能丢
+    _cfg_a = ai.default_ai_settings()
+    _cfg_a.update({"provider": "deepseek",
+                   "base_url": "https://api.deepseek.com",
+                   "model": "deepseek-flash", "model_label": "DS 自定义名",
+                   "api_key": "sk-keep-deepseek", "api_key_saved": True})
+    ai.save_ai_settings(_cfg_a)
+    _cfg_b = ai.default_ai_settings()
+    _cfg_b.update({"provider": "custom",
+                   "base_url": "http://127.0.0.1:9999/v1",
+                   "model": "local-gw", "api_key": "sk-keep-custom",
+                   "api_key_saved": True})
+    ai.save_ai_settings(_cfg_b)
+    _blocks = ai.provider_saved_settings()
+    check("ai providers: each provider keeps its own settings",
+          _blocks.get("deepseek", {}).get("model") == "deepseek-flash"
+          and _blocks.get("deepseek", {}).get("has_key")
+          and _blocks.get("custom", {}).get("model") == "local-gw"
+          and _blocks.get("custom", {}).get("has_key"),
+          str(sorted(_blocks.keys())))
+    check("ai providers: keys stay separate",
+          ai.provider_api_key("deepseek") == "sk-keep-deepseek"
+          and ai.provider_api_key("custom") == "sk-keep-custom")
+    _cfg_c = dict(_cfg_a)
+    _cfg_c["api_key"] = ""
+    _cfg_c["api_key_saved"] = True          # 留空 = 不改 Key
+    ai.save_ai_settings(_cfg_c)
+    _after = ai.provider_saved_settings()
+    check("ai providers: re-saving one keeps the other",
+          _after.get("custom", {}).get("model") == "local-gw"
+          and ai.provider_api_key("custom") == "sk-keep-custom"
+          and ai.provider_api_key("deepseek") == "sk-keep-deepseek")
+    _cfg_d = ai.default_ai_settings()
+    _cfg_d.update({"provider": "custom", "base_url": "http://127.0.0.1:9/v1",
+                   "model": "gw2", "api_key": "", "api_key_saved": False})
+    _saved_d = ai.save_ai_settings(_cfg_d)
+    check("ai providers: clearing one key leaves the others alone",
+          _saved_d.get("api_key") == ""
+          and ai.provider_api_key("deepseek") == "sk-keep-deepseek")
     # v3.2.8：自由对话的消息组装（上下文 + 多轮 + 轮数上限）
     ctx = ai.prepare_chat_context("剪贴板里的原始内容")
     check("ai chat context", len(ctx["messages"]) == 2
@@ -2223,6 +2262,35 @@ def test_gui():
           == yq._RetentionDialog(win, win,
                                  {"mode": "forever"}).card.styleSheet())
     check("ai: provider pills", len(cfg_dlg._prov_btns) == 6)
+    # 界面：切回某家服务商时用"这家上次存过的那份"，而不是服务商默认值
+    _keep_vals = {"provider": "custom",
+                  "base_url": "http://127.0.0.1:9999/v1", "model": "gw",
+                  "model_label": "网关", "vision_model": "",
+                  "api_key": "", "api_key_saved": False, "temperature": 0.3,
+                  "proxy": "",
+                  "providers": {"deepseek": {
+                      "base_url": "https://api.deepseek.com",
+                      "model": "deepseek-flash",
+                      "model_label": "DS 自定义名", "vision_model": "",
+                      "has_key": True}}}
+    _keep_dlg = yq._AISettingsDialog(win, win, _keep_vals)
+    _keep_dlg._pick_provider("deepseek")
+    for _ in range(3):
+        app.processEvents()
+    check("ai: switching back restores that provider's saved values",
+          _keep_dlg._base.text() == "https://api.deepseek.com"
+          and _keep_dlg._model.text() == "deepseek-flash"
+          and _keep_dlg._model_label.text() == "DS 自定义名",
+          "%s / %s" % (_keep_dlg._base.text(), _keep_dlg._model.text()))
+    check("ai: key box is per provider (empty + saved hint)",
+          _keep_dlg._key.text() == "" and _keep_dlg._key_btn.isEnabled()
+          and _keep_dlg._key.placeholderText() == yq.tr("set_ai_key_ph"))
+    _keep_vals_out = _keep_dlg.values()
+    check("ai: values never carry the other provider's key",
+          _keep_vals_out.get("api_key", "") == ""
+          and _keep_vals_out.get("api_key_saved") is True,
+          str(_keep_vals_out.get("api_key"))[:12])
+    _keep_dlg.close()
     check("ai: settings defaults",
           cfg_dlg._base.text() == "https://api.deepseek.com"
           and cfg_dlg._model.text() == "deepseek-flash",

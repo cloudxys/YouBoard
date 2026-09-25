@@ -371,6 +371,8 @@ def load_ai_settings(config=None):
     out["api_key"] = unprotect_secret(stored) if stored else ""
     out["api_key_saved"] = bool(stored)
     out["enabled"] = bool(raw.get("enabled", True))
+    # 每个服务商各自存过的内容（给界面用：切回某家时把这家上次的地址/模型放回来）
+    out["providers"] = provider_saved_settings(cfg)
     return out
 
 
@@ -400,12 +402,23 @@ def save_ai_settings(settings, config=None):
         "proxy": str(settings.get("proxy") or ""),
     }
     key = str(settings.get("api_key") or "").strip()
+    # 每个服务商各存一份：这次保存只动"当前这家"的 Key，别家的原样留着
+    blocks = dict(_provider_blocks(cfg))
+    prev = blocks.get(provider) if isinstance(blocks.get(provider), dict) else {}
     if key and not key.startswith(("dpapi:", "b64:")):
-        out["api_key"] = protect_secret(key)
+        stored_key = protect_secret(key)
     elif settings.get("api_key_saved") is False:
-        out["api_key"] = ""
+        stored_key = ""
     else:
-        out["api_key"] = str(old.get("api_key") or "")
+        # 没动过 Key：保留"这家"原来那把；这家还没有（老配置升级上来）就沿用当前激活那家的
+        stored_key = str(prev.get("api_key") or "")
+        if not stored_key and provider == str(old.get("provider") or ""):
+            stored_key = str(old.get("api_key") or "")
+    out["api_key"] = stored_key
+    block = {name: str(out.get(name) or "") for name in AI_PROVIDER_FIELDS}
+    block["api_key"] = stored_key
+    blocks[provider] = block
+    out["providers"] = blocks
     cfg["ai"] = out
     save_config(cfg)
     return out
@@ -417,6 +430,43 @@ def ai_api_key(settings):
     if key.startswith(("dpapi:", "b64:")):
         return unprotect_secret(key)
     return key
+
+
+# ---------------------------------------------------------------------------
+# 每个服务商各存一份（v3.3.5）：以前配置里只有"当前这一家"，
+# 换一家服务商保存后，上一家的地址 / 模型 / Key 就没了。
+# 现在配置里多一个 ai.providers 表，每家的内容都留着，切回去就恢复。
+# ---------------------------------------------------------------------------
+
+AI_PROVIDER_FIELDS = ("base_url", "model", "model_label", "vision_model")
+
+
+def _provider_blocks(cfg=None):
+    """配置里的 ai.providers 原始表（Key 是密文，不外传）。"""
+    cfg = cfg if isinstance(cfg, dict) else load_config()
+    ai = cfg.get("ai") if isinstance(cfg.get("ai"), dict) else {}
+    saved = ai.get("providers") if isinstance(ai.get("providers"), dict) else {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def provider_saved_settings(cfg=None):
+    """给界面用：每家服务商上次存过的内容 + 有没有存过 Key（不含明文 Key）。"""
+    out = {}
+    for pid, item in _provider_blocks(cfg).items():
+        if pid not in PROVIDERS or not isinstance(item, dict):
+            continue
+        block = {key: str(item.get(key) or "") for key in AI_PROVIDER_FIELDS
+                 if key in item}
+        block["has_key"] = bool(str(item.get("api_key") or ""))
+        out[str(pid)] = block
+    return out
+
+
+def provider_api_key(provider, cfg=None):
+    """取某一家存过的明文 Key（切到那家做「测试连接」时用）。"""
+    item = _provider_blocks(cfg).get(str(provider))
+    stored = str((item or {}).get("api_key") or "")
+    return unprotect_secret(stored) if stored else ""
 
 
 # ===========================================================================
