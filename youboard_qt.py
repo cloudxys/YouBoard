@@ -4689,6 +4689,11 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_btn = QPushButton(tr("set_ai_key_clear"))
         self._key_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        # 这个按钮不给挤：以前网格空间紧张时它会被压窄，「清除 Key」的 y 被裁掉
+        # （用户实测）。固定成文字需要的宽度，空间不够时让输入框那边让位。
+        self._key_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                    QSizePolicy.Policy.Fixed)
+        self._key_btn.setMinimumWidth(self._key_btn.sizeHint().width())
         self._key_btn.clicked.connect(self._on_key_clear)
         self._add_field(tr("set_ai_key"), self._key, self._key_btn)
         self._sync_key_ui()

@@ -2285,6 +2285,13 @@ def test_gui():
     check("ai: key box is per provider (empty + saved hint)",
           _keep_dlg._key.text() == "" and _keep_dlg._key_btn.isEnabled()
           and _keep_dlg._key.placeholderText() == yq.tr("set_ai_key_ph"))
+    # 「清除 Key」按钮不能被挤到裁字（用户实测过"清除 Ke"）
+    _kb = _keep_dlg._key_btn
+    check("ai: clear-key button keeps its full text",
+          _kb.sizePolicy().horizontalPolicy() == yq.QSizePolicy.Policy.Fixed
+          and _kb.width() >= _kb.sizeHint().width(),
+          "%d/%d policy=%s" % (_kb.width(), _kb.sizeHint().width(),
+                               _kb.sizePolicy().horizontalPolicy()))
     _keep_vals_out = _keep_dlg.values()
     check("ai: values never carry the other provider's key",
           _keep_vals_out.get("api_key", "") == ""
