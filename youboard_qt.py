@@ -4693,13 +4693,21 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_btn = QPushButton(tr("set_ai_key_clear"))
         self._key_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        # 这个按钮不给挤：以前网格空间紧张时它会被压窄，「清除 Key」的 y 被裁掉
-        # （用户实测）。固定成文字需要的宽度，空间不够时让输入框那边让位。
-        self._key_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
-                                    QSizePolicy.Policy.Fixed)
-        self._key_btn.setMinimumWidth(self._key_btn.sizeHint().width())
         self._key_btn.clicked.connect(self._on_key_clear)
         self._add_field(tr("set_ai_key"), self._key, self._key_btn)
+        # 这个按钮不给挤：以前网格空间紧张时它会被压窄，「清除 Key」被裁成「清除 Ke」
+        # （用户实测）。做法：样式生效后按文字需要量出宽度，把按钮和它所在的这一列
+        # 一起钉死，空间不够时压缩输入框那边。
+        try:
+            self._key_btn.ensurePolished()
+            _need = self._key_btn.sizeHint().width() + 6
+            self._key_btn.setSizePolicy(QSizePolicy.Policy.Fixed,
+                                        QSizePolicy.Policy.Fixed)
+            self._key_btn.setMinimumWidth(_need)
+            self._key_btn.setMaximumWidth(_need)
+            self._fields.setColumnMinimumWidth(2, _need)
+        except Exception:
+            pass
         self._sync_key_ui()
 
         self._temp = QDoubleSpinBox()

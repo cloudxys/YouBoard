@@ -2320,6 +2320,8 @@ def test_gui():
     _kb = _keep_dlg._key_btn
     check("ai: clear-key button keeps its full text",
           _kb.sizePolicy().horizontalPolicy() == yq.QSizePolicy.Policy.Fixed
+          and _kb.minimumWidth() >= _kb.sizeHint().width()
+          and _keep_dlg._fields.columnMinimumWidth(2) >= _kb.sizeHint().width()
           and _kb.width() >= _kb.sizeHint().width(),
           "%d/%d policy=%s" % (_kb.width(), _kb.sizeHint().width(),
                                _kb.sizePolicy().horizontalPolicy()))
