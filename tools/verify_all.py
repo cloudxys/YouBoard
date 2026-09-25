@@ -2323,8 +2323,11 @@ def test_gui():
     check("ai: clear-key button has room for the whole glyph (incl. bottom)",
           _kb.sizePolicy().horizontalPolicy() == yq.QSizePolicy.Policy.Minimum
           and _kb.sizePolicy().verticalPolicy() == yq.QSizePolicy.Policy.Minimum
+          # 跟输入框一样高（适配），而且里面真放得下文字（含最下缘）
+          and abs(_kb.minimumHeight()
+                  - _keep_dlg._key.sizeHint().height()) <= 2
+          and _kb.minimumHeight() - 8 >= _ink.height() + 2
           and _kb.minimumWidth() >= _ink.width() + 20
-          and _kb.minimumHeight() >= _ink.height() + 16
           and _keep_dlg._fields.columnMinimumWidth(2) >= _kb.minimumWidth()
           and _keep_dlg._fields.rowMinimumHeight(
               _keep_dlg._fields.rowCount() - 1) >= _kb.minimumHeight(),

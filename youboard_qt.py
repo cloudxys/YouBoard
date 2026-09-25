@@ -4697,6 +4697,9 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._key_btn.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         # 完整写「清除 Key」（别缩写成「清除」，用户会以为后半截被截掉了），
         # 宽度靠下面几行按文字需要钉死，所以完整文字也不会被压窄裁字
+        # 上下内边距比卡片默认的 7px 收紧一点：按钮要跟输入框一样高（约 30px），
+        # 那个高度里还要容下中文最下缘，7px 会把它顶掉。
+        self._key_btn.setStyleSheet("QPushButton { padding: 3px 10px; }")
         self._key_btn.setToolTip(tr("set_ai_key_clear_tip"))
         self._key_btn.clicked.connect(self._on_key_clear)
         self._add_field(tr("set_ai_key"), self._key, self._key_btn)
@@ -4783,11 +4786,13 @@ class _AISettingsDialog(_CardOverlayDialog):
             _fm = self._key_btn.fontMetrics()
             _text = self._key_btn.text()
             _ink = _fm.tightBoundingRect(_text)      # 真实墨迹（含最下缘）
-            _need_w = max(_fm.horizontalAdvance(_text), _ink.width()) + 28
-            _need_h = max(_fm.height(), _ink.height()) + 24
+            _need_w = max(_fm.horizontalAdvance(_text), _ink.width()) + 24
+            # 高度跟着输入框走（两个控件一样高才"适配"）；输入框太矮时才按墨迹兜底
+            _need_h = max(self._key.sizeHint().height(), _ink.height() + 10)
             self._key_btn.setMinimumSize(_need_w, _need_h)
             self._key_btn.setSizePolicy(QSizePolicy.Policy.Minimum,
                                         QSizePolicy.Policy.Minimum)
+            self._key.setMinimumHeight(_need_h)
             self._fields.setColumnMinimumWidth(2, _need_w)
             self._fields.setRowMinimumHeight(self._fields.rowCount() - 1,
                                              _need_h)
