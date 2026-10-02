@@ -1863,20 +1863,26 @@ def test_gui():
             pass
         _dlg.close()
 
-    # 内容变化（点「自定义」多出一行）后窗口尺寸变了，位置要跟着重新居中
+    # 内容变化（点「自定义」多出一行）只该改尺寸，位置必须钉住不动：
+    # 以前会按宿主重新居中，宿主贴屏幕边时被夹回屏幕，卡片看着就"往上跑"一下
+    # （用户在 AI 卡片里本地模型 ↔ 其他服务商之间切换时实测）。
     _ret = yq._RetentionDialog(win, win, {"mode": "forever"})
     _ret.show()
     for _ in range(12):
         app.processEvents()
         time.sleep(0.02)
+    _pos_before = (_ret.x(), _ret.y())
+    _size_before = (_ret.width(), _ret.height())
     _ret._pick("custom")
     for _ in range(20):
         app.processEvents()
         time.sleep(0.02)
-    _want_xy = _ret._host_center(*_ret._target_size())
-    check("card overlay stays centered when content changes",
-          abs(_ret.x() - _want_xy[0]) <= 3 and abs(_ret.y() - _want_xy[1]) <= 3,
-          "%s vs %s" % ((_ret.x(), _ret.y()), _want_xy))
+    check("card overlay does not jump when content changes",
+          (_ret.x(), _ret.y()) == _pos_before
+          and (_ret.width(), _ret.height()) != _size_before,
+          "位置 %s → %s（尺寸 %s → %s）" % (
+              _pos_before, (_ret.x(), _ret.y()), _size_before,
+              (_ret.width(), _ret.height())))
     check("card overlay still hugs the card after content change",
           abs(_ret.width() - _ret.card.width()) <= 4
           and abs(_ret.height() - _ret.card.height()) <= 4,

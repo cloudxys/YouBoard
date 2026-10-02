@@ -1736,9 +1736,6 @@ STRINGS = {
                              "服务跑在别的端口就把「接口地址」改成实际地址。",
         "set_ai_local_found": "检测到 {n} 个本地模型：{list}",
         "set_ai_local_more": "…等共 {n} 个",
-        "set_ai_note": "Key 在本机加密保存（Windows 用系统 DPAPI），不写日志；"
-                       "请求只发送你在列表里选中的那一条记录（单次最多 2.4 万字符、"
-                       "最多生成约 1200 字，不会带上别的历史记录）。",
         "set_ai_test": "测试连接",
         "set_ai_test_ok": "连接成功：{text}",
         "set_ai_open": "配置",
@@ -2249,9 +2246,6 @@ STRINGS = {
         "set_ai_local_none": "Cannot reach a local model service: install Ollama (ollama.com/download), run ollama pull qwen3.5:4b (it can see images), then click here again; if your server uses another port, point Base URL at it.",
         "set_ai_local_found": "{n} local model(s) found: {list}",
         "set_ai_local_more": "…{n} in total",
-        "set_ai_note": "The key is encrypted on this machine (DPAPI on Windows) and "
-                       "never logged; requests contain only the entry you selected "
-                       "(max 24k characters in, ~1200 tokens out, no other history).",
         "set_ai_test": "Test connection",
         "set_ai_test_ok": "Connected: {text}",
         "set_ai_open": "Configure",
@@ -4024,22 +4018,15 @@ class _CardOverlayDialog(QDialog):
         """
         w, h = self._target_size()
         if self._placed:
-            # 已经摆好（甚至被用户拖过）：先调尺寸；尺寸变了再决定要不要重新居中
-            changed = (abs(int(w) - self.width()) > 2
-                       or abs(int(h) - self.height()) > 2)
+            # 已经摆好（甚至被用户拖过）：只调尺寸，位置钉住不动。
+            # 以前内容高度一变就按宿主重新居中，宿主靠近屏幕边时会被夹回屏幕里，
+            # 卡片看着就"往上跑"一下（用户在本地模型 ↔ 其他服务商之间切换时实测）。
             try:
                 self.resize(int(w), int(h))
                 self._hug_card(w, h)
             except Exception:
                 pass
-            # 内容变多/变少导致窗口尺寸变化时，卡片要跟着回到宿主正中间
-            # （用户自己拖过的位置要留着，不能被居中覆盖）
-            if changed and not self._user_moved:
-                try:
-                    x, y = self._host_center(w, h)
-                    self.move(int(x), int(y))
-                except Exception:
-                    pass
+            self._keep_on_screen()
             return
         x, y = self._host_center(w, h)
         try:
@@ -4059,6 +4046,20 @@ class _CardOverlayDialog(QDialog):
     def _host_center(self, w, h):
         """窗口尺寸 (w, h) 时该摆在哪儿：宿主中央，宿主不可见就当前屏幕居中。"""
         return _centered_pos(self._host, w, h)
+
+    def _keep_on_screen(self):
+        """内容变高变矮后只保证卡片还在屏幕里，不主动平移（避免"跳一下"）。"""
+        try:
+            scr = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+            avail = scr.availableGeometry()
+        except Exception:
+            return
+        x = min(max(self.x(), avail.x()),
+                max(avail.x(), avail.x() + avail.width() - self.width()))
+        y = min(max(self.y(), avail.y()),
+                max(avail.y(), avail.y() + avail.height() - self.height()))
+        if x != self.x() or y != self.y():
+            self.move(int(x), int(y))
 
     def _hug_card(self, w, h):
         """把卡片钉成窗口这么大：窗口 = 卡片，截图工具按窗口矩形抓到的就是卡片本身。
@@ -4737,11 +4738,6 @@ class _AISettingsDialog(_CardOverlayDialog):
         self._test_lbl.setWordWrap(True)
         test_row.addWidget(self._test_lbl, 1)
         lay.addLayout(test_row)
-
-        note = QLabel(tr("set_ai_note"))
-        note.setObjectName("retNote")
-        note.setWordWrap(True)
-        lay.addWidget(note)
 
         buttons = QHBoxLayout()
         buttons.addStretch()

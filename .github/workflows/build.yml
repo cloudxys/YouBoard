@@ -223,23 +223,19 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && gh release delete "$GITHUB_REF_NAME" --yes || true
           # 上传所有产物文件（跳过目录，避免 dist 目录被当作文件上传失败）
           mapfile -t files < <(find artifacts -type f)
-          # 正文 = 仓库里的更新说明（应用内「检查更新」会显示这段）+ 文件校验表
+          # 正文 = 仓库里的"一句话更新摘要"（应用内「检查更新」会显示这段），
+          # 没有这个文件才退回完整更新说明；哈希清单作为附件发布，不再刷屏正文
           V="${GITHUB_REF_NAME#v}"
+          if [ -f RELEASE_SUMMARY.md ]; then
+            NOTES=RELEASE_SUMMARY.md
+          else
+            NOTES=RELEASE_NOTES.md
+          fi
           {
-            cat RELEASE_NOTES.md
+            cat "$NOTES"
             echo ""
-            echo "---"
-            echo ""
-            echo "## 📦 文件校验（SHA256）"
-            echo ""
-            echo '```'
-            cat SHA256SUMS.txt
-            echo '```'
-            echo ""
-            echo "- Windows：\`certutil -hashfile YouBoard_Setup_v${V}.exe SHA256\`"
-            echo "- macOS：\`shasum -a 256 YouBoard_macOS_arm64_v${V}.dmg\`"
-            echo ""
-            echo "macOS 的 DMG / ZIP 未做代码签名与公证，首次打开请右键 →「打开」。"
+            echo "文件校验（SHA256）见附件 \`SHA256SUMS.txt\`：Windows 用 \`certutil -hashfile YouBoard_Setup_v${V}.exe SHA256\`，"
+            echo "macOS 用 \`shasum -a 256 YouBoard_macOS_arm64_v${V}.dmg\` 对一下即可；macOS 包未签名，首次打开请右键 →「打开」。"
           } > RELEASE_BODY.md
           gh release create "$GITHUB_REF_NAME" "${files[@]}" SHA256SUMS.txt \
             --title "YouBoard $GITHUB_REF_NAME" \
