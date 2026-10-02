@@ -202,6 +202,19 @@ jobs:
         with:
           path: artifacts
 
+      - name: Checksums (SHA256 of every artifact)
+        run: |
+          # 给 Windows 与 macOS 的所有产物生成一份校验清单，随 Release 一起发布
+          cd artifacts
+          : > ../SHA256SUMS.txt
+          find . -type f | LC_ALL=C sort | while IFS= read -r f; do
+            printf '%s  %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$(basename "$f")" \
+              >> ../SHA256SUMS.txt
+          done
+          cd ..
+          echo "--- SHA256SUMS.txt ---"
+          cat SHA256SUMS.txt
+
       - name: Create Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -210,7 +223,24 @@ jobs:
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && gh release delete "$GITHUB_REF_NAME" --yes || true
           # 上传所有产物文件（跳过目录，避免 dist 目录被当作文件上传失败）
           mapfile -t files < <(find artifacts -type f)
-          # 用仓库里的简短更新说明作为 Release 正文（应用内「检查更新」会显示这段）
-          gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+          # 正文 = 仓库里的更新说明（应用内「检查更新」会显示这段）+ 文件校验表
+          V="${GITHUB_REF_NAME#v}"
+          {
+            cat RELEASE_NOTES.md
+            echo ""
+            echo "---"
+            echo ""
+            echo "## 📦 文件校验（SHA256）"
+            echo ""
+            echo '```'
+            cat SHA256SUMS.txt
+            echo '```'
+            echo ""
+            echo "- Windows：\`certutil -hashfile YouBoard_Setup_v${V}.exe SHA256\`"
+            echo "- macOS：\`shasum -a 256 YouBoard_macOS_arm64_v${V}.dmg\`"
+            echo ""
+            echo "macOS 的 DMG / ZIP 未做代码签名与公证，首次打开请右键 →「打开」。"
+          } > RELEASE_BODY.md
+          gh release create "$GITHUB_REF_NAME" "${files[@]}" SHA256SUMS.txt \
             --title "YouBoard $GITHUB_REF_NAME" \
-            --notes-file RELEASE_NOTES.md
+            --notes-file RELEASE_BODY.md

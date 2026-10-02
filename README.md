@@ -45,6 +45,20 @@
 
 👉 [前往 Releases 下载](https://github.com/cloudxys/YouBoard/releases)
 
+**下载校验（SHA256）**：每个 Release 都附一份 `SHA256SUMS.txt`，里面是**Windows 与 macOS 全部产物**的哈希 —— 下载后对一下就知道文件有没有被截断或被替换（这次"更新把主程序弄坏"的教训）：
+
+```bat
+:: Windows（命令提示符里执行）
+certutil -hashfile YouBoard_Setup_v3.3.5.exe SHA256
+```
+
+```bash
+# macOS
+shasum -a 256 YouBoard_macOS_arm64_v3.3.5.dmg
+```
+
+> macOS 的 DMG / ZIP **未做代码签名与公证**，首次打开若被拦，请右键点图标 →「打开」（或到「系统设置 → 隐私与安全性」里点「仍要打开」）。
+
 ## 🚀 快速上手
 
 1. 复制任意内容即自动记录；`Alt+Q`（可在设置里改）或 Win+V（开启接管后）呼出主窗口
