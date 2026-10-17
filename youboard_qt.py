@@ -10684,10 +10684,16 @@ class YouBoardApp(QMainWindow):
 
     def _promote_tray_icon_registry(self):
         """Win11 默认把新托盘图标放进溢出区。扫描注册表找到当前 EXE 的
-        通知区条目，写 isPromoted=1 使其显示在可见托盘区；同时把
-        IconSnapshot 更新为当前图标的 16x16 PNG，保证系统识别的图标正确。"""
+        通知区条目，做一次性初始化（配置里记 tray_auto_promoted）：
+        条目上还没有 isPromoted 时写 1，让首装用户能在托盘角落看到图标，
+        顺带把 IconSnapshot 更新为当前图标的 16x16 PNG。
+        之后**整段跳过，一个值都不写** —— 用户在系统设置里选的"收进溢出区"
+        （IsPromoted=0）必须长期生效，哪怕 Windows 是把该值整个删掉也一样。"""
         try:
             import winreg
+            cfg = load_config()
+            allow_promote = not cfg.get("tray_auto_promoted")
+            marked = False
             exe = os.path.normcase(os.path.abspath(
                 sys.executable if getattr(sys, "frozen", False) else __file__))
             snap = b""
@@ -10721,12 +10727,24 @@ class YouBoardApp(QMainWindow):
                 except OSError:
                     val = None
                 if val and os.path.normcase(os.path.abspath(str(val))) == exe:
-                    winreg.SetValueEx(sub, "isPromoted", 0, winreg.REG_DWORD, 1)
-                    if snap:
-                        winreg.SetValueEx(sub, "IconSnapshot", 0,
-                                          winreg.REG_BINARY, snap)
+                    if allow_promote:
+                        try:
+                            winreg.QueryValueEx(sub, "isPromoted")
+                            promoted = True
+                        except OSError:
+                            promoted = False
+                        if not promoted:
+                            winreg.SetValueEx(sub, "isPromoted", 0,
+                                              winreg.REG_DWORD, 1)
+                        if snap:
+                            winreg.SetValueEx(sub, "IconSnapshot", 0,
+                                              winreg.REG_BINARY, snap)
+                        marked = True
                 winreg.CloseKey(sub)
             winreg.CloseKey(base)
+            if marked:
+                cfg["tray_auto_promoted"] = True
+                save_config(cfg)
         except Exception:
             pass
 

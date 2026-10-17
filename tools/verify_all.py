@@ -2633,6 +2633,101 @@ def test_gui():
     check("close-to-tray: turning it off restores direct exit",
           win._close_to_tray_enabled() is False)
 
+    # ---- v3.3.7：托盘图标自动提升只做一次，绝不覆盖用户在系统设置里的选择 ----
+    import types as _types
+
+    class _FakeRegKey:
+        def __init__(self, values):
+            self.values = values
+
+    def _make_fake_winreg(store):
+        mod = _types.ModuleType("winreg")
+        mod.HKEY_CURRENT_USER = 0x80000001
+        mod.KEY_READ = 0x20019
+        mod.KEY_WRITE = 0x20006
+        mod.REG_DWORD = 4
+        mod.REG_BINARY = 3
+        mod.OpenKey = lambda hive, path, reserved=0, access=0: (
+            _FakeRegKey(store) if path == r"Control Panel\NotifyIconSettings"
+            else _FakeRegKey(hive.values[path]))
+
+        def _enum(key, i):
+            names = list(key.values)
+            if i >= len(names):
+                raise OSError("no more subkeys")
+            return names[i]
+
+        def _query(key, name):
+            if name not in key.values:
+                raise OSError("value missing")
+            return key.values[name], mod.REG_DWORD
+
+        mod.EnumKey = _enum
+        mod.QueryValueEx = _query
+        mod.SetValueEx = lambda key, name, reserved, typ, value: (
+            key.values.__setitem__(name, value))
+        mod.CloseKey = lambda key: None
+        return mod
+
+    _entry = {"ExecutablePath": os.path.abspath(yq.__file__)}
+    _store = {"fake-entry": dict(_entry)}
+    _real_winreg = sys.modules.get("winreg")
+    _real_load, _real_save = yq.load_config, yq.save_config
+
+    def _run_promote(store, cfg):
+        sys.modules["winreg"] = _make_fake_winreg(store["Control Panel\\NotifyIconSettings"])
+        yq.load_config = lambda: cfg
+        yq.save_config = lambda c=None: None
+        try:
+            win._promote_tray_icon_registry()
+        finally:
+            if _real_winreg is not None:
+                sys.modules["winreg"] = _real_winreg
+            else:
+                sys.modules.pop("winreg", None)
+            yq.load_config, yq.save_config = _real_load, _real_save
+        return store["Control Panel\\NotifyIconSettings"].get("fake-entry", {})
+
+    def _base_store(entry=None):
+        return {"Control Panel\\NotifyIconSettings":
+                {"fake-entry": dict(entry if entry is not None else _entry)}}
+
+    try:
+        # 首装：条目上没有 isPromoted → 提升一次并记 flag
+        _cfg = {}
+        _e = _run_promote(_base_store(), _cfg)
+        check("tray promote: first run promotes (no IsPromoted yet)",
+              _e.get("isPromoted") == 1 and _cfg.get("tray_auto_promoted") is True,
+              "%s %s" % (_e.get("isPromoted"), _cfg))
+        check("tray promote: icon snapshot refreshed",
+              bytes(_e.get("IconSnapshot") or b"")[:4] == b"\x89PNG")
+
+        # 用户显式关掉（IsPromoted=0）→ 一律不碰
+        _cfg = {}
+        _e = _run_promote(_base_store({"ExecutablePath": _entry["ExecutablePath"],
+                                       "isPromoted": 0}), _cfg)
+        check("tray promote: user's OFF choice is never overwritten",
+              _e.get("isPromoted") == 0 and _cfg.get("tray_auto_promoted") is True)
+
+        # 已经提升过 → 即使值被删掉也不再来一次
+        _cfg = {"tray_auto_promoted": True}
+        _e = _run_promote(_base_store(), _cfg)
+        check("tray promote: runs once, never again even if value disappears",
+              "isPromoted" not in _e)
+        check("tray promote: zero writes once the flag is set",
+              "IconSnapshot" not in _e)
+
+        # 没找到自己的条目 → 不记 flag，下次启动还能补
+        _cfg = {}
+        _store2 = {"Control Panel\\NotifyIconSettings": {
+            "other": {"ExecutablePath": r"C:\other\app.exe", "isPromoted": 1}}}
+        _run_promote(_store2, _cfg)
+        check("tray promote: nothing written for other apps / flag left unset",
+              "tray_auto_promoted" not in _cfg
+              and _store2["Control Panel\\NotifyIconSettings"]["other"]["isPromoted"] == 1)
+    except Exception as _ex:
+        check("tray promote: behaviour checks", False, repr(_ex))
+
     # ---- v3.3.0：浏览器扩展桥——设置页一行 + 独立卡片弹层 ----
     check("bridge: settings page keeps a single row",
           hasattr(sdlg, "_bridge_lbl") and not hasattr(sdlg, "_bridge_cb")
