@@ -991,6 +991,7 @@ def test_gui():
     _KEEP_ALIVE.append(win)
     win.resize(1200, 760)
     win.show()
+
     for _ in range(30):
         app.processEvents()
         time.sleep(0.02)
@@ -1866,6 +1867,22 @@ def test_gui():
     # 内容变化（点「自定义」多出一行）只该改尺寸，位置必须钉住不动：
     # 以前会按宿主重新居中，宿主贴屏幕边时被夹回屏幕，卡片看着就"往上跑"一下
     # （用户在 AI 卡片里本地模型 ↔ 其他服务商之间切换时实测）。
+    import sys as _s
+    _s.stderr.write("DIAG card: geo=%s maximized=%s isZen=%s avail=%s\n" % (
+        win.geometry().getRect(), win.isMaximized(),
+        win._is_window_maximized(),
+        yq.QApplication.primaryScreen().availableGeometry().getRect()))
+    # 门禁的虚拟屏只有 800x800，主窗口若偏下会让卡片居中后顶到屏幕底边；
+    # 那种情况下"变高后上推"是 _keep_on_screen 的正确行为。这条用例只检验
+    # "有足够空间时不跳位"，所以先把主窗口摆到屏幕内合适的位置。
+    _scr = yq.QApplication.primaryScreen().availableGeometry()
+    if (not win.isMaximized()
+            and win.y() + win.height() > _scr.top() + _scr.height() - 40):
+        win.resize(min(win.width(), _scr.width() - 80),
+                   min(win.height(), _scr.height() - 200))
+        win.move(_scr.x() + 20, _scr.y() + 20)
+        for _ in range(8):
+            app.processEvents()
     _ret = yq._RetentionDialog(win, win, {"mode": "forever"})
     _ret.show()
     for _ in range(12):
@@ -2767,6 +2784,41 @@ def test_gui():
           isinstance(win.bridge_status(), dict)
           and "running" in win.bridge_status())
 
+    # ---- v3.3.8：应用内复制后监控基线必须跟着走 ----
+    # 用户报过：按 Enter 复制下面的记录后，过一会儿它自己跑到列表最上面。
+    # 根因就是自复制窗口内直接 return、没同步监控基线，之后任何一次剪贴板事件
+    # 都会把刚复制出去的那条再收一遍（新时间戳 → 置顶）。
+    import pyperclip as _clip_pc
+    _clip_pc.copy("自复制基线回归样本")
+    _mon = yq.ClipboardMonitor(store)
+    _mon._last_text = "复制之前的旧基线"
+    _mon._last_image_hash = ""
+    _mon._last_file_hash = ""
+    store.mark_self_copy()
+    _ok_sync = _mon._process_clipboard()
+    check("self copy: baseline follows the copied content",
+          _ok_sync and _mon._last_text == "自复制基线回归样本",
+          repr(_mon._last_text)[:40])
+    store.mark_self_copy()
+    _mon._process_clipboard()
+    _after_cnt = sum(1 for e in store.get_by_type("text")
+                     if e.get("content") == "自复制基线回归样本")
+    check("self copy: nothing re-captured while inside the window",
+          _after_cnt == 0, "%s" % _after_cnt)
+    # 关键回归点：自复制保护窗口过期（2 秒）之后再来剪贴板事件，
+    # 基线已经是刚复制出去的内容 → 不能把它再收一遍（那会让它跳到列表最上面）。
+    _mon._self_guard_backdated = None
+    _orig_ts = store._self_copy_time
+    store._self_copy_time = time.time() - 10.0      # 让窗口"过期"
+    try:
+        _ok_expired = _mon._process_clipboard()
+    finally:
+        store._self_copy_time = _orig_ts
+    _expired_cnt = sum(1 for e in store.get_by_type("text")
+                       if e.get("content") == "自复制基线回归样本")
+    check("self copy: still not re-captured after the guard window expires",
+          _ok_expired and _expired_cnt == 0, "%s" % _expired_cnt)
+
     # ---- v3.2.8：设置窗口尺寸 / 光标兜底 / 弹层抬小组件 ----
     _avail = yq.QApplication.primaryScreen().availableGeometry()
     s_probe = yq.SettingsDialog(win)
@@ -2813,6 +2865,221 @@ def test_gui():
         finally:
             _desk.raise_ = _orig_raise
         check("overlay raises desktop widget", bool(raised))
+
+    # ---- v3.3.8：拖动缩放卡顿（每步双重绘 + 每行重建 QTextDocument） ----
+    # 用户报"上下拖拉缩放很卡"。实测两个热点：标题栏每帧重建 QIcon 并两次强制
+    # 重绘；内容列委托每帧给每个可见行新建 QTextDocument 再解析一遍 HTML。
+    # 这里用"静态接线 + 运行时行为"两层锁死，避免以后又被改回去。
+    _qt_src = open(os.path.join(SRC, "youboard_qt.py"), encoding="utf-8").read()
+    check("perf: max button icon only rebuilt on state change",
+          "_max_icon_state" in _qt_src
+          and "if getattr(self, \"_max_icon_state\", None) is maxed:" in _qt_src)
+    check("perf: header text-left is cached",
+          "_HEADER_LEFT_CACHE" in _qt_src and "_compute_header_text_left" in _qt_src)
+    check("perf: preview documents are cached",
+          "_DOC_CACHE" in _qt_src)
+    _tb = win._title_bar
+    _tb._max_icon_state = None
+    _tb.update_max_btn()
+    _first = _tb._max_icon_state
+    _tb._max_icon_state = _first          # 第二次调用应当直接返回
+    _icon_before = _tb._max_btn.icon().cacheKey()
+    _tb.update_max_btn()
+    check("perf: repeated update_max_btn is a no-op",
+          _tb._max_icon_state is _first
+          and _tb._max_btn.icon().cacheKey() == _icon_before)
+    _dlg_ok, _dlg_why = _win_has_fast_delegate(win, yq)
+    check("perf: content column uses the cached delegate", _dlg_ok, _dlg_why)
+
+    # ---- v3.3.8：最大化时拖最上边缘会闪 ----
+    # 根因有两层：
+    #  ① 无边框窗口上 Qt 的 showNormal() 退不出最大化（IsZoomed 仍为 True、
+    #     几何还是满屏），拖边缘就变成"还原又弹回"来回打架 → 闪；
+    #  ② 还原时同步重建整份应用样式表（20~30 ms、近百次重绘）挤在按下那一帧。
+    # 现在：改走 Win32 SW_RESTORE + 自己把几何缩回普通大小，并且拖边缘这条
+    # 路径把样式重建推迟到下一拍（sync_style=False）。
+    check("perf: unmaximize uses Win32 SW_RESTORE",
+          "def unmaximize" in _qt_src and "ShowWindow(hwnd, 9)" in _qt_src
+          and "SW_RESTORE" in _qt_src)
+    check("perf: unmaximize also restores the normal geometry",
+          "_normal_target_geo" in _qt_src
+          and "def _normal_target_geo" in _qt_src)
+    # 准满屏几何（宽度铺满工作区、高度占八成以上）必须被认成"最大化"，
+    # 否则会被当成合法普通大小存进配置，下次还原就跳回满屏 / 退回默认尺寸。
+    from PyQt6.QtCore import QRect as _QRect
+    _avail = yq.QApplication.primaryScreen().availableGeometry()
+    _quasi = _QRect(_avail.x(), _avail.y() + 41,
+                    _avail.width(), int(_avail.height() * 0.96))
+    _normal = _QRect(_avail.x() + 264, _avail.y() + 150, 1180, 720)
+    check("perf: quasi-fullscreen geometry counts as maximized",
+          win._rect_is_maximized(_quasi) is True
+          and win._rect_is_maximized(_normal) is False,
+          "quasi=%s normal=%s" % (win._rect_is_maximized(_quasi),
+                                  win._rect_is_maximized(_normal)))
+    check("perf: normal-size record rejects maximized-looking geometry",
+          "not self._rect_is_maximized(cand)" in _qt_src)
+    check("perf: edge handles unmaximize without blocking restyle",
+          _qt_src.count("unmaximize(sync_style=False)") >= 2
+          and "_begin_edge_resize_from_maximized()" in _qt_src,
+          "unmax=%d beginedge=%d" % (
+              _qt_src.count("unmaximize(sync_style=False)"),
+              _qt_src.count("_begin_edge_resize_from_maximized()")))
+    # 最大化时摸到最上面那条边，不能再"一按下就还原成默认大小"：
+    # 必须像拖标题栏一样先按当前尺寸跟手，拖离边缘后才还原。
+    # 最大化时拖上/下边缘：不能先跳回"上次的普通大小"再缩放
+    # （用户报"一拖就突然变小很多"）。必须从当前尺寸直接开始缩放。
+    # 主窗口圆角：普通窗口圆角、最大化直角
+    check("ui: main window is rounded when not maximized",
+          "_round_main_window" in _qt_src
+          and "_apply_window_corners" in _qt_src
+          and "MAIN_WINDOW_RADIUS" in _qt_src
+          and "DWMWCP_ROUND" in _qt_src)
+    # 圆角必须是自绘的（无边框窗口不参与系统圆角合成），
+    # 且 QSS 不能再给窗口铺不透明底色（会把圆角盖成直角）。
+    # 圆角必须是自绘 + 窗口区域，**不能**用 setMask：给顶层窗口设 mask 会在
+    # 每次 resize 重建整块区域（拖边缘时每帧一次 → 闪烁），而且 mask 比窗口小时
+    # 会把界面整块裁掉（用户见到的"最大化后界面被隔断"）。
+    check("ui: rounded panel is self-drawn without setMask",
+          "class _RootSurface" in _qt_src
+          and "drawRoundedRect" in _qt_src
+          and "_apply_mask" not in _qt_src
+          and "self.setMask(" not in _qt_src)
+    # showMaximized() 在无边框+手工补 WS_THICKFRAME 的窗口上只改状态位、
+    # 不改几何 → "图标变了但界面没最大化"。必须走自己实现的 maximize()。
+    # QMenu 背景必须透明（由 _RoundMenu 自绘圆角），否则四角露出方块黑边
+    # 菜单必须是"柔边抗锯齿圆角"：自绘底板 + 四周柔边留白，
+    # 不能依赖系统裁剪（硬边）或系统阴影（会在窗口外垫一圈方块底）。
+    # 内容四边必须留同样的 1px：面板边框贴到窗口最外沿时只有左侧会露出来，
+    # 看起来就是"最左边没对齐"。
+    check("ui: content inset is symmetric on all four sides",
+          "root.setContentsMargins(1, 1, 1, 7)" in _qt_src)
+    # 菜单圆角自绘，但**绝不能**偏移布局（actionGeometry/actionAt 覆盖会
+    # 让文字与点击区错位——严重 bug，已回退）。布局必须与原生 QMenu 一致。
+    check("ui: menu rounding never shifts the layout",
+          "def _polish_flags" in _qt_src
+          and 'self.setObjectName("roundMenu")' in _qt_src
+          and "def actionGeometry" not in _qt_src
+          and "def actionAt" not in _qt_src)
+    # 弹层圆角必须走抗锯齿自绘：SetWindowRgn/setMask 是硬边，
+    # 四角会出现锯齿台阶，过渡不自然（用户实测）。
+    check("ui: popup corners are antialiased (no hard-edged clipping)",
+          "def paintEvent(self, event):" in _qt_src
+          and "p.drawRoundedRect(" in _qt_src
+          and "class _RoundMenu" in _qt_src)
+    check("ui: maximizing also restores the full-screen geometry",
+          "def maximize(self)" in _qt_src
+          and "self._win.maximize()" in _qt_src
+          and "user32.ShowWindow(hwnd, 3)" in _qt_src)
+    # DWM 的客户区边框延伸会在四边留 1px，最大化时必须关掉
+    check("ui: DWM frame extension is off when maximized",
+          "_update_dwm_frame" in _qt_src
+          and "maximized=bool(maxed)" in _qt_src)
+    # 最大化时面板边框必须为 0、窗体底色必须用内容色，
+    # 否则窗口四边会露出一圈描边色（用户看到"四边预留一个像素"）。
+    check("ui: maximized window has no border ring",
+          "_pane_border" in _qt_src
+          and ("0px solid " in _qt_src)
+          and ("_win_bg = c['BG'] if flush else c['BORDER_LT']" in _qt_src))
+    check("ui: window region is cleared when maximized",
+          "_clear_window_region" in _qt_src
+          and "SetWindowRgn(ctypes.c_void_p(int(widget.winId())), None, True)"
+          in _qt_src)
+    # 最大化时拖边缘必须原地缩放（不能跳到 normalGeometry / 屏幕中间）
+    check("perf: edge resize from maximized keeps position",
+          "_begin_edge_resize_from_maximized" in _qt_src
+          and "_resizing_from_maximized" in _qt_src)
+    # 圆角区域的缓存键必须包含窗口尺寸：否则窗口变大后仍沿用旧的小区域，
+    # 超出部分会被整块裁掉（用户看到"缺一大块"）。
+    # 圆角必须是纯视觉的（不裁剪窗口）：窗口区域一旦残留旧范围就会把
+    # 界面整块裁掉（用户反复看到"缺一大块"）。
+    # 圆角完全交给 Windows（对齐 DeepSeek Harness 的做法）：
+    #   · DWM 圆角偏好必须是 DEFAULT(0)，不能是 DONOTROUND(1)
+    #   · 绝不做窗口裁剪（SetWindowRgn / setMask 会残留旧范围 → 界面缺块）
+    # 圆角：无边框窗口必须显式补 WS_CAPTION + 设 DWMWCP_ROUND，
+    # 实测只补 THICKFRAME 或设 DEFAULT 都不会出圆角。
+    # 不能加 WS_CAPTION：Windows 会画出原生的最小化/最大化/关闭，
+    # 和自绘按钮重叠（用户看到"按钮没对齐"其实是有两套）。
+    check("ui: window never uses WS_CAPTION (no native buttons)",
+          "WS_CAPTION = 0x00C00000" not in _qt_src
+          and "style & ~0x00C00000" in _qt_src)
+    check("ui: DWM frame is extended to get rounded corners",
+          "DwmExtendFrameIntoClientArea" in _qt_src)
+    check("ui: DWM corner preference is explicit (ROUND / DONOTROUND)",
+          "pref = ctypes.c_int(2)  # DWMWCP_ROUND" in _qt_src
+          and "pref = ctypes.c_int(1)  # DWMWCP_DONOTROUND" in _qt_src)
+    check("ui: a tiny edge nudge keeps the window maximized",
+          "dx < 3 and dy < 3" in _qt_src)
+    # 标题栏的窗口按钮不能被边缘/角缩放热区盖住，否则鼠标滑过时收不到
+    # enter 事件 —— 表现是"最大化按钮没有悬停高亮"。
+    # 最大化必须贴满屏幕（边距 0），不能留内圈空隙
+    check("ui: maximized window has no inner margin",
+          "_apply_max_state_immediate" in _qt_src)
+    # 最大化时拖标题栏不能交给系统（WS_THICKFRAME 会让它以最大化状态整块挪走）
+    check("ui: maximized title-bar drag restores before moving",
+          "_restore_then_arm_drag" in _qt_src)
+    check("ui: resize hot zones keep clear of the window buttons",
+          "_btn_zone" in _qt_src and "_fix_top_edge" in _qt_src)
+    check("ui: main window is never clipped",
+          "set_radius(0)" in _qt_src)
+    # 缩放结束后必须清干净临时标记，否则"点最大化没反应"、界面被裁。
+    check("perf: resize session is cleaned up",
+          "def _end_resize_session" in _qt_src
+          and "_end_resize_session()" in _qt_src)
+    # _is_window_maximized 必须永远报告真实状态（不能因临时标记返回 False）
+    check("perf: maximized state is always truthful",
+          'return False\n            key = (bool(self.isMaximized())' not in _qt_src)
+    # 从最大化拉上边缘时，退出最大化那一刻必须冻结重绘，
+    # 否则会闪出"默认大小"的中间帧（用户看到"空了一大块"）。
+    check("perf: window repaint is frozen while leaving maximized",
+          "WM_SETREDRAW" in _qt_src or "0x000B" in _qt_src)
+    # 主窗口不能是透明窗口：透明窗口上未绘制的区域会露出桌面，
+    # 拖拽时出现大片空洞。
+    check("ui: main window stays opaque (no transparent holes)",
+          "self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)"
+          in _qt_src)
+    check("perf: flush restyle is deferred off the press frame",
+          "_schedule_flush_restyle" in _qt_src
+          and "_apply_flush_restyle" in _qt_src
+          and "_flush_restyle_timer" in _qt_src
+          and "_apply_max_state_immediate" in _qt_src)
+    # 注意：_apply_max_state 会顺带改窗口边距，进而改变主窗口几何 ——
+    # 后面「卡片按宿主居中」的用例依赖这个几何，所以跑完必须原样还原。
+    _maxed_probe = bool(win._is_window_maximized())
+    _ss_before = win.styleSheet()
+    _geo_before = win.geometry()
+    _margins_before = win.contentsMargins()
+    _flush_before = getattr(win, "_flush", _maxed_probe)
+    # 制造一次真实的"翻转"：_flush 设为与当前状态相反
+    win._flush = not _maxed_probe
+    win._pending_flush_value = _maxed_probe
+    _real_ismax = win._is_window_maximized
+    win._is_window_maximized = lambda: _maxed_probe
+    try:
+        win._apply_max_state()
+        _ss_same_frame = (win.styleSheet() == _ss_before)
+        for _ in range(6):
+            app.processEvents()
+    finally:
+        win._is_window_maximized = _real_ismax
+        win.setContentsMargins(_margins_before.left(), _margins_before.top(),
+                               _margins_before.right(), _margins_before.bottom())
+        win.setGeometry(_geo_before)
+        win._flush = _flush_before
+        if hasattr(win, "_flush_restyle_timer"):
+            win._flush_restyle_timer.stop()
+        for _ in range(4):
+            app.processEvents()
+    _want = yq.build_qss(yq.load_config().get("theme", "dark"), flush=_maxed_probe)
+    # 翻转后样式表必须变成「最大化的那一份」，且按下那一刻还没变
+    # （最大化 -> 面板直角 0；还原 -> 圆角 10px）
+    _radius_ok = ("border-radius: 0;" in win.styleSheet()) == _maxed_probe
+    check("perf: restyle lands on the next tick with the right variant",
+          _ss_same_frame and win.styleSheet() == _want and _radius_ok,
+          "same-frame=%s match=%s radius-ok=%s" % (
+              _ss_same_frame, win.styleSheet() == _want, _radius_ok))
+    check("perf: qss is memoized (same object content reused)",
+          yq.build_qss("forest", flush=True) == yq.build_qss("forest", flush=True)
+          and len(yq._QSS_CACHE) > 0)
 
     # 快速面板已移除；Win+V 改为开关主窗口
     check("quick panel removed",
@@ -3318,6 +3585,29 @@ def test_update_safety():
                       watcher=_drop_bak)
     check("updater: script keeps the app when the backup is gone",
           got is not None and "YouBoard.exe.update_failed" in left, str(left))
+
+
+def _win_has_fast_delegate(win, yq):
+    """内容列委托必须是带缓存的 _InlineImageDelegate（不是每帧新建文档的版本）。
+
+    返回 (是否通过, 失败原因)；原因会打进门禁输出，出问题能直接看出是哪一层。
+    """
+    try:
+        table = win._tables[win._active_type]
+        delegate = table.itemDelegateForColumn(win._flex_cols[win._active_type])
+    except Exception as ex:
+        return False, "lookup: %r" % (ex,)
+    if not isinstance(delegate, yq._InlineImageDelegate):
+        return False, "delegate type %r" % (type(delegate).__name__,)
+    if not hasattr(delegate, "_DOC_CACHE"):
+        return False, "no _DOC_CACHE"
+    if not isinstance(getattr(yq._InlineImageDelegate, "_DOC_CACHE", None), dict):
+        return False, "DOC cache type %r" % (
+            type(getattr(yq._InlineImageDelegate, "_DOC_CACHE", None)).__name__,)
+    if not isinstance(getattr(yq._InlineImageDelegate, "_HEADER_LEFT_CACHE", None), dict):
+        return False, "header cache type %r" % (
+            type(getattr(yq._InlineImageDelegate, "_HEADER_LEFT_CACHE", None)).__name__,)
+    return True, ""
 
 
 def main():

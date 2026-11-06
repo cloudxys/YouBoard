@@ -365,6 +365,45 @@ def _star_icon(size=14, color=None, filled=True):
     return QIcon(_star_pixmap(size, color, filled))
 
 
+class _RootSurface(QWidget):
+    """主窗口的内容面板：自己画一块圆角底，配合透明窗口做出圆角效果。
+
+    只负责背景；子控件（标题栏、列表、面板）照常叠在上面，布局与行为不变。
+    最大化时由 radius 控制退回直角，避免贴着屏幕边留缝。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._radius = MAIN_WINDOW_RADIUS
+        # 不透明：窗口四角的圆角由 Win32 窗口区域裁掉，这里只负责铺底色
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+
+    def set_radius(self, radius):
+        """设置圆角半径（0 = 直角，最大化时用）。"""
+        r = max(0, int(radius))
+        if r == self._radius:
+            return
+        self._radius = r
+        self.update()
+
+    def paintEvent(self, event):
+        """铺底色，四角画成圆角（纯视觉，不裁剪任何东西）。
+
+        不使用窗口区域 / setMask：那两者都会在窗口尺寸变化后残留旧范围，
+        把界面整块裁掉（用户见过"缺一大块"）。这里只是"四角不画底色"，
+        窗口本身永远是完整矩形，所以绝不可能裁掉内容。
+        """
+        try:
+            p = QPainter(self)
+            # 铺满整个矩形：圆角由 Windows 的 DWM 在窗口层绘制（和
+            # DeepSeek Harness 完全一致）。这里若自己画圆角，四角会露出
+            # QMainWindow 的底色，反而破坏系统的圆角效果。
+            p.fillRect(self.rect(), qcolor(C['BG']))
+            p.end()
+        except Exception:
+            super().paintEvent(event)
+
+
 class _InlineImageDelegate(QStyledItemDelegate):
     """内容列渲染：文本预览的内联换行图标 + 普通文本。
 
@@ -381,9 +420,71 @@ class _InlineImageDelegate(QStyledItemDelegate):
     BADGE_GAP = 8
     BADGE_H = 18
 
+    # 表头文字左边缘缓存：(控件 id, 列, 视口位移, 列宽, 表头高) → x
+    _HEADER_LEFT_CACHE = {}
+    # 文本预览的排版缓存：(HTML, 字体, 文字色) → 已排好版的 QTextDocument
+    _DOC_CACHE = {}
+    # 排版宽度：预览是单行、超宽交给视图裁剪，给一个足够大的固定宽度即可
+    _DOC_TEXT_WIDTH = 100000.0
+
+    @staticmethod
+    def _render_text_document(html, font):
+        """按 (HTML, 字体, 当前主题文字色) 造一份排好版的 QTextDocument。
+
+        绘制路径与原来逐字一致（仍然是 doc.drawContents），唯一的变化是
+        「同一段预览只解析一次 HTML」。原来拖动缩放时每帧、每一行都现场
+        setHtml 解析一遍，实测占整个缩放耗时的三成左右。
+        """
+        try:
+            doc = QTextDocument()
+            doc.setDefaultFont(font)
+            doc.setDocumentMargin(0)
+            doc.addResource(QTextDocument.ResourceType.ImageResource,
+                            QUrl("huiche"), _huiche_pixmap())
+            doc.setHtml(html)
+            # 文字颜色跟随主题（QTextDocument 默认黑字，不继承 QSS）
+            fmt = QTextCharFormat()
+            fmt.setForeground(QBrush(QColor(C['TEXT'])))
+            cursor = QTextCursor(doc)
+            cursor.select(QTextCursor.SelectionType.Document)
+            cursor.mergeCharFormat(fmt)
+            doc.setTextWidth(_InlineImageDelegate._DOC_TEXT_WIDTH)
+            return doc
+        except Exception:
+            return None
+
     @staticmethod
     def _header_text_left(widget, column):
-        """算出同一列表头文字的左边缘 x（拿不到时返回 None）。"""
+        """算出同一列表头文字的左边缘 x（拿不到时返回 None）。
+
+        这个值每绘制一行内容都会用到（拖动缩放时一次重绘就是几十行），而它只跟
+        表头自身的几何有关。这里按几何指纹缓存，省掉每行一次的样式计算。
+        """
+        try:
+            header = widget.horizontalHeader()
+        except Exception:
+            return None
+        try:
+            cache_key = (id(widget), int(column),
+                         int(header.sectionViewportPosition(column)),
+                         int(header.sectionSize(column)),
+                         int(header.height()))
+        except Exception:
+            cache_key = None
+        if cache_key is not None:
+            cached = _InlineImageDelegate._HEADER_LEFT_CACHE.get(cache_key)
+            if cached is not None:
+                return cached
+        value = _InlineImageDelegate._compute_header_text_left(widget, column)
+        if cache_key is not None:
+            cache = _InlineImageDelegate._HEADER_LEFT_CACHE
+            if len(cache) > 256:
+                cache.clear()
+            cache[cache_key] = value
+        return value
+
+    @staticmethod
+    def _compute_header_text_left(widget, column):
         try:
             header = widget.horizontalHeader()
             item = widget.horizontalHeaderItem(column)
@@ -482,19 +583,19 @@ class _InlineImageDelegate(QStyledItemDelegate):
             left += bw + self.BADGE_GAP
             width = max(1, option.rect.left() + option.rect.width() - left)
         if html:
-            doc = QTextDocument()
-            doc.setDefaultFont(opt.font)
-            doc.setDocumentMargin(0)
-            doc.addResource(QTextDocument.ResourceType.ImageResource,
-                            QUrl("huiche"), _huiche_pixmap())
-            doc.setHtml(html)
-            # 文字颜色跟随主题（QTextDocument 默认黑字，不继承 QSS）
-            fmt = QTextCharFormat()
-            fmt.setForeground(QBrush(QColor(C['TEXT'])))
-            cursor = QTextCursor(doc)
-            cursor.select(QTextCursor.SelectionType.Document)
-            cursor.mergeCharFormat(fmt)
-            doc.setTextWidth(100000.0)  # 保持单行，超宽交给视图裁剪
+            # 每帧、每一行都新建 QTextDocument 再 setHtml 解析一遍，是拖动缩放时
+            # 仅次于标题栏的第二大开销。文档内容（HTML + 字体 + 文字色）不变时
+            # 完全可以直接复用，所以按这三要素缓存。缓存只保留最近用到的少量文档。
+            cache_key = (html, opt.font.key(), C['TEXT'])
+            doc = self._DOC_CACHE.get(cache_key)
+            if doc is None:
+                doc = self._render_text_document(html, opt.font)
+                if doc is None:
+                    return
+                cache = self._DOC_CACHE
+                if len(cache) >= 512:
+                    cache.clear()
+                cache[cache_key] = doc
             doc_h = doc.size().height()
             y = option.rect.top() + max(
                 0.0, (option.rect.height() - doc_h) / 2.0)
@@ -564,22 +665,81 @@ class _Table(QTableWidget):
 
 
 class _RoundMenu(QMenu):
-    """圆角弹层：四角裁成圆角，角外不绘制（透出后面的桌面，不会留方块底）。"""
+    """圆角弹层：抗锯齿圆角 + 柔和外沿，自己画，不依赖系统裁剪/阴影。
 
-    RADIUS = 9
+    历史问题：
+      · SetWindowRgn 裁窗口 → 硬边锯齿；
+      · 只让 QSS 透明 → 系统仍在窗口外垫一圈阴影/底色（用户说的黑底）；
+      · 给窗口加内边距再偏移 actionGeometry → 文字和点击区错位（严重 bug）。
+
+    最终做法：**窗口矩形就是菜单矩形**，不做任何内容内缩。
+      · paintEvent 先画一层圆角底色 + 1px 抗锯齿描边，
+        四角之外不画（窗口是透明分层的，就自然透出桌面）；
+      · 圆角半径控制在很小（6px），这样四个角被"切掉"的面积最小，
+        文字/点击区完全不受影响 —— 布局与默认 QMenu 一模一样。
+    这样既没有方块底、没有锯齿，也绝不会让内容错位。
+    """
+
+    RADIUS = 6
 
     def __init__(self, *args):
         super().__init__(*args)
-        self.setWindowFlag(Qt.WindowType.NoDropShadowWindowHint, True)
+        self.setObjectName("roundMenu")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self._polish_flags()
+
+    def _polish_flags(self):
+        """把"无边框 + 无系统阴影 + 透明"真正落到原生窗口上。
+
+        QMenu 的 __init__ 阶段还没有原生窗口句柄，setWindowFlag 会被吞掉，
+        所以要等句柄存在后再设一次；同时关掉 DWM 的非客户区渲染，
+        避免系统在窗口外再叠一层阴影。
+        """
+        try:
+            self.setWindowFlags(
+                Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
+                | Qt.WindowType.NoDropShadowWindowHint)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        except Exception:
+            pass
+        try:
+            import ctypes
+            hwnd = ctypes.c_void_p(int(self.winId()))
+            dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
+            v = ctypes.c_int(1)      # DWMNCRP_DISABLED：不画非客户区
+            dwmapi.DwmSetWindowAttribute(hwnd, 2, ctypes.byref(v), 4)
+            sq = ctypes.c_int(1)     # DWMWCP_DONOTROUND：圆角我们自己画
+            dwmapi.DwmSetWindowAttribute(hwnd, 33, ctypes.byref(sq), 4)
+        except Exception:
+            pass
 
     def showEvent(self, event):
+        self._polish_flags()
         super().showEvent(event)
-        _round_window_corners(self, self.RADIUS)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        _round_window_corners(self, self.RADIUS)
+    def paintEvent(self, event):
+        """画抗锯齿圆角底 + 细描边，然后让基类画菜单内容。
+
+        注意：**不改变任何布局**（不加内边距、不偏移 actionGeometry），
+        所以文字与点击区永远一致。
+        """
+        try:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            rect = QRectF(self.rect())
+            r = float(self.RADIUS)
+            # 圆角底色（稍微内缩 0.5px，避免抗锯齿边缘溢出窗口）
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(qcolor(C['SURFACE']))
+            p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), r, r)
+            # 1px 抗锯齿描边，让边缘更柔和不生硬
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(qcolor(C['BORDER_LT']), 1))
+            p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), r, r)
+            p.end()
+        except Exception:
+            pass
+        super().paintEvent(event)
 
 
 def _round_window_corners(widget, radius=9):
@@ -598,9 +758,21 @@ def _round_window_corners(widget, radius=9):
             w = max(1, int(round(widget.width() * dpr)))
             h = max(1, int(round(widget.height() * dpr)))
             d = max(2, int(round(radius * dpr)) * 2)
-            rgn = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d)
+            gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            # 必须声明原型，否则 64 位下句柄会被当成 32 位 int 截断，
+            # SetWindowRgn 拿不到有效区域（实测返回 0、窗口仍是方的）。
+            gdi32.CreateRoundRectRgn.argtypes = [
+                ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, ctypes.c_int]
+            gdi32.CreateRoundRectRgn.restype = ctypes.c_void_p
+            user32.SetWindowRgn.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+            user32.SetWindowRgn.restype = ctypes.c_int
+            rgn = gdi32.CreateRoundRectRgn(0, 0, w + 1, h + 1, d, d)
             if rgn:
-                ctypes.windll.user32.SetWindowRgn(hwnd, rgn, True)
+                user32.SetWindowRgn(ctypes.c_void_p(hwnd),
+                                    ctypes.c_void_p(rgn), True)
                 return
     except Exception:
         pass
@@ -610,6 +782,27 @@ def _round_window_corners(widget, radius=9):
         widget.setMask(QRegion(path.toFillPolygon().toPolygon()))
     except Exception:
         pass
+
+
+def _paint_rounded_panel(widget, radius=10, fill_key='SURFACE'):
+    """给弹层画一块抗锯齿圆角底板（配合 WA_TranslucentBackground 使用）。
+
+    SetWindowRgn / setMask 的圆角都是**硬边**的（没有抗锯齿），放大看是锯齿
+    台阶，过渡很生硬。这里改用 QPainter 的 drawRoundedRect：窗口不裁剪，
+    只是"四角不画底色"，边缘由抗锯齿平滑过渡，观感和主界面/系统弹层一致。
+    返回 True 表示已接管绘制（调用方就不用再自己画底了）。
+    """
+    try:
+        p = QPainter(widget)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(qcolor(C[fill_key]))
+        r = float(radius)
+        p.drawRoundedRect(QRectF(widget.rect()).adjusted(0.5, 0.5, -0.5, -0.5), r, r)
+        p.end()
+        return True
+    except Exception:
+        return False
 
 
 def _build_tray_icon():
@@ -744,8 +937,35 @@ def _attach_password_toggle(edit):
     return act
 
 
+def _update_dwm_frame(widget, maximized=False):
+    """按最大化状态开关 DWM 的客户区边框延伸。
+
+    延伸(-1) 能让 DWM 画阴影和圆角，但它同时会在客户区四边留一圈 1px 边框。
+    最大化时窗口贴满屏幕，这圈边框就变成"四周预留一个像素"，
+    所以最大化时必须取消延伸。
+    """
+    if not IS_WIN or widget is None:
+        return
+    try:
+        import ctypes
+        hwnd = ctypes.c_void_p(int(widget.winId()))
+
+        class _MARGINS(ctypes.Structure):
+            _fields_ = [("l", ctypes.c_int), ("r", ctypes.c_int),
+                        ("t", ctypes.c_int), ("b", ctypes.c_int)]
+
+        if maximized:
+            m = _MARGINS(0, 0, 0, 0)     # 不延伸：客户区铺满，无边框圈
+        else:
+            m = _MARGINS(-1, -1, -1, -1)  # 延伸：拿阴影 + 圆角
+        ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(
+            hwnd, ctypes.byref(m))
+    except Exception:
+        pass
+
+
 def _force_square_corners(widget):
-    """Win11 会给无边框窗口自动加圆角（四角留缝），用 DWM 强制直角贴合屏幕。"""
+    """最大化时用：要求窗口直角（贴合屏幕边缘，不留圆角缝隙）。"""
     if not IS_WIN:
         return
     try:
@@ -755,6 +975,48 @@ def _force_square_corners(widget):
             hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))  # DWMWA_WINDOW_CORNER_PREFERENCE
     except Exception:
         pass
+
+
+# 主窗口圆角半径（逻辑像素）：像 DeepSeek / Win11 那种小幅圆角，不夸张
+MAIN_WINDOW_RADIUS = 14
+
+
+def _clear_window_region(widget):
+    """清掉窗口的裁剪区域，恢复成完整矩形（最大化时用）。"""
+    if not IS_WIN or widget is None:
+        return
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.SetWindowRgn.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        user32.SetWindowRgn.restype = ctypes.c_int
+        user32.SetWindowRgn(ctypes.c_void_p(int(widget.winId())), None, True)
+    except Exception:
+        pass
+
+
+def _round_main_window(widget, radius=MAIN_WINDOW_RADIUS, do_clip=True):
+    """把主窗口做成圆角（普通窗口状态）。
+
+    两步一起做，保证任何环境下都是圆角：
+      ① DWM 偏好设成"圆角"（DWMWCP_ROUND），让系统的阴影/描边跟着圆；
+      ② 再按当前尺寸裁一个圆角窗口区域 —— 无边框窗口在不同系统上对 ① 的
+         响应不一致（有的只影响阴影、窗口本身还是方的），裁剪这一步是兜底。
+    最大化时调用 _force_square_corners() 退回直角，免得贴着屏幕边留缝。
+    """
+    if not IS_WIN or widget is None:
+        return
+    try:
+        hwnd = int(widget.winId())
+        # 必须显式要求 ROUND。实测无边框窗口的 DWM 偏好默认是 0（直角），
+        # 设成 DEFAULT 也不会自动变圆 —— 必须写死 DWMWCP_ROUND。
+        pref = ctypes.c_int(2)  # DWMWCP_ROUND
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 33, ctypes.byref(pref), ctypes.sizeof(pref))
+    except Exception:
+        pass
+    if do_clip:
+        _round_window_corners(widget, radius)
 
 
 def _open_path(path):
@@ -1472,6 +1734,9 @@ def _tint_icon(png_path, color):
 # QSS stylesheet generation
 # ===========================================================================
 
+_QSS_CACHE = {}
+
+
 def build_qss(theme_name="dark", flush=False):
     """Generate a complete QSS stylesheet for the given theme.
 
@@ -1483,6 +1748,8 @@ def build_qss(theme_name="dark", flush=False):
     # 有自定义背景时内容区/标签栏用半透明底色，让壁纸透出来
     pane_bg = c['GLASS_PANE'] if _GLASS_ACTIVE else c['SURFACE']
     pane_radius = "0" if flush else "10px"
+    # 最大化贴满屏幕时不要边框，否则窗口边缘会露出一圈描边色
+    _pane_border = ("0px solid " + c['BORDER_LT']) if flush else ("1px solid " + c['BORDER_LT'])
     flush_rules = ""
     # 有背景时，滚动区域/列表的 viewport 也要透明，否则会把壁纸整块挡住
     glass_rules = "" if not _GLASS_ACTIVE else """
@@ -1500,9 +1767,20 @@ def build_qss(theme_name="dark", flush=False):
     QPushButton { background: %s; }
     QCheckBox::indicator { background: %s; }
 """ % (c['GLASS_ROW_ALT'], c['GLASS_INPUT'], c['GLASS_BUTTON'], c['GLASS_INPUT'])
-    return f"""
-    /* 无边框窗口：窗体底色留出 1px 当描边，和桌面区分开（否则浅色主题下边界看不清） */
-    QMainWindow {{ background-color: {c['BORDER_LT']}; }}
+    # 同一套主题 + 同一 flush 的样式表只生成一次：这份字符串有 5KB 多，
+    # 每次现场拼一遍纯属浪费（最大化/还原各要一次）。
+    cache_key = (theme_name, bool(flush), _GLASS_ACTIVE,
+                 tuple(sorted((k, str(v)) for k, v in c.items())))
+    cached = _QSS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    # 窗体底色：普通窗口用边框色当 1px 描边（和桌面区分开）；
+    # 最大化时必须用内容底色 —— 否则窗口四边会露出一圈描边色，
+    # 看着就像"预留了一个像素"（用户实测）。
+    _win_bg = c['BG'] if flush else c['BORDER_LT']
+    qss = f"""
+    /* 无边框窗口：普通状态下窗体底色留出 1px 当描边；最大化时铺满、不留边 */
+    QMainWindow {{ background-color: {_win_bg}; }}
     QDialog {{ background-color: {c['BG']}; }}
     QWidget#rootSurface {{ background-color: {c['BG']}; }}
     QWidget {{ color: {c['TEXT']}; font-family: "Microsoft YaHei UI","Segoe UI",sans-serif; font-size: 13px; }}
@@ -1510,7 +1788,9 @@ def build_qss(theme_name="dark", flush=False):
         border: 1px solid {c['BORDER_LT']}; padding: 6px 9px; border-radius: 6px; }}
     QTabWidget {{ background: {pane_bg}; }}
     QTabWidget::tab-bar {{ left: 0; background: {pane_bg}; }}
-    QTabWidget::pane {{ border: 1px solid {c['BORDER_LT']};
+    /* 最大化时去掉面板边框：留着会在窗口四边露出一圈描边色，
+       看着就像"四边都预留了一个像素"。普通窗口保留 1px。 */
+    QTabWidget::pane {{ border: {_pane_border};
         background: {pane_bg}; border-radius: {pane_radius}; }}
     QTabBar {{ background: {pane_bg}; qproperty-drawBase: 0; }}
     QTabBar::tab {{ background: transparent; color: {c['TEXT_MUTED']}; padding: 10px 18px;
@@ -1554,8 +1834,9 @@ def build_qss(theme_name="dark", flush=False):
         color: {c['TEXT_SEC']}; background: transparent; }}
     QListWidget::item:selected {{ background: {c['ACCENT_DIM']}; color: {c['TEXT']}; }}
     QListWidget::item:hover:!selected {{ background: {c['SURFACE3']}; color: {c['TEXT']}; }}
-    QMenu {{ background: {c['SURFACE']}; color: {c['TEXT']}; border: 1px solid {c['BORDER_LT']};
-        border-radius: 9px; padding: 5px; }}
+    /* 菜单背景透明：圆角与底色由 _RoundMenu.paintEvent 自绘（抗锯齿）。
+       这里若留着不透明背景，四角会露出生硬的方块边。 */
+    QMenu {{ background: transparent; color: {c['TEXT']}; border: none; padding: 5px; }}
     QMenu::item {{ padding: 7px 24px; border-radius: 6px; }}
     QMenu::item:selected {{ background: {c['ACCENT_DIM']}; color: {c['ACCENT']}; }}
     QMenu::separator {{ height: 1px; background: {c['BORDER']}; margin: 4px 8px; }}
@@ -1581,6 +1862,10 @@ def build_qss(theme_name="dark", flush=False):
         border-radius: 10px; }}
     {flush_rules}
     """
+    if len(_QSS_CACHE) > 16:
+        _QSS_CACHE.clear()
+    _QSS_CACHE[cache_key] = qss
+    return qss
 
 # ===========================================================================
 # i18n — complete STRINGS dictionary (zh + en)
@@ -6020,19 +6305,34 @@ class _EdgeHandle(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             pressed_at = event.globalPosition().toPoint()
-            if self._win.isMaximized():
-                # 对齐原生 Win11 手感：最大化时拖边缘先还原再缩放
-                # 延迟到窗口状态切换完成后再启动原生缩放，避免 Qt fail-fast 崩溃
-                self._win.showNormal()
-                QTimer.singleShot(0, lambda: self._start_resize(pressed_at))
-            else:
-                self._start_resize(pressed_at)
+            if self._win._is_window_maximized():
+                # 最大化时摸到边缘：这一帧只登记"待还原"，不动窗口。
+                # 真正的退出最大化（SW_RESTORE，约 60 ms）放到第一次真正的
+                # 鼠标移动里做 —— 否则它会卡在"按下"那一帧，看起来就是闪一下。
+                self._pending_from_max = True
+                self._drag_origin = pressed_at
+                self.grabMouse()
+                event.accept()
+                return
+            self._start_resize(pressed_at)
             event.accept()
 
     def _start_resize(self, global_pos):
+        # 关键：从最大化状态开始缩放时，**绝不能**交给 Windows 原生缩放
+        # （startSystemResize）。那个调用一接管，Windows 会先把窗口从最大化
+        # 还原成它记住的 normalGeometry —— 用户看到的就是"从上边缘一拉，
+        # 窗口唰地跳到屏幕中间 / 闪一下"。这里全程自己 setGeometry。
+        if getattr(self._win, "_resizing_from_maximized", False):
+            self._dragging = True
+            self._start_pos = global_pos
+            self._start_geo = self._win.geometry()
+            self._win._in_manual_resize = True
+            self.grabMouse()
+            return
         wh = self._win.windowHandle()
         edge_map = {'left': Qt.Edge.LeftEdge, 'right': Qt.Edge.RightEdge,
                     'top': Qt.Edge.TopEdge, 'bottom': Qt.Edge.BottomEdge}
+        self._win._in_manual_resize = True
         if wh is not None and wh.startSystemResize(edge_map[self._edge]):
             return
         self._dragging = True
@@ -6041,30 +6341,91 @@ class _EdgeHandle(QWidget):
         self.grabMouse()
 
     def mouseMoveEvent(self, event):
+        if getattr(self, "_pending_from_max", False):
+            # 最大化时摸到边缘：先看指针有没有真的动。
+            # 只晃一点点（<3px）不算缩放，窗口必须保持最大化原样，
+            # 否则会出现"只是拖了一下、界面没变小、但已经不是最大化了"的怪状态。
+            pos = event.globalPosition().toPoint()
+            dx = abs(pos.x() - self._drag_origin.x())
+            dy = abs(pos.y() - self._drag_origin.y())
+            if dx < 3 and dy < 3:
+                event.accept()
+                return
+            # 真的开始拖了：此刻才退出最大化并进入缩放。
+            self._pending_from_max = False
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+            self._win._begin_edge_resize_from_maximized()
+            self._win._in_manual_resize = True
+            self._start_resize(self._drag_origin)
+            # 立刻套用本次移动的位移，避免"第一帧没反应"
+            self.mouseMoveEvent(event)
+            return
         if not self._dragging or not self._start_pos:
             return
         delta = event.globalPosition().toPoint() - self._start_pos
         geo = self._start_geo
         x, y, w, h = geo.x(), geo.y(), geo.width(), geo.height()
         min_w, min_h = self._win.minimumWidth(), self._win.minimumHeight()
+        # 注意：窗口处于 WS_MAXIMIZE 时 setGeometry() 会被系统忽略
+        # （实测：直接改几何完全没反应，而 resize() 有效）。
+        # 所以这里统一用 resize() 改尺寸、move() 改位置，两条通路都能在
+        # 最大化状态下正常生效。
         if self._edge == 'left':
             new_w = w - delta.x()
             if new_w >= min_w:
-                self._win.setGeometry(geo.x() + delta.x(), y, new_w, h)
+                self._win.resize(new_w, h)
+                self._win.move(geo.x() + delta.x(), geo.y())
         elif self._edge == 'right':
             self._win.resize(max(min_w, w + delta.x()), h)
         elif self._edge == 'top':
             new_h = h - delta.y()
             if new_h >= min_h:
-                self._win.setGeometry(x, geo.y() + delta.y(), w, new_h)
+                self._win.resize(w, new_h)
+                self._win.move(geo.x(), geo.y() + delta.y())
         elif self._edge == 'bottom':
             self._win.resize(w, max(min_h, h + delta.y()))
         event.accept()
 
     def mouseReleaseEvent(self, event):
+        if getattr(self, "_pending_from_max", False):
+            # 只在边缘上点了一下、没拖动：什么都不做（窗口没被动过）
+            self._pending_from_max = False
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
         if self._dragging:
             self.releaseMouse()
+        self._end_resize_session()
+
+    def _end_resize_session(self):
+        """结束一次手动缩放：清掉所有临时标记，让状态判定与圆角恢复正常。
+
+        包成独立方法是因为"松手"不一定总会送到（比如窗口被系统抢走鼠标、
+        或者缩放中途切换了最大化），标记一旦残留就会表现为
+        "点最大化没反应"、"界面被裁掉一块"。
+        """
+        changed = False
+        if getattr(self._win, "_in_manual_resize", False):
+            self._win._in_manual_resize = False
+            changed = True
+        if getattr(self._win, "_resizing_from_maximized", False):
+            self._win._resizing_from_maximized = False
+            changed = True
+        if changed:
+            self._win._max_state_cache = None
+            self._win._corner_state = None
+            try:
+                self._win._flush = None
+                self._win._apply_max_state()
+                self._win._apply_window_corners()
+            except Exception:
+                pass
         self._dragging = False
+        self._pending_from_max = False
         self._start_pos = None
 
 
@@ -6092,8 +6453,9 @@ class _ResizeGrip(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             pressed_at = event.globalPosition().toPoint()
-            if self._win.isMaximized():
-                self._win.showNormal()
+            if self._win._is_window_maximized():
+                # 必须用 unmaximize()：无边框窗口上 showNormal() 退不出最大化
+                self._win.unmaximize(sync_style=False)
                 QTimer.singleShot(0, lambda: self._start_resize(pressed_at))
             else:
                 self._start_resize(pressed_at)
@@ -6149,8 +6511,9 @@ class _CornerHandle(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             pressed_at = event.globalPosition().toPoint()
-            if self._win.isMaximized():
-                self._win.showNormal()
+            if self._win._is_window_maximized():
+                # 必须用 unmaximize()：无边框窗口上 showNormal() 退不出最大化
+                self._win.unmaximize(sync_style=False)
                 QTimer.singleShot(0, lambda: self._start_resize(pressed_at))
             else:
                 self._start_resize(pressed_at)
@@ -6357,18 +6720,31 @@ class _TitleBar(QWidget):
         if self._win._is_window_maximized():
             # 用记住的普通大小还原：即使 Qt 状态位没跟上，也能确定缩回去
             self._win._restore_normal_size()
+            self._max_icon_state = False
             self._max_btn.setIcon(self._icon_max)
         else:
-            self._win.showMaximized()
+            # 必须用我们自己实现的 maximize()：showMaximized() 在
+            # "无边框 + 手动补 WS_THICKFRAME" 的窗口上只改状态位、不改几何，
+            # 结果就是"图标变成最大化、界面还是原来大小"（用户实测）。
+            self._win.maximize()
+            self._max_icon_state = True
             self._max_btn.setIcon(self._icon_rest)
         self._max_btn.repaint()
         self.update()
 
     def update_max_btn(self):
-        self._max_btn.setIcon(self._icon_rest
-                              if self._win._is_window_maximized() else self._icon_max)
-        self._max_btn.repaint()
-        self.update()
+        """同步最大化/还原按钮的图标。
+
+        每帧 resize 都会走到这里（主窗口 resizeEvent 直接调用）。原来每次都
+        setIcon + repaint() + update()：重建 QIcon 引擎再强制两次同步重绘，
+        实测占整个拖动缩放耗时的 40% 左右，是"上下拖拉很卡"的最大来源。
+        图标只在状态真的变化时才需要换，其余情况一律不动。
+        """
+        maxed = bool(self._win._is_window_maximized())
+        if getattr(self, "_max_icon_state", None) is maxed:
+            return
+        self._max_icon_state = maxed
+        self._max_btn.setIcon(self._icon_rest if maxed else self._icon_max)
 
     # --- Drag to move ---
     def mousePressEvent(self, event):
@@ -6380,6 +6756,16 @@ class _TitleBar(QWidget):
                 self._close_btn.geometry().contains(pos)):
                 event.ignore()
                 return
+            # 最大化时**不能**交给系统拖动（startSystemMove）：窗口已被我们
+            # 补上 WS_THICKFRAME，系统接管后会直接以最大化状态整块挪走，
+            # 下面的"还原成普通大小"逻辑永远轮不到执行。
+            # 所以最大化时自己接管，先还原再移动。
+            if self._win._is_window_maximized():
+                self._drag_pos = None
+                self._restore_then_arm_drag = event.globalPosition().toPoint()
+                event.accept()
+                return
+            self._restore_then_arm_drag = None
             wh = self._win.windowHandle()
             if wh is not None and wh.startSystemMove():
                 event.accept()
@@ -6388,17 +6774,30 @@ class _TitleBar(QWidget):
             event.accept()
 
     def mouseMoveEvent(self, event):
+        # 最大化状态下按下标题栏：第一次真正移动时才还原
+        arm = getattr(self, "_restore_then_arm_drag", None)
+        if arm is not None:
+            cur = event.globalPosition().toPoint()
+            if abs(cur.x() - arm.x()) < 3 and abs(cur.y() - arm.y()) < 3:
+                event.accept()
+                return
+            self._restore_then_arm_drag = None
+            # 还原成普通大小（沿用记住的尺寸），再按光标继续拖
+            self._win._restore_normal_size()
+            self._max_icon_state = False
+            self._max_btn.setIcon(self._icon_max)
+            self.update()
+            self._drag_pos = QPoint(int(self._win.width() / 2), int(self.HEIGHT / 2))
+            self._win.move(cur - self._drag_pos)
+            event.accept()
+            return
         if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
-            if self._win._is_window_maximized():
-                # Un-maximize on drag
-                self._win._restore_normal_size()
-                self._max_btn.setIcon(self._icon_max)
-                self._drag_pos = QPoint(int(self._win.width() / 2), int(self.HEIGHT / 2))
             self._win.move(event.globalPosition().toPoint() - self._drag_pos)
             event.accept()
 
     def mouseReleaseEvent(self, event):
         self._drag_pos = None
+        self._restore_then_arm_drag = None
 
     def mouseDoubleClickEvent(self, event):
         self._toggle_max()
@@ -7207,7 +7606,7 @@ class YouBoardApp(QMainWindow):
         self.resize(1180, 720)
         self.setMinimumSize(920, 540)
         # 无边框窗口：留 1px 窗体边框当描边，让窗口和桌面分得清
-        self.setContentsMargins(1, 1, 1, 1)
+        self.setContentsMargins(0, 0, 0, 0)
         # Restore saved window geometry
         cfg = load_config()
         # 设置了背景图时启用半透明面板（让壁纸透出来）；没背景时保持原来的实心观感
@@ -7276,15 +7675,40 @@ class YouBoardApp(QMainWindow):
         # 启动构建完成后回收一次内存垃圾，降低常驻占用
         QTimer.singleShot(3000, gc.collect)
         QTimer.singleShot(10000, gc.collect)
-        # Win11 无边框窗口强制直角，消除左上角缝隙
-        QTimer.singleShot(0, lambda: _force_square_corners(self))
+        # 普通窗口给圆角（最大化时由 _apply_max_state 退回直角）
+        QTimer.singleShot(0, lambda: self._apply_window_corners())
         self._apply_max_state()
 
     # ------------------------------------------------------------------
     # UI construction
     # ------------------------------------------------------------------
+    def paintEvent(self, event):
+        """统一绘制主窗口的 1px 外框（普通窗口状态）。
+
+        以前靠"窗口边距 1px + QMainWindow 背景色"来当外框，在 150% DPI 下
+        这个 1px 会被舍入成不同的物理像素数（左边 3px、上边 2px），
+        看起来就是"最左边没对齐"。这里改成窗口自己画：
+        四边用同一条抗锯齿直线，物理像素数必然一致。
+        """
+        super().paintEvent(event)
+        try:
+            if self.isMaximized():
+                return          # 最大化贴满屏幕，不画外框
+            p = QPainter(self)
+            p.setPen(QPen(qcolor(C['BORDER_LT']), 1))
+            r = self.rect().adjusted(0, 0, -1, -1)
+            p.drawRect(r)
+            p.end()
+        except Exception:
+            pass
+
     def _build_ui(self):
-        central = QWidget()
+        # 注意：窗口必须保持**不透明**。之前为了自绘圆角把它设成
+        # WA_TranslucentBackground，结果拖拽窗口时未绘制的区域直接露出桌面
+        # （用户看到"空了一大块"）。圆角改用 Win32 窗口区域实现，窗口本身
+        # 仍是实心矩形，任何时刻都不会有空洞。
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        central = _RootSurface(self)
         central.setObjectName("rootSurface")
         self.setCentralWidget(central)
         self._bg_label = QLabel(central)
@@ -7295,7 +7719,10 @@ class YouBoardApp(QMainWindow):
         self._bg_label.lower()
 
         root = QVBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 6)
+        # 四边统一留 1px：面板边框（QTabWidget::pane 的 1px）贴到窗口最外沿时，
+        # 只有左侧紧邻窗口边缘会露出来，看起来就是"最左边多了一条线、
+        # 和上/右/下对不齐"。留出这一圈后四边观感一致。
+        root.setContentsMargins(1, 1, 1, 7)
         root.setSpacing(0)
         # Custom title bar (replaces native Windows title bar)
         self._title_bar = _TitleBar(self)
@@ -7527,6 +7954,20 @@ class YouBoardApp(QMainWindow):
         # （被系统直接最大化时不会发 WindowStateChange，只能靠这里兜底）
         if hasattr(self, '_title_bar'):
             self._title_bar.update_max_btn()
+        # 圆角区域必须跟着窗口尺寸更新：SetWindowRgn 的裁剪区是按旧尺寸算的，
+        # 窗口变大后超出旧区域的部分会被整块裁掉（用户看到"缺一大块"）。
+        # 但不能每帧都设（每设一次整窗重绘 → 闪烁），所以：
+        #   · 拖动缩放期间完全不碰；
+        #   · 其余情况停手 60ms 后重算一次。
+        if not getattr(self, '_resizing_from_maximized', False) \
+                and not getattr(self, '_in_manual_resize', False):
+            t = getattr(self, '_corner_timer', None)
+            if t is None:
+                t = QTimer(self)
+                t.setSingleShot(True)
+                t.timeout.connect(self._apply_window_corners)
+                self._corner_timer = t
+            t.start(60)
         if hasattr(self, '_bg_label'):
             self._bg_label.setGeometry(self.rect())
             if self._bg_pixmap and not self._bg_pixmap.isNull():
@@ -7564,10 +8005,53 @@ class YouBoardApp(QMainWindow):
         if hasattr(self, '_edge_left'):
             w, h = self.width(), self.height()
             t = _EdgeHandle.THICKNESS
+            # 右上角三个窗口按钮不要被边缘热区盖住：上边缘横条在右侧让出这一段，
+            # 否则鼠标从最小化滑到最大化时只要偏上几像素就落进热区，
+            # 按钮收不到 enter 事件，看起来就是"没有悬停高亮"。
+            # 顶部横条在"最小化按钮左边缘"处断开：右侧那一段留给窗口按钮，
+            # 否则按钮上沿会被热区吃掉（鼠标停在按钮上部时没有悬停高亮）。
+            _btn_zone = 0
+            try:
+                _tb = getattr(self, '_title_bar', None)
+                if _tb is not None and getattr(_tb, '_min_btn', None) is not None:
+                    _first = _tb._min_btn
+                    # 按钮在标题栏内的坐标 → 标题栏在窗口内的坐标 → 窗口坐标
+                    _x0 = _tb.geometry().x() + _first.geometry().x()
+                    if 0 < _x0 < w:
+                        _btn_zone = max(0, w - _x0)
+            except Exception:
+                _btn_zone = 0
             self._edge_left.setGeometry(0, t, t, h - 2 * t)
-            self._edge_right.setGeometry(w - t, t, t, h - 2 * t)
-            self._edge_top.setGeometry(t, 0, w - 2 * t, t)
+            # 右边条从标题栏下方开始：否则它会贴着窗口右缘盖住关闭按钮
+            _btm = t
+            try:
+                _tb2 = getattr(self, '_title_bar', None)
+                if _tb2 is not None:
+                    _btm = max(t, _tb2.height())
+            except Exception:
+                _btm = t
+            self._edge_right.setGeometry(w - t, _btm, t, max(0, h - _btm - t))
+            # 顶部横条避开右上角按钮区
+            self._edge_top.setGeometry(t, 0, max(0, w - 2 * t - _btn_zone), t)
             self._edge_bottom.setGeometry(t, h - t, w - 2 * t, t)
+            # 启动时标题栏按钮还没完成布局，上面算出的按钮区可能偏小，
+            # 导致顶部热区压到按钮上。下一拍再修正一次。
+            if _btn_zone <= 0:
+                def _fix_top_edge():
+                    try:
+                        _t3 = getattr(self, '_title_bar', None)
+                        if _t3 is None:
+                            return
+                        _x0 = _t3.geometry().x() + _t3._min_btn.geometry().x()
+                        if 0 < _x0 < self.width():
+                            _zone = max(0, self.width() - _x0)
+                            _tt = _EdgeHandle.THICKNESS
+                            self._edge_top.setGeometry(
+                                _tt, 0,
+                                max(0, self.width() - 2 * _tt - _zone), _tt)
+                    except Exception:
+                        pass
+                QTimer.singleShot(0, _fix_top_edge)
             # 已经显示/在最上层时不再重复 show/raise，避免每次都触发重绘
             for _h in (self._edge_left, self._edge_right,
                        self._edge_top, self._edge_bottom):
@@ -7583,8 +8067,18 @@ class YouBoardApp(QMainWindow):
                 self._corner_tr.hide()
                 self._corner_bl.hide()
             else:
+                # 右上角热区必须避开标题栏的窗口按钮（最小化/最大化/关闭）：
+                # 贴到 y=0 会盖住关闭按钮，导致鼠标滑过时按钮收不到 enter
+                # 事件 —— 表现就是"没有悬停高亮"。这里下移到标题栏下方。
+                _tb_h = 0
+                try:
+                    _tb = getattr(self, '_title_bar', None)
+                    if _tb is not None:
+                        _tb_h = _tb.height()
+                except Exception:
+                    _tb_h = 0
                 self._corner_tl.move(0, 0)
-                self._corner_tr.move(w - s, 0)
+                self._corner_tr.move(w - s, max(0, _tb_h))
                 self._corner_bl.move(0, h - s)
                 for _c in (self._corner_tl, self._corner_tr, self._corner_bl):
                     _c.show()
@@ -10192,22 +10686,141 @@ class YouBoardApp(QMainWindow):
     # ------------------------------------------------------------------
     # Cleanup / tray / fade-in
     # ------------------------------------------------------------------
+    def _apply_window_corners(self):
+        """按当前状态设置窗口圆角：普通窗口圆角、最大化直角。
+
+        判定"是不是全屏尺寸"时不能只看 _is_window_maximized()：拖边缘缩放期间
+        那个值被临时强制成 False（防止窗口被拽回满屏），但窗口此时可能仍然
+        铺满屏幕。所以再看一眼几何本身。
+        """
+        # 这里必须用**真实的最大化状态**判断，不能用几何兜底：
+        # showNormal() 刚返回时窗口几何还停在满屏（无边框窗口的已知行为），
+        # 用 _rect_is_maximized 就会误判成"还在最大化"，圆角永远恢复不了。
+        try:
+            maxed = bool(self.isMaximized())
+            if IS_WIN:
+                import ctypes as _ct
+                try:
+                    if _ct.windll.user32.IsZoomed(int(self.winId())):
+                        maxed = True
+                except Exception:
+                    pass
+        except Exception:
+            try:
+                maxed = self._is_window_maximized()
+            except Exception:
+                maxed = False
+        # 拖动缩放期间不重设区域（每设一次整窗重绘，会闪）
+        if getattr(self, "_in_manual_resize", False):
+            self._corner_state = None     # 结束后强制重算一次
+            return
+        want_round = not maxed
+        # 缓存键必须带上**窗口尺寸**：圆角区域是按当前宽高算出来的，
+        # 只缓存"圆角/直角"状态会让窗口变大后仍沿用旧的小区域，
+        # 超出部分被整块裁掉（用户看到"缺一大块"）。
+        try:
+            size_key = (self.width(), self.height())
+        except Exception:
+            size_key = None
+        state_key = (want_round, size_key)
+        if getattr(self, "_corner_state", None) == state_key:
+            return
+        self._corner_state = state_key
+        # 圆角完全交给 Windows：把 DWM 偏好恢复成"默认"，系统就会给带
+        # WS_THICKFRAME 的窗口画出和 DeepSeek Harness 一样的圆角。
+        # 绝不做任何裁剪（SetWindowRgn / setMask）—— 那两者会在窗口尺寸
+        # 变化后残留旧范围，把界面整块裁掉。
+        try:
+            surface = self.centralWidget()
+            if isinstance(surface, _RootSurface):
+                surface.set_radius(0)      # 面板铺满，圆角交给系统
+        except Exception:
+            pass
+        # DWM 客户区边框：最大化时关掉（否则四边各留 1px 边框圈）
+        try:
+            _update_dwm_frame(self, maximized=bool(maxed))
+        except Exception:
+            pass
+        try:
+            if maxed:
+                _force_square_corners(self)          # 最大化：直角贴边
+            else:
+                _round_main_window(self, do_clip=False)   # 普通窗口：显式圆角
+            _clear_window_region(self)     # 保证没有任何残留裁剪区域
+        except Exception:
+            pass
+
+    def _apply_max_state_immediate(self, maxed):
+        """把「最大化/还原」相关的边距与样式**当场**应用到窗口。
+
+        与 _apply_max_state 的区别只有一点：这里不延后重建样式表。
+        """
+        if getattr(self, "_flush", None) != maxed:
+            self._flush = maxed
+        # 四边一律 0 边距（外框由 centralWidget 的 QSS 边框统一绘制，
+        # 避免 1px 在 150% DPI 下被舍入成左边 3px / 上边 2px 的不一致）
+        self.setContentsMargins(0, 0, 0, 0)
+        for lay in getattr(self, "_tab_layouts", []):
+            lay.setContentsMargins(8, 8, 8, 8)
+        try:
+            self.setStyleSheet(build_qss(load_config().get("theme", "dark"),
+                                         flush=bool(maxed)))
+        except Exception:
+            pass
+        self._apply_window_corners()
+
     def _apply_max_state(self):
         """最大化时内容贴合屏幕左缘（左边距归零 + 直角面板），消除圆角缺口。"""
-        maxed = self._is_window_maximized()
+        # 手动拖边缘缩放期间不要动窗口（否则会被拽回满屏）
+        if getattr(self, "_in_manual_resize", False):
+            return
+        maxed = bool(self.isMaximized())
+        # 圆角必须**每次**都跟着真实状态重算，且要放在下面那个
+        # "_flush 没变就直接 return" 之前 —— 否则还原时 _flush 恰好已经是
+        # False，函数提前返回，圆角就永远停在"最大化"的直角上（用户实测：
+        # 点一次最大化再还原，界面变直角并且不再恢复）。
+        self._corner_state = None
+        self._apply_window_corners()
         if getattr(self, "_flush", None) == maxed:
             return
         self._flush = maxed
-        # 1px 外框只在普通窗口下保留（最大化时贴着屏幕边，留着反而多余）
-        if maxed:
-            self.setContentsMargins(0, 0, 0, 0)
-        else:
-            self.setContentsMargins(1, 1, 1, 1)
+        # 四边一律 0 边距：以前普通窗口留 1px 当外框，在 150% DPI 下
+        # 左边会舍入成 3 物理像素、上边 2 像素，看着就是"左边没对齐"。
+        # 外框改由 centralWidget 的 QSS 边框统一绘制，四边必然一致。
+        self.setContentsMargins(0, 0, 0, 0)
         for lay in getattr(self, "_tab_layouts", []):
             # 最大化时也留一点左边距：内容贴着屏幕边缘看着太挤
             lay.setContentsMargins(8, 8, 8, 8)
+        # flush 与普通状态在样式表上只差一个「标签页面板圆角」：最大化时改成
+        # 直角贴着屏幕边，还原时退回圆角。Qt 没有局部更新样式的办法，只能整份
+        # 重设 —— 实测一次 20~30 ms、牵动近百次重绘。
+        #
+        # 这一步原本是同步做的，于是"在最大化状态第一次拖边缘"时，它和
+        # showNormal() 挤在同一帧里：窗口刚还原、样式还在重建，用户看到的就是
+        # 闪一下。现在改成延迟到下一拍（缩放已经真正开始、窗口先画出还原后的
+        # 样子），只在状态真的翻转时发生一次，拖动过程中不会重复触发。
+        self._schedule_flush_restyle(maxed)
+
+    def _schedule_flush_restyle(self, maxed):
+        """把整份样式表的重建挪到下一拍，避免和还原动作挤在同一帧。"""
         try:
-            self.setStyleSheet(build_qss(load_config().get("theme", "dark"), flush=maxed))
+            timer = getattr(self, "_flush_restyle_timer", None)
+            if timer is None:
+                timer = QTimer(self)
+                timer.setSingleShot(True)
+                timer.timeout.connect(self._apply_flush_restyle)
+                self._flush_restyle_timer = timer
+            self._pending_flush_value = bool(maxed)
+            timer.start(0)
+        except Exception:
+            # 定时器不可用时退回同步执行（保证样式一定是对的）
+            self._apply_flush_restyle()
+
+    def _apply_flush_restyle(self):
+        """按当前 _flush 重建样式表（仅在最大化/还原真正翻转时调用一次）。"""
+        try:
+            self.setStyleSheet(build_qss(load_config().get("theme", "dark"),
+                                         flush=bool(getattr(self, "_flush", False))))
         except Exception:
             pass
 
@@ -10410,17 +11023,28 @@ class YouBoardApp(QMainWindow):
 
     @staticmethod
     def _rect_is_maximized(geo):
-        """几何是否等于（或几乎等于）所在屏幕的可用区。
+        """这个矩形像不像"最大化"（整屏 / 贴着屏幕边铺满）。
 
         最大化、以及最大化/还原切换的瞬间都会返回整屏矩形。
+        另外还要认得一种"准满屏"：宽度已经等于工作区宽度、并且贴在屏幕左上角——
+        这是无边框窗口被 Windows 吸附/最大化后留下的尺寸（实测用户配置里就是
+        1707x978，屏宽 1707、可用高 1019）。以前只把"宽高都等于工作区"当最大化，
+        这种准满屏会被当成合法的普通大小存进配置，下次还原就跳回满屏。
         """
         try:
             screen = QApplication.screenAt(geo.center())
             if screen is None:
                 screen = QApplication.primaryScreen()
             avail = screen.availableGeometry()
-            return (abs(geo.width() - avail.width()) <= 2
-                    and abs(geo.height() - avail.height()) <= 2)
+            if (abs(geo.width() - avail.width()) <= 2
+                    and abs(geo.height() - avail.height()) <= 2):
+                return True
+            # 准满屏：宽度铺满工作区 + 高度占了八成以上（横向基本没有余量）。
+            # 注意不要求贴左上角：Windows 最大化时任务栏/边框会让 y 差几像素
+            # （实测用户配置就是 y=41），把它排除掉反而漏判。
+            full_width = abs(geo.width() - avail.width()) <= 2
+            tall = geo.height() >= int(avail.height() * 0.85)
+            return bool(full_width and tall)
         except Exception:
             return False
 
@@ -10430,20 +11054,224 @@ class YouBoardApp(QMainWindow):
         无边框窗口（自绘标题栏 + 手动补的 WS_THICKFRAME）有时会被系统直接最大化，
         Qt 的状态位没跟上：窗口看着已经铺满屏幕，isMaximized() 却是 False，
         于是标题栏图标不切换、退出时也记不住最大化。这里补上几何判断兜底。
+
+        这个方法在每一帧 resize 里都会被标题栏 / 状态记录调用好几次，而
+        _rect_is_maximized 要查屏幕可用区。同一次 resize 事件里结果不可能变，
+        因此按"几何指纹 + 状态位 + 屏幕可用区"做一层缓存，拖动时不必反复算。
         """
         try:
-            return bool(self.isMaximized()
-                        or self._rect_is_maximized(self.geometry()))
+            # 注意：这里**永远报告真实状态**。以前用"正在手动缩放"这个标记把
+            # 它强行改成 False，结果标记一旦残留，标题栏就以为窗口没最大化，
+            # 点最大化按钮毫无反应（用户实测）。需要抑制的是
+            # _apply_max_state 的副作用，不是这个查询本身。
+            key = (bool(self.isMaximized()), self.geometry().getRect())
+            cached = getattr(self, "_max_state_cache", None)
+            if cached is not None and cached[0] == key:
+                return cached[1]
+            result = bool(self.isMaximized()
+                          or self._rect_is_maximized(self.geometry()))
+            self._max_state_cache = (key, result)
+            return result
         except Exception:
-            return False
+            try:
+                return bool(self.isMaximized()
+                            or self._rect_is_maximized(self.geometry()))
+            except Exception:
+                return False
+
+    def maximize(self):
+        """真正把窗口最大化（几何也铺满屏幕）。
+
+        Qt 的 showMaximized() 在这种"无边框 + 手工补 WS_THICKFRAME"的窗口上
+        经常只改状态位不改几何 —— 标题栏图标变了、界面还是原来的大小。
+        这里先走 Win32 ShowWindow(SW_MAXIMIZE)，再核对几何；不达标就
+        直接按屏幕可用区摆放一次，保证"点一下就是满屏"。
+        """
+        try:
+            if IS_WIN:
+                import ctypes
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
+                hwnd = ctypes.c_void_p(int(self.winId()))
+                if not user32.IsZoomed(hwnd):
+                    user32.ShowWindow(hwnd, 3)      # SW_MAXIMIZE
+        except Exception:
+            pass
+        try:
+            self.showMaximized()
+        except Exception:
+            pass
+        # 兜底：几何没铺满就自己按屏幕可用区摆上去
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            avail = screen.availableGeometry()
+            g = self.geometry()
+            if (g.width() < avail.width() - 2
+                    or g.height() < avail.height() - 2):
+                self.setGeometry(avail)
+        except Exception:
+            pass
+        self._max_state_cache = None
+        self._corner_state = None
+        try:
+            self._flush = True
+            self._apply_max_state_immediate(True)
+        except Exception:
+            pass
+
+    def unmaximize(self, sync_style=True):
+        """真正退出最大化状态，返回是否成功。
+
+        sync_style=False 时不在这帧重建样式表（拖边缘的场景用），
+        样式会推迟到下一拍由 _apply_max_state 补上 —— 那 20~30 ms 就不占
+        「按下」这一帧了。
+        
+
+        无边框窗口（自绘标题栏 + 手动补的 WS_THICKFRAME）上，Qt 的
+        showNormal() / setWindowState() / setGeometry() 都**退不出**最大化：
+        WindowState 会变成普通，但 Win32 的 WS_MAXIMIZE 样式还在，
+        IsZoomed() 依旧为 True、几何还是满屏。
+
+        用户看到的现象：最大化时拖窗口最上边缘，本该"先还原再缩放"，
+        结果窗口还原了一下又弹回满屏，来回打架 —— 就是闪烁。
+        （2026-11-06 实测：showNormal() 后 IsZoomed 仍 True、几何不变；
+        改用 Win32 ShowWindow(SW_RESTORE) 才正常退到 normalGeometry。）
+
+        这里优先走 Win32 SW_RESTORE，其它平台/失败时回退到 Qt 的做法。
+        注意 SW_RESTORE 只撤掉 WS_MAXIMIZE 样式，**不会**把窗口缩回普通大小
+        （实测：IsZoomed 变 False，但几何还是满屏），所以之后必须自己把几何
+        设回记住的普通大小，否则窗口看着"还原了却还铺满屏幕"——拖上边缘时
+        就是一边满屏一边被 setGeometry 缩小，来回打架。
+        """
+        restored = False
+        try:
+            if IS_WIN:
+                import ctypes
+                user32 = ctypes.windll.user32
+                hwnd = int(self.winId())
+                if user32.IsZoomed(hwnd):
+                    user32.ShowWindow(hwnd, 9)   # SW_RESTORE
+                    restored = not bool(user32.IsZoomed(hwnd))
+        except Exception:
+            restored = False
+        if not restored:
+            try:
+                self.showNormal()
+            except Exception:
+                pass
+        # 把几何真正缩回普通大小（SW_RESTORE 不管这一步）
+        try:
+            if self._rect_is_maximized(self.geometry()):
+                target = self._normal_target_geo()
+                if target is not None:
+                    self.setGeometry(target)
+        except Exception:
+            pass
+        # 几何变了，缓存的最大化判定立刻失效，否则样式会停在"最大化"那套
+        # （直角面板 + 0 边距），看着还是满屏的样子。
+        self._max_state_cache = None
+        # 状态变了：圆角缓存立即失效，否则会沿用"最大化=直角"的旧结果，
+        # 还原后界面仍是直角（用户实测）。
+        self._corner_state = None
+        try:
+            maxed = self._is_window_maximized()
+            if sync_style:
+                # 普通调用：当场把边距 + 样式改对
+                self._flush = maxed
+                self._apply_max_state_immediate(maxed)
+            else:
+                # 拖边缘：这帧只保证几何 / 边距对，样式推迟到下一拍
+                self.setContentsMargins(0, 0, 0, 0)
+                for lay in getattr(self, "_tab_layouts", []):
+                    lay.setContentsMargins(8, 8, 8, 8)
+                self._flush = None          # 强制下一拍真的重设
+                QTimer.singleShot(0, self._apply_max_state)
+        except Exception:
+            pass
+        return not self._is_window_maximized()
+
+    def _begin_edge_resize_from_maximized(self):
+        """准备"从最大化状态拖边缘缩放"，且**视觉上不跳、不闪**。
+
+        难点（全部实测确认）：
+          · 最大化状态下 resize() 有效，但 move() 被系统忽略 ——
+            上边缘缩放时尺寸在变、顶边却不动，肉眼就是"闪/一跳一跳"；
+          · setGeometry() 在最大化时完全无效；
+          · 直接 SW_RESTORE 会把窗口摆到 normalGeometry（用户的
+            (-10,38,1711,991)，比屏幕还宽），于是"唰"地跑到屏幕中间。
+
+        做法：先用 SetWindowPlacement 把"还原位置"改成**当前满屏矩形**，
+        再 SW_RESTORE —— 还原动作等于原地不动；随后立刻 resize 回当前尺寸，
+        彻底消除 DPI 换算带来的偏差。之后 move()/resize() 都正常，
+        位置就能跟着光标走。
+        """
+        if getattr(self, "_resizing_from_maximized", False):
+            return
+        cur = self.geometry()
+        self._resizing_from_maximized = True
+        self._max_state_cache = None
+        try:
+            if IS_WIN:
+                import ctypes
+                import ctypes.wintypes as _wt
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
+                hwnd = ctypes.c_void_p(int(self.winId()))
+                if user32.IsZoomed(hwnd):
+                    class _WP(ctypes.Structure):
+                        _fields_ = [
+                            ("length", ctypes.c_uint),
+                            ("flags", ctypes.c_uint),
+                            ("showCmd", ctypes.c_uint),
+                            ("ptMinPosition", _wt.POINT),
+                            ("ptMaxPosition", _wt.POINT),
+                            ("rcNormalPosition", _wt.RECT),
+                        ]
+                    wp = _WP()
+                    wp.length = ctypes.sizeof(_WP)
+                    if user32.GetWindowPlacement(hwnd, ctypes.byref(wp)):
+                        wp.rcNormalPosition.left = cur.x()
+                        wp.rcNormalPosition.top = cur.y()
+                        wp.rcNormalPosition.right = cur.x() + cur.width()
+                        wp.rcNormalPosition.bottom = cur.y() + cur.height()
+                        wp.showCmd = 9      # SW_RESTORE（直接恢复，不要先 SW_SHOWNORMAL）
+                        user32.SetWindowPlacement(hwnd, ctypes.byref(wp))
+                    # 关键：整段还原期间冻结重绘，用户看不到任何中间帧
+                    user32.SendMessageW(hwnd, 0x000B, 0, 0)   # WM_SETREDRAW FALSE
+                    try:
+                        user32.ShowWindow(hwnd, 9)             # SW_RESTORE
+                        self.resize(cur.width(), cur.height())
+                        self.move(cur.x(), cur.y())
+                    finally:
+                        user32.SendMessageW(hwnd, 0x000B, 1, 0)  # WM_SETREDRAW TRUE
+                        user32.InvalidateRect(hwnd, None, True)
+            else:
+                self.resize(cur.width(), cur.height())
+                self.move(cur.x(), cur.y())
+        except Exception:
+            pass
+        try:
+            # 只改边距（极快）；样式表重建 20~30 ms，推到下一拍再做，
+            # 绝不能占着"按下的第一帧"。
+            self._flush = False
+            self.setContentsMargins(0, 0, 0, 0)
+            QTimer.singleShot(0, lambda: self._apply_max_state_immediate(False))
+        except Exception:
+            pass
+
+    def _normal_target_geo(self):
+        """还原时该回到哪个矩形：优先用记住的普通大小，其次 normalGeometry。"""
+        for cand in (getattr(self, "_last_geo", None),
+                     self.normalGeometry()):
+            try:
+                if cand is not None and cand.width() > 0 and cand.height() > 0 \
+                        and not self._rect_is_maximized(cand):
+                    return cand
+            except Exception:
+                continue
+        return None
 
     def _restore_normal_size(self):
         """还原成普通窗口：优先用记住的普通大小，保证一定缩得回去。"""
-        try:
-            if self.isMaximized():
-                self.showNormal()
-        except Exception:
-            pass
+        self.unmaximize()
         geo = getattr(self, "_last_geo", None)
         try:
             if geo is not None and not self._rect_is_maximized(geo):
@@ -10469,9 +11297,16 @@ class YouBoardApp(QMainWindow):
             if self.isVisible() and not self.isMinimized():
                 if self._is_window_maximized():
                     self._last_max = True
-                    # 最大化时不要用 normalGeometry() 覆盖已记录的普通大小
+                    # 最大化时不要用 normalGeometry() 覆盖已记录的普通大小。
+                    # 只有在完全没有记录时才补一次，而且必须确认它"不是满屏"——
+                    # 无边框窗口在最大化/还原切换的瞬间 normalGeometry() 会返回
+                    # 整屏矩形，一旦被当成普通大小存下来，下次还原就会"跳回满屏"
+                    # 或者干脆用默认尺寸。
                     if self._last_geo is None:
-                        self._last_geo = self.normalGeometry()
+                        cand = self.normalGeometry()
+                        if (cand.width() > 0 and cand.height() > 0
+                                and not self._rect_is_maximized(cand)):
+                            self._last_geo = cand
                 else:
                     self._last_geo = self.geometry()
                     self._last_max = False
@@ -10790,17 +11625,38 @@ class YouBoardApp(QMainWindow):
         self._mem_timer = QTimer(self)
         self._mem_timer.timeout.connect(self._memory_tick)
         self._mem_timer.start(30000)
-        # Add native resize borders to frameless window (WS_THICKFRAME)
+        # 让 Windows 绘制圆角，但不引入原生标题栏按钮。
+        #
+        # 实测（本机 Win11 26200）：
+        #   · 无边框窗口            CAPTION=False THICK=False → DWM 偏好 0，直角
+        #   · 只补 THICKFRAME       CAPTION=False             → 仍然直角
+        #   · 补 CAPTION            CAPTION=True              → 会画出原生的
+        #                                                       最小化/最大化/关闭，
+        #                                                       和自绘按钮重叠（很丑）
+        #   · THICKFRAME + DwmExtendFrameIntoClientArea(-1)   → 有圆角，
+        #                                                       且不画原生按钮 ✅
+        # 所以只用 THICKFRAME + 扩展 DWM 帧，绝不加 WS_CAPTION。
         try:
             import ctypes
             hwnd = int(self.winId())
             GWL_STYLE = -16
             WS_THICKFRAME = 0x00040000
             WS_MINIMIZEBOX = 0x00020000
-            WS_MAXIMIZEBOX = 0x00010000  # ← 加上这行
+            WS_MAXIMIZEBOX = 0x00010000
             style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_STYLE)
-            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_STYLE,
-                                                style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+            # 明确剥掉 CAPTION（历史版本可能已加上），否则会出现两套按钮
+            style = style & ~0x00C00000
+            ctypes.windll.user32.SetWindowLongW(
+                hwnd, GWL_STYLE,
+                style | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0,
+                0x0027  # SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED
+            )
+            # DWM 边框延伸由 _update_dwm_frame 按最大化状态开关，
+            # 最大化时必须关掉（否则 DWM 会在客户区四边画一圈 1px 边框，
+            # 看起来就是"预留了一个像素"）。
+            _update_dwm_frame(self, maximized=bool(self.isMaximized()))
         except Exception:
             pass
         # 原生样式位修改后再恢复一次最大化，避免被 Windows 重置为普通窗口。
@@ -12822,7 +13678,9 @@ class SettingsDialog(QDialog):
         self.setWindowModality(Qt.WindowModality.WindowModal)
         # 尺寸收敛到"正常窗口"大小：不超屏幕可用区，也能缩到更小
         _avail = QApplication.primaryScreen().availableGeometry()
-        _w = 600 if LANG == "en" else 480
+        # 英文不再是 600：那比中文宽 25%，窗口被拉得过宽、内容却只有几行，
+        # 看着很空。英文文案平均比中文长，给 520 就够排版，和中文的观感接近。
+        _w = 520 if LANG == "en" else 480
         _h = 660
         self.resize(min(_w, max(360, _avail.width() - 120)),
                     min(_h, max(360, _avail.height() - 120)))

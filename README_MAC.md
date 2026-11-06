@@ -22,7 +22,7 @@ chmod +x build_mac.sh
 ```
 
 脚本会：安装依赖（PyQt6 / Pillow / pyperclip / PyObjC / PyInstaller）→
-构建 `dist/YouBoard.app` → 生成 `YouBoard_macOS_v3.3.7.dmg`。
+构建 `dist/YouBoard.app` → 生成 `YouBoard_macOS_v3.3.8.dmg`。
 
 也可以手动执行：
 
@@ -59,7 +59,14 @@ python3 -m PyInstaller YouBoard_Mac.spec --noconfirm
 - 托盘：原生 QSystemTrayIcon，右键显示 / 隐私模式 / 退出
 - 系统要求里的全局快捷键：`win` 键对应 Mac 的 Command（⌘）
 
-## 6. 已知差异（Windows 专属能力）
+## 6. v3.3.8 在 macOS 上的表现
+
+- **拖动缩放更跟手**：标题栏图标缓存、列表富文本排版缓存都跨平台生效，macOS 同样受益
+- **弹层改成柔边圆角**：「管理」下拉与右键菜单用自绘抗锯齿圆角，四角平滑过渡，不再出现方块底（macOS 与 Windows 表现一致）
+- **最大化 / 窗口按钮相关**：这一版修的「最大化拖边缘闪烁」「最大化铺满屏幕」「按钮悬停被缩放热区挡住」都是 Win32 专属实现（DWM 圆角、WS_THICKFRAME、窗口区域），macOS 走系统原生窗口，本身没有这些问题
+- **复制记录不再跳回列表顶部**、**英文设置窗口收窄**：两平台一致
+
+## 7. 已知差异（Windows 专属能力）
 
 - **应用内自动更新**：macOS 版检测到新版本后直接打开 GitHub Releases 页面，
   不会应用内替换可执行文件（避免破坏签名）
@@ -68,7 +75,7 @@ python3 -m PyInstaller YouBoard_Mac.spec --noconfirm
   走正常文件路径，不影响「文件」分类
 - **Win11 托盘图标提升 / 注册表项**：仅在 Windows 生效，macOS 无对应概念
 
-## 7. 需要 Mac 实测验证的点
+## 8. 需要 Mac 实测验证的点
 
 - 全局热键（Alt+Q 及自定义组合）在未授权 / 已授权两种情况下的行为
 - 高清屏（Retina）下无边框窗口的缩放手感

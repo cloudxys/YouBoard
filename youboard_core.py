@@ -3391,10 +3391,48 @@ class ClipboardMonitor(threading.Thread):
             except Exception:
                 pass
 
+    def _sync_baseline_from_clipboard(self):
+        """把"已见内容"基线对齐到当前剪贴板；读不到内容返回 False。
+
+        自复制之后必须调用：基线如果停在复制之前的旧内容上，之后任何一次
+        剪贴板事件都会得到"内容 != 基线"，于是刚复制出去的那条被重新收录一遍，
+        带着新时间戳跳到列表最上面（用户报的"按 Enter 复制后记录跑到顶部"）。
+        """
+        try:
+            ctype, data = get_clipboard_content(self.store.known_file_names())
+        except Exception:
+            return False
+        try:
+            if ctype == "text":
+                self._last_text = data
+                self._last_image_hash = ""
+                self._last_file_hash = ""
+            elif ctype == "image":
+                self._last_image_hash = self.store._image_hash(data)
+                self._last_text = ""
+                self._last_file_hash = ""
+            elif ctype == "file":
+                self._last_file_hash = (self.store._files_hash(data) if data else "")
+                self._last_text = ""
+                self._last_image_hash = ""
+            else:
+                # 剪贴板空 / 不认识：基线一起清掉，避免旧值残留
+                self._last_text = ""
+                self._last_image_hash = ""
+                self._last_file_hash = ""
+        except Exception:
+            return False
+        return True
+
     def _process_clipboard(self):
         """读取一次剪贴板并收录新内容。返回 False 表示读取失败（供重试）。"""
-        # 应用内复制（Enter/按钮）触发的剪贴板变化不重复收录
+        # 应用内复制（Enter / 按钮 / 密库 / AI 结果 / 扩展）触发的剪贴板变化不重复收录。
+        # 注意：这里不能直接 return —— 必须先把监控基线对齐到"刚复制出去的内容"，
+        # 否则基线停在复制前的旧值，之后任何一次剪贴板事件（别的程序、系统服务、
+        # 资源管理器都可能触发）都会把这条再收一遍，让它带新时间戳跳到最上面。
         if self.store.is_self_copy():
+            if not self._sync_baseline_from_clipboard():
+                return False      # 读不到就让上层重试，基线一定要补上
             return True
         # 隐私免记录模式：敏感内容（如密码）不入库
         if getattr(self, "privacy_mode", False):
